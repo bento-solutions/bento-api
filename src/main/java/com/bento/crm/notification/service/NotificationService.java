@@ -65,6 +65,35 @@ public class NotificationService {
         return notificationRepository.save(notification);
     }
 
+    /**
+     * Inserts an in-app notification directly for a user in another organization
+     * (e.g. inviting an existing user to join a new organization).
+     *
+     * <p>Uses a native SQL query with Propagation.REQUIRES_NEW so that:
+     * 1. {@link com.bento.crm.common.model.TenantEntityListener} does not throw {@code CrossTenantWriteException}
+     *    due to mismatch with the caller's {@code TenantContext}.
+     * 2. Any failure in notification delivery cannot mark the parent transaction as rollback-only.
+     */
+    @Transactional(propagation = org.springframework.transaction.annotation.Propagation.REQUIRES_NEW)
+    public void createCrossTenantNotification(UUID organizationId,
+                                              UUID recipientUserId,
+                                              Notification.NotificationType type,
+                                              String title,
+                                              String message,
+                                              String relatedEntityType,
+                                              UUID relatedEntityId) {
+        notificationRepository.insertCrossTenantNotification(
+                organizationId,
+                recipientUserId,
+                type != null ? type.name() : Notification.NotificationType.SYSTEM.name(),
+                title,
+                message,
+                relatedEntityType,
+                relatedEntityId
+        );
+    }
+
+
     @Transactional
     public Notification markRead(UUID id) {
         UUID orgId = TenantContext.getCurrentOrganizationId();

@@ -37,6 +37,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
@@ -119,6 +120,7 @@ class InvitationServiceTest {
 
         Team team = Team.builder().name("Marketing Team").build();
         team.setId(teamId);
+        when(teamRepository.findByOrganizationIdAndId(currentOrgId, teamId)).thenReturn(Optional.of(team));
         when(teamRepository.findById(teamId)).thenReturn(Optional.of(team));
 
         InvitationResponse response = invitationService.invite(request);
@@ -131,16 +133,15 @@ class InvitationServiceTest {
         assertThat(response.getToken()).isNotBlank();
 
         // Verify in-app notification sent to the existing user in their active organization
-        ArgumentCaptor<Notification> notifCaptor = ArgumentCaptor.forClass(Notification.class);
-        verify(notificationService).createForOrganization(eq(otherOrgId), notifCaptor.capture());
-
-        Notification captured = notifCaptor.getValue();
-        assertThat(captured.getRecipientUserId()).isEqualTo(existingUser.getId());
-        assertThat(captured.getType()).isEqualTo(Notification.NotificationType.INVITATION);
-        assertThat(captured.getTitle()).contains("Bento Team Org");
-        assertThat(captured.getMessage()).contains("Marketing Team");
-        assertThat(captured.getMessage()).contains("Manager");
-        assertThat(captured.getRelatedEntityType()).isEqualTo("INVITATION");
+        verify(notificationService).createCrossTenantNotification(
+                eq(otherOrgId),
+                eq(existingUser.getId()),
+                eq(Notification.NotificationType.INVITATION),
+                contains("Bento Team Org"),
+                contains("Marketing Team"),
+                eq("INVITATION"),
+                any(UUID.class)
+        );
     }
 
     @Test
@@ -204,5 +205,25 @@ class InvitationServiceTest {
         assertThat(savedUser.getRole()).isEqualTo(UserRole.MANAGER);
         assertThat(savedUser.getTeamId()).isEqualTo(teamId);
         assertThat(savedUser.getPasswordHash()).isEqualTo("$2a$12$existingHash...");
+    }
+
+    @Test
+    void inviteThrowsWhenTeamDoesNotExistInOrganization() {
+        String email = "someone@crmbento.com";
+        UUID nonExistentTeamId = UUID.randomUUID();
+        CreateInvitationRequest request = new CreateInvitationRequest();
+        request.setEmail(email);
+        request.setRole("SALESPERSON");
+        request.setTeamId(nonExistentTeamId.toString());
+
+        when(userRepository.findByOrganizationIdAndEmail(currentOrgId, email)).thenReturn(Optional.empty());
+        when(invitationRepository.findByOrganizationIdAndEmailAndStatus(currentOrgId, email, InvitationStatus.PENDING))
+                .thenReturn(Optional.empty());
+        when(teamRepository.findByOrganizationIdAndId(currentOrgId, nonExistentTeamId)).thenReturn(Optional.empty());
+
+        org.junit.jupiter.api.Assertions.assertThrows(
+                com.bento.crm.common.exception.ResourceNotFoundException.class,
+                () -> invitationService.invite(request)
+        );
     }
 }

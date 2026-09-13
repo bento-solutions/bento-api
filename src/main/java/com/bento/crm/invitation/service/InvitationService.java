@@ -78,11 +78,17 @@ public class InvitationService {
                     throw new IllegalStateException("An invitation is already pending for this email. Resend or revoke it instead.");
                 });
 
+        UUID teamId = parseUuid(request.getTeamId());
+        if (teamId != null) {
+            teamRepository.findByOrganizationIdAndId(orgId, teamId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Selected team does not exist in this organization"));
+        }
+
         String token = generateToken();
         UserInvitation invitation = UserInvitation.builder()
                 .email(email)
                 .role(UserRole.valueOf(request.getRole()))
-                .teamId(parseUuid(request.getTeamId()))
+                .teamId(teamId)
                 .displayName(blankToNull(request.getDisplayName()))
                 .jobTitle(blankToNull(request.getJobTitle()))
                 .language(request.getLanguage() != null ? request.getLanguage() : "en")
@@ -102,6 +108,7 @@ public class InvitationService {
         log.info("Invitation {} created for {} in organization {}", invitation.getId(), email, orgId);
         return toResponse(invitation);
     }
+
 
     public List<InvitationResponse> list() {
         UUID orgId = TenantContext.getCurrentOrganizationId();
@@ -173,8 +180,14 @@ public class InvitationService {
             throw new IllegalStateException("Only a pending invitation can be edited");
         }
 
+        UUID teamId = parseUuid(request.getTeamId());
+        if (teamId != null) {
+            teamRepository.findByOrganizationIdAndId(orgId, teamId)
+                    .orElseThrow(() -> new ResourceNotFoundException("Selected team does not exist in this organization"));
+        }
+
         invitation.setRole(UserRole.valueOf(request.getRole()));
-        invitation.setTeamId(parseUuid(request.getTeamId()));
+        invitation.setTeamId(teamId);
         invitation.setDisplayName(blankToNull(request.getDisplayName()));
         invitation.setJobTitle(blankToNull(request.getJobTitle()));
         if (request.getLanguage() != null) {
@@ -362,16 +375,15 @@ public class InvitationService {
                 if (invitation.getOrganizationId().equals(existing.getOrganizationId())) {
                     continue;
                 }
-                Notification notification = Notification.builder()
-                        .recipientUserId(existing.getId())
-                        .type(Notification.NotificationType.INVITATION)
-                        .title("Invitation to join " + organizationName)
-                        .message(message)
-                        .relatedEntityType("INVITATION")
-                        .relatedEntityId(invitation.getId())
-                        .isRead(false)
-                        .build();
-                notificationService.createForOrganization(existing.getOrganizationId(), notification);
+                notificationService.createCrossTenantNotification(
+                        existing.getOrganizationId(),
+                        existing.getId(),
+                        Notification.NotificationType.INVITATION,
+                        "Invitation to join " + organizationName,
+                        message,
+                        "INVITATION",
+                        invitation.getId()
+                );
                 log.info("Dispatched in-app invitation notification to user {} in org {} for invitation {}",
                         existing.getId(), existing.getOrganizationId(), invitation.getId());
             }
@@ -477,7 +489,18 @@ public class InvitationService {
     }
 
     private static UUID parseUuid(String value) {
-        return value != null && !value.isBlank() ? UUID.fromString(value) : null;
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        if (trimmed.isEmpty() || trimmed.equalsIgnoreCase("null") || trimmed.equalsIgnoreCase("undefined")) {
+            return null;
+        }
+        try {
+            return UUID.fromString(trimmed);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Invalid UUID format: " + value);
+        }
     }
 
     private static String blankToNull(String value) {
