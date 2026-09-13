@@ -22,6 +22,9 @@ public class InvitationResponse {
     @JsonProperty("organization_id")
     private UUID organizationId;
 
+    @JsonProperty("organization_name")
+    private String organizationName;
+
     private String email;
 
     private String role;
@@ -64,16 +67,41 @@ public class InvitationResponse {
     @JsonProperty("invited_by_name")
     private String invitedByName;
 
+    @JsonProperty("team_name")
+    private String teamName;
+
+    private String token;
+
+    @JsonProperty("invitation_url")
+    private String invitationUrl;
+
     @JsonProperty("created_at")
     private Instant createdAt;
 
     public static InvitationResponse fromEntity(UserInvitation invitation, String invitedByName) {
+        return fromEntity(invitation, invitedByName, null, null, null);
+    }
+
+    public static InvitationResponse fromEntity(UserInvitation invitation, String invitedByName, String teamName, String acceptUrlBase) {
+        return fromEntity(invitation, invitedByName, teamName, acceptUrlBase, null);
+    }
+
+    public static InvitationResponse fromEntity(UserInvitation invitation, String invitedByName, String teamName, String acceptUrlBase, String organizationName) {
+        String url = null;
+        String raw = invitation.getRawToken();
+        if (raw != null && acceptUrlBase != null && !acceptUrlBase.isBlank()) {
+            String separator = acceptUrlBase.contains("?") ? "&" : "?";
+            url = acceptUrlBase + separator + "token=" + raw;
+        }
+
         return InvitationResponse.builder()
                 .id(invitation.getId())
                 .organizationId(invitation.getOrganizationId())
+                .organizationName(organizationName)
                 .email(invitation.getEmail())
                 .role(invitation.getRole().name())
                 .teamId(invitation.getTeamId())
+                .teamName(teamName)
                 .displayName(invitation.getDisplayName())
                 .jobTitle(invitation.getJobTitle())
                 .language(invitation.getLanguage())
@@ -87,6 +115,8 @@ public class InvitationResponse {
                 .invitedBy(invitation.getCreatedBy())
                 .invitedByName(invitedByName)
                 .createdAt(invitation.getCreatedAt())
+                .token(raw)
+                .invitationUrl(url)
                 .build();
     }
 }

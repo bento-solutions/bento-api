@@ -15,6 +15,10 @@ import com.bento.crm.invitation.dto.InvitationResponse;
 import com.bento.crm.invitation.model.InvitationStatus;
 import com.bento.crm.invitation.model.UserInvitation;
 import com.bento.crm.invitation.repository.UserInvitationRepository;
+import com.bento.crm.identity.model.Team;
+import com.bento.crm.identity.repository.TeamRepository;
+import com.bento.crm.notification.model.Notification;
+import com.bento.crm.notification.service.NotificationService;
 import com.bento.crm.organization.model.Organization;
 import com.bento.crm.organization.repository.OrganizationRepository;
 import lombok.RequiredArgsConstructor;
@@ -50,6 +54,8 @@ public class InvitationService {
     private final UserInvitationRepository invitationRepository;
     private final AppUserRepository userRepository;
     private final OrganizationRepository organizationRepository;
+    private final TeamRepository teamRepository;
+    private final NotificationService notificationService;
     private final EmailService emailService;
     private final InvitationProperties properties;
     private final PasswordEncoder passwordEncoder;
@@ -81,6 +87,7 @@ public class InvitationService {
                 .jobTitle(blankToNull(request.getJobTitle()))
                 .language(request.getLanguage() != null ? request.getLanguage() : "en")
                 .tokenHash(hashToken(token))
+                .rawToken(token)
                 .status(InvitationStatus.PENDING)
                 .expiresAt(Instant.now().plus(properties.getExpiryDays(), ChronoUnit.DAYS))
                 .sendCount(1)
@@ -90,6 +97,7 @@ public class InvitationService {
 
         invitation = invitationRepository.save(invitation);
         dispatchInvitationEmail(invitation, token);
+        notifyExistingUsersIfAny(invitation);
 
         log.info("Invitation {} created for {} in organization {}", invitation.getId(), email, orgId);
         return toResponse(invitation);
@@ -119,12 +127,14 @@ public class InvitationService {
 
         String token = generateToken();
         invitation.setTokenHash(hashToken(token));
+        invitation.setRawToken(token);
         invitation.setExpiresAt(Instant.now().plus(properties.getExpiryDays(), ChronoUnit.DAYS));
         invitation.setLastSentAt(Instant.now());
         invitation.setSendCount(invitation.getSendCount() + 1);
 
         invitation = invitationRepository.save(invitation);
         dispatchInvitationEmail(invitation, token);
+        notifyExistingUsersIfAny(invitation);
 
         log.info("Invitation {} resent to {}", invitation.getId(), invitation.getEmail());
         return toResponse(invitation);
@@ -142,6 +152,7 @@ public class InvitationService {
 
         invitation.setStatus(InvitationStatus.REVOKED);
         invitation.setRevokedAt(Instant.now());
+        invitation.setRawToken(null);
         // Clearing the hash makes the outstanding link unusable immediately; a random value
         // rather than null keeps the NOT NULL/UNIQUE constraints satisfiable for later rows.
         invitation.setTokenHash(hashToken(generateToken()));
@@ -185,10 +196,17 @@ public class InvitationService {
         Organization organization = organizationRepository.findById(invitation.getOrganizationId())
                 .orElseThrow(() -> new ResourceNotFoundException("Organization not found"));
 
+        String teamName = invitation.getTeamId() != null
+                ? teamRepository.findById(invitation.getTeamId()).map(Team::getName).orElse(null)
+                : null;
+
         return InvitationPreviewResponse.builder()
+                .id(invitation.getId())
                 .email(invitation.getEmail())
                 .organizationName(organization.getName())
                 .role(invitation.getRole().name())
+                .teamId(invitation.getTeamId())
+                .teamName(teamName)
                 .displayName(invitation.getDisplayName())
                 .jobTitle(invitation.getJobTitle())
                 .invitedByName(inviterName(invitation).orElse(null))
@@ -231,6 +249,7 @@ public class InvitationService {
         invitation.setStatus(InvitationStatus.ACCEPTED);
         invitation.setAcceptedAt(Instant.now());
         invitation.setAcceptedUserId(user.getId());
+        invitation.setRawToken(null);
         invitationRepository.save(invitation);
 
         log.info("Invitation {} accepted -- user {} created in organization {}",
@@ -239,7 +258,127 @@ public class InvitationService {
         return authService.issueSession(user);
     }
 
+    /**
+     * Accepts an invitation on behalf of an already logged-in user.
+     * Reuses their existing password credentials and links them directly to the new organization.
+     */
+    @Transactional
+    public LoginResponse acceptForLoggedInUser(UUID invitationId, UUID currentUserId) {
+        UserInvitation invitation = invitationRepository.findByIdAcrossOrganizations(invitationId)
+                .orElseThrow(() -> new ResourceNotFoundException("This invitation is not valid or has expired"));
+
+        if (invitation.getStatus() != InvitationStatus.PENDING || invitation.isExpired()) {
+            throw new IllegalStateException("This invitation is not valid or has expired");
+        }
+
+        AppUser currentUser = userRepository.findById(currentUserId)
+                .orElseThrow(() -> new ResourceNotFoundException("Current user not found"));
+
+        if (!invitation.getEmail().equalsIgnoreCase(currentUser.getEmail())) {
+            throw new IllegalStateException("This invitation was sent to a different email address");
+        }
+
+        UUID targetOrgId = invitation.getOrganizationId();
+
+        Optional<AppUser> existingInTarget = userRepository.findByOrganizationIdAndEmail(targetOrgId, currentUser.getEmail());
+        AppUser targetUser;
+        if (existingInTarget.isPresent()) {
+            targetUser = existingInTarget.get();
+            targetUser.setRole(invitation.getRole());
+            targetUser.setTeamId(invitation.getTeamId());
+            if (invitation.getJobTitle() != null) {
+                targetUser.setJobTitle(invitation.getJobTitle());
+            }
+            targetUser.setIsActive(true);
+            targetUser = userRepository.save(targetUser);
+        } else {
+            String displayName = currentUser.getDisplayName() != null ? currentUser.getDisplayName() : invitation.getDisplayName();
+            if (displayName == null || displayName.isBlank()) {
+                displayName = currentUser.getEmail().split("@")[0];
+            }
+            targetUser = AppUser.builder()
+                    .email(currentUser.getEmail())
+                    .passwordHash(currentUser.getPasswordHash())
+                    .displayName(displayName)
+                    .initials(deriveInitials(displayName))
+                    .role(invitation.getRole())
+                    .teamId(invitation.getTeamId())
+                    .jobTitle(invitation.getJobTitle() != null ? invitation.getJobTitle() : currentUser.getJobTitle())
+                    .phone(currentUser.getPhone())
+                    .language(currentUser.getLanguage() != null ? currentUser.getLanguage() : invitation.getLanguage())
+                    .isActive(true)
+                    .build();
+            targetUser.setOrganizationId(targetOrgId);
+            targetUser = userRepository.save(targetUser);
+        }
+
+        invitation.setStatus(InvitationStatus.ACCEPTED);
+        invitation.setAcceptedAt(Instant.now());
+        invitation.setAcceptedUserId(targetUser.getId());
+        invitation.setRawToken(null);
+        invitationRepository.save(invitation);
+
+        log.info("Invitation {} accepted by logged-in user {} -- joined organization {}",
+                invitation.getId(), currentUser.getId(), targetOrgId);
+
+        return authService.issueSession(targetUser);
+    }
+
+    public List<InvitationResponse> listPendingForUser(UUID currentUserId) {
+        AppUser user = userRepository.findById(currentUserId)
+                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
+        return invitationRepository.findPendingByEmailAcrossOrganizations(user.getEmail()).stream()
+                .map(this::toResponse)
+                .toList();
+    }
+
     // ------------------------------------------------------------------ helpers
+
+    /**
+     * Checks if the invited email already belongs to one or more AppUsers across any tenant.
+     * If so, generates an in-app notification for each existing user account.
+     */
+    private void notifyExistingUsersIfAny(UserInvitation invitation) {
+        try {
+            List<AppUser> existingUsers = userRepository.findAllByEmailAcrossOrganizations(invitation.getEmail());
+            if (existingUsers.isEmpty()) {
+                return;
+            }
+
+            String organizationName = organizationRepository.findById(invitation.getOrganizationId())
+                    .map(Organization::getName)
+                    .orElse("an organization");
+
+            String teamName = invitation.getTeamId() != null
+                    ? teamRepository.findById(invitation.getTeamId()).map(Team::getName).orElse(null)
+                    : null;
+
+            String teamSuffix = teamName != null ? " in team " + teamName : "";
+            String message = String.format("You have been invited to join %s as %s%s. Click to view and accept the invitation.",
+                    organizationName, roleLabel(invitation.getRole()), teamSuffix);
+
+            for (AppUser existing : existingUsers) {
+                // Do not notify inside the same organization where the invitation is being created
+                if (invitation.getOrganizationId().equals(existing.getOrganizationId())) {
+                    continue;
+                }
+                Notification notification = Notification.builder()
+                        .recipientUserId(existing.getId())
+                        .type(Notification.NotificationType.INVITATION)
+                        .title("Invitation to join " + organizationName)
+                        .message(message)
+                        .relatedEntityType("INVITATION")
+                        .relatedEntityId(invitation.getId())
+                        .isRead(false)
+                        .build();
+                notificationService.createForOrganization(existing.getOrganizationId(), notification);
+                log.info("Dispatched in-app invitation notification to user {} in org {} for invitation {}",
+                        existing.getId(), existing.getOrganizationId(), invitation.getId());
+            }
+        } catch (Exception e) {
+            log.warn("Failed to dispatch in-app notification for invitation {}: {}", invitation.getId(), e.getMessage());
+        }
+    }
 
     /**
      * Every rejection reports the same message. Distinguishing "no such token" from "revoked"
@@ -263,6 +402,10 @@ public class InvitationService {
         String separator = properties.getAcceptUrl().contains("?") ? "&" : "?";
         String acceptUrl = properties.getAcceptUrl() + separator + "token=" + token;
 
+        String teamName = invitation.getTeamId() != null
+                ? teamRepository.findById(invitation.getTeamId()).map(Team::getName).orElse(null)
+                : null;
+
         emailService.sendHtml(
                 invitation.getEmail(),
                 "You have been invited to join " + organizationName,
@@ -271,7 +414,7 @@ public class InvitationService {
                         "appName", "Bento CRM",
                         "organizationName", organizationName,
                         "inviterName", inviterName(invitation).orElse("An administrator"),
-                        "roleLabel", roleLabel(invitation.getRole()),
+                        "roleLabel", roleLabel(invitation.getRole()) + (teamName != null ? " (" + teamName + ")" : ""),
                         "acceptUrl", acceptUrl,
                         "email", invitation.getEmail(),
                         "expiresAt", EXPIRY_FORMAT.format(invitation.getExpiresAt())
@@ -286,7 +429,13 @@ public class InvitationService {
     }
 
     private InvitationResponse toResponse(UserInvitation invitation) {
-        return InvitationResponse.fromEntity(invitation, inviterName(invitation).orElse(null));
+        String teamName = invitation.getTeamId() != null
+                ? teamRepository.findById(invitation.getTeamId()).map(Team::getName).orElse(null)
+                : null;
+        String orgName = organizationRepository.findById(invitation.getOrganizationId())
+                .map(Organization::getName)
+                .orElse(null);
+        return InvitationResponse.fromEntity(invitation, inviterName(invitation).orElse(null), teamName, properties.getAcceptUrl(), orgName);
     }
 
     private static String roleLabel(UserRole role) {

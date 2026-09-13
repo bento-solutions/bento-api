@@ -19,6 +19,8 @@ import java.time.Instant;
 @Builder
 public class InvitationPreviewResponse {
 
+    private java.util.UUID id;
+
     private String email;
 
     @JsonProperty("organization_name")
@@ -35,6 +37,12 @@ public class InvitationPreviewResponse {
 
     @JsonProperty("invited_by_name")
     private String invitedByName;
+
+    @JsonProperty("team_id")
+    private java.util.UUID teamId;
+
+    @JsonProperty("team_name")
+    private String teamName;
 
     @JsonProperty("expires_at")
     private Instant expiresAt;

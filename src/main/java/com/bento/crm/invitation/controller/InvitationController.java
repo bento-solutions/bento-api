@@ -62,4 +62,18 @@ public class InvitationController {
     public ResponseEntity<InvitationResponse> revoke(@PathVariable UUID id) {
         return ResponseEntity.ok(invitationService.revoke(id));
     }
+
+    @GetMapping("/my-pending")
+    @Operation(summary = "List my pending invitations", description = "Pending invitations addressed to the current logged-in user")
+    public ResponseEntity<List<InvitationResponse>> myPending() {
+        UUID currentUserId = UUID.fromString((String) org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication().getPrincipal());
+        return ResponseEntity.ok(invitationService.listPendingForUser(currentUserId));
+    }
+
+    @PostMapping("/{id}/accept-logged-in")
+    @Operation(summary = "Accept invitation as logged-in user", description = "Accept an invitation and switch to the target organization without re-entering password")
+    public ResponseEntity<com.bento.crm.auth.dto.LoginResponse> acceptLoggedIn(@PathVariable UUID id) {
+        UUID currentUserId = UUID.fromString((String) org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication().getPrincipal());
+        return ResponseEntity.ok(invitationService.acceptForLoggedInUser(id, currentUserId));
+    }
 }

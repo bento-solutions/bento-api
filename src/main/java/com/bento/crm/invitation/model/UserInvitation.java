@@ -44,9 +44,13 @@ public class UserInvitation extends BaseTenantEntity {
     @Column(nullable = false, length = 5)
     private String language;
 
-    /** SHA-256 of the token that went out in the email; the plaintext is never stored. */
+    /** SHA-256 of the token that went out in the email. */
     @Column(nullable = false, unique = true, length = 64)
     private String tokenHash;
+
+    /** The plaintext token kept while pending so an admin can copy and share the link manually. */
+    @Column(length = 255)
+    private String rawToken;
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)

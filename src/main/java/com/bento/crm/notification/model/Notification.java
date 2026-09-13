@@ -40,6 +40,8 @@ public class Notification extends BaseTenantEntity {
     public enum NotificationType {
         DEAL, LEAD, TASK, TICKET, SYSTEM, MENTION,
         /** A contact replied to a WhatsApp campaign message. */
-        WHATSAPP
+        WHATSAPP,
+        /** An invitation to join an organization or team. */
+        INVITATION
     }
 }

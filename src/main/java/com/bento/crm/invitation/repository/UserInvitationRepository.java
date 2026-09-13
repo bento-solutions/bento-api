@@ -33,4 +33,10 @@ public interface UserInvitationRepository extends JpaRepository<UserInvitation, 
     Optional<UserInvitation> findByOrganizationIdAndEmailAndStatus(@Param("organizationId") UUID organizationId,
                                                                    @Param("email") String email,
                                                                    @Param("status") InvitationStatus status);
+
+    @Query(value = "SELECT * FROM user_invitation WHERE lower(email) = lower(:email) AND status = 'PENDING' AND expires_at > CURRENT_TIMESTAMP ORDER BY created_at DESC", nativeQuery = true)
+    List<UserInvitation> findPendingByEmailAcrossOrganizations(@Param("email") String email);
+
+    @Query(value = "SELECT * FROM user_invitation WHERE id = :id", nativeQuery = true)
+    Optional<UserInvitation> findByIdAcrossOrganizations(@Param("id") UUID id);
 }

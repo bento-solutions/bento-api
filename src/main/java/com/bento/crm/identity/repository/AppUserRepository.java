@@ -29,7 +29,7 @@ public interface AppUserRepository extends JpaRepository<AppUser, UUID> {
      * more caller of a generic finder: it is the only query in the application that is allowed to
      * cross tenants, and it must stay easy to spot in review.
      */
-    @Query("SELECT u FROM AppUser u WHERE lower(u.email) = lower(:email) ORDER BY u.createdAt")
+    @Query(value = "SELECT * FROM app_user u WHERE lower(u.email) = lower(:email) ORDER BY u.created_at", nativeQuery = true)
     List<AppUser> findAllByEmailAcrossOrganizations(@Param("email") String email);
 
     @Query("SELECT u FROM AppUser u WHERE u.organizationId = :organizationId AND u.isActive = true")
