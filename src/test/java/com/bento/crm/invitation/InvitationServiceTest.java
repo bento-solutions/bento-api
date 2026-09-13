@@ -20,6 +20,9 @@ import com.bento.crm.notification.model.Notification;
 import com.bento.crm.notification.service.NotificationService;
 import com.bento.crm.organization.model.Organization;
 import com.bento.crm.organization.repository.OrganizationRepository;
+import jakarta.persistence.EntityManager;
+import org.hibernate.Filter;
+import org.hibernate.Session;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,6 +40,7 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
@@ -62,6 +66,10 @@ class InvitationServiceTest {
     private PasswordEncoder passwordEncoder;
     @Mock
     private AuthService authService;
+    @Mock
+    private EntityManager entityManager;
+    @Mock
+    private Session session;
 
     @InjectMocks
     private InvitationService invitationService;
@@ -74,6 +82,8 @@ class InvitationServiceTest {
         TenantContext.setCurrentOrganizationId(currentOrgId);
         lenient().when(properties.getExpiryDays()).thenReturn(7);
         lenient().when(properties.getAcceptUrl()).thenReturn("http://localhost:3000/invite/accept");
+        lenient().when(entityManager.unwrap(Session.class)).thenReturn(session);
+        lenient().when(session.enableFilter(anyString())).thenReturn(mock(Filter.class));
     }
 
     @AfterEach
@@ -176,7 +186,7 @@ class InvitationServiceTest {
         currentUser.setOrganizationId(UUID.randomUUID());
 
         when(userRepository.findById(currentUserId)).thenReturn(Optional.of(currentUser));
-        when(userRepository.findByOrganizationIdAndEmail(targetOrgId, email)).thenReturn(Optional.empty());
+        when(userRepository.findByOrganizationIdAndEmailAcrossOrganizations(targetOrgId, email)).thenReturn(Optional.empty());
 
         when(userRepository.save(any(AppUser.class))).thenAnswer(invocationOnMock -> {
             AppUser u = invocationOnMock.getArgument(0);

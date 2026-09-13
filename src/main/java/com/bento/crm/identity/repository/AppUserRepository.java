@@ -18,6 +18,10 @@ public interface AppUserRepository extends JpaRepository<AppUser, UUID> {
     @Query("SELECT u FROM AppUser u WHERE u.organizationId = :organizationId AND lower(u.email) = lower(:email)")
     Optional<AppUser> findByOrganizationIdAndEmail(@Param("organizationId") UUID organizationId, @Param("email") String email);
 
+    @Query(value = "SELECT * FROM app_user u WHERE u.organization_id = :organizationId AND lower(u.email) = lower(:email)", nativeQuery = true)
+    Optional<AppUser> findByOrganizationIdAndEmailAcrossOrganizations(@Param("organizationId") UUID organizationId, @Param("email") String email);
+
+
     /**
      * Cross-tenant lookup by email, used only by the login and signup paths.
      *

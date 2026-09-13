@@ -23,6 +23,8 @@ import com.bento.crm.organization.model.Organization;
 import com.bento.crm.organization.repository.OrganizationRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import jakarta.persistence.EntityManager;
+import org.hibernate.Session;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -60,6 +62,7 @@ public class InvitationService {
     private final InvitationProperties properties;
     private final PasswordEncoder passwordEncoder;
     private final AuthService authService;
+    private final EntityManager entityManager;
 
     // ---------------------------------------------------------------- admin side
 
@@ -292,49 +295,76 @@ public class InvitationService {
         }
 
         UUID targetOrgId = invitation.getOrganizationId();
+        UUID originalTenant = TenantContext.currentOrganizationIdOrNull();
 
-        Optional<AppUser> existingInTarget = userRepository.findByOrganizationIdAndEmail(targetOrgId, currentUser.getEmail());
-        AppUser targetUser;
-        if (existingInTarget.isPresent()) {
-            targetUser = existingInTarget.get();
-            targetUser.setRole(invitation.getRole());
-            targetUser.setTeamId(invitation.getTeamId());
-            if (invitation.getJobTitle() != null) {
-                targetUser.setJobTitle(invitation.getJobTitle());
+        try {
+            TenantContext.setCurrentOrganizationId(targetOrgId);
+            updateHibernateTenantFilter(targetOrgId);
+
+            Optional<AppUser> existingInTarget = userRepository.findByOrganizationIdAndEmailAcrossOrganizations(targetOrgId, currentUser.getEmail());
+            AppUser targetUser;
+            if (existingInTarget.isPresent()) {
+                targetUser = existingInTarget.get();
+                targetUser.setRole(invitation.getRole());
+                targetUser.setTeamId(invitation.getTeamId());
+                if (invitation.getJobTitle() != null) {
+                    targetUser.setJobTitle(invitation.getJobTitle());
+                }
+                targetUser.setIsActive(true);
+                targetUser = userRepository.save(targetUser);
+            } else {
+                String displayName = currentUser.getDisplayName() != null ? currentUser.getDisplayName() : invitation.getDisplayName();
+                if (displayName == null || displayName.isBlank()) {
+                    displayName = currentUser.getEmail().split("@")[0];
+                }
+                targetUser = AppUser.builder()
+                        .email(currentUser.getEmail())
+                        .passwordHash(currentUser.getPasswordHash())
+                        .displayName(displayName)
+                        .initials(deriveInitials(displayName))
+                        .role(invitation.getRole())
+                        .teamId(invitation.getTeamId())
+                        .jobTitle(invitation.getJobTitle() != null ? invitation.getJobTitle() : currentUser.getJobTitle())
+                        .phone(currentUser.getPhone())
+                        .language(currentUser.getLanguage() != null ? currentUser.getLanguage() : invitation.getLanguage())
+                        .isActive(true)
+                        .build();
+                targetUser.setOrganizationId(targetOrgId);
+                targetUser = userRepository.save(targetUser);
             }
-            targetUser.setIsActive(true);
-            targetUser = userRepository.save(targetUser);
-        } else {
-            String displayName = currentUser.getDisplayName() != null ? currentUser.getDisplayName() : invitation.getDisplayName();
-            if (displayName == null || displayName.isBlank()) {
-                displayName = currentUser.getEmail().split("@")[0];
+
+            invitation.setStatus(InvitationStatus.ACCEPTED);
+            invitation.setAcceptedAt(Instant.now());
+            invitation.setAcceptedUserId(targetUser.getId());
+            invitation.setRawToken(null);
+            invitationRepository.save(invitation);
+
+            entityManager.flush();
+
+            log.info("Invitation {} accepted by logged-in user {} -- joined organization {}",
+                    invitation.getId(), currentUser.getId(), targetOrgId);
+
+            return authService.issueSession(targetUser);
+        } finally {
+            if (originalTenant != null) {
+                TenantContext.setCurrentOrganizationId(originalTenant);
+                updateHibernateTenantFilter(originalTenant);
+            } else {
+                TenantContext.clear();
             }
-            targetUser = AppUser.builder()
-                    .email(currentUser.getEmail())
-                    .passwordHash(currentUser.getPasswordHash())
-                    .displayName(displayName)
-                    .initials(deriveInitials(displayName))
-                    .role(invitation.getRole())
-                    .teamId(invitation.getTeamId())
-                    .jobTitle(invitation.getJobTitle() != null ? invitation.getJobTitle() : currentUser.getJobTitle())
-                    .phone(currentUser.getPhone())
-                    .language(currentUser.getLanguage() != null ? currentUser.getLanguage() : invitation.getLanguage())
-                    .isActive(true)
-                    .build();
-            targetUser.setOrganizationId(targetOrgId);
-            targetUser = userRepository.save(targetUser);
         }
+    }
 
-        invitation.setStatus(InvitationStatus.ACCEPTED);
-        invitation.setAcceptedAt(Instant.now());
-        invitation.setAcceptedUserId(targetUser.getId());
-        invitation.setRawToken(null);
-        invitationRepository.save(invitation);
-
-        log.info("Invitation {} accepted by logged-in user {} -- joined organization {}",
-                invitation.getId(), currentUser.getId(), targetOrgId);
-
-        return authService.issueSession(targetUser);
+    private void updateHibernateTenantFilter(UUID orgId) {
+        try {
+            Session session = entityManager.unwrap(Session.class);
+            if (orgId != null) {
+                session.enableFilter("organizationFilter").setParameter("organizationId", orgId);
+            } else {
+                session.disableFilter("organizationFilter");
+            }
+        } catch (Exception ignored) {
+        }
     }
 
     public List<InvitationResponse> listPendingForUser(UUID currentUserId) {
