@@ -187,6 +187,7 @@ class InvitationServiceTest {
 
         when(userRepository.findById(currentUserId)).thenReturn(Optional.of(currentUser));
         when(userRepository.findByOrganizationIdAndEmailAcrossOrganizations(targetOrgId, email)).thenReturn(Optional.empty());
+        when(teamRepository.findByOrganizationIdAndId(targetOrgId, teamId)).thenReturn(Optional.of(Team.builder().build()));
 
         when(userRepository.save(any(AppUser.class))).thenAnswer(invocationOnMock -> {
             AppUser u = invocationOnMock.getArgument(0);

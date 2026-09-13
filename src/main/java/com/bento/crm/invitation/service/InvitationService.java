@@ -294,65 +294,71 @@ public class InvitationService {
             throw new IllegalStateException("This invitation was sent to a different email address");
         }
 
-        UUID targetOrgId = invitation.getOrganizationId();
-        UUID originalTenant = TenantContext.currentOrganizationIdOrNull();
+        // Extract needed fields and detach currentUser from Hibernate session
+        String email = currentUser.getEmail();
+        String passwordHash = currentUser.getPasswordHash();
+        String displayName = currentUser.getDisplayName() != null ? currentUser.getDisplayName() : invitation.getDisplayName();
+        if (displayName == null || displayName.isBlank()) {
+            displayName = email.split("@")[0];
+        }
+        String jobTitle = invitation.getJobTitle() != null ? invitation.getJobTitle() : currentUser.getJobTitle();
+        String phone = currentUser.getPhone();
+        String language = currentUser.getLanguage() != null ? currentUser.getLanguage() : invitation.getLanguage();
 
         try {
-            TenantContext.setCurrentOrganizationId(targetOrgId);
-            updateHibernateTenantFilter(targetOrgId);
-
-            Optional<AppUser> existingInTarget = userRepository.findByOrganizationIdAndEmailAcrossOrganizations(targetOrgId, currentUser.getEmail());
-            AppUser targetUser;
-            if (existingInTarget.isPresent()) {
-                targetUser = existingInTarget.get();
-                targetUser.setRole(invitation.getRole());
-                targetUser.setTeamId(invitation.getTeamId());
-                if (invitation.getJobTitle() != null) {
-                    targetUser.setJobTitle(invitation.getJobTitle());
-                }
-                targetUser.setIsActive(true);
-                targetUser = userRepository.save(targetUser);
-            } else {
-                String displayName = currentUser.getDisplayName() != null ? currentUser.getDisplayName() : invitation.getDisplayName();
-                if (displayName == null || displayName.isBlank()) {
-                    displayName = currentUser.getEmail().split("@")[0];
-                }
-                targetUser = AppUser.builder()
-                        .email(currentUser.getEmail())
-                        .passwordHash(currentUser.getPasswordHash())
-                        .displayName(displayName)
-                        .initials(deriveInitials(displayName))
-                        .role(invitation.getRole())
-                        .teamId(invitation.getTeamId())
-                        .jobTitle(invitation.getJobTitle() != null ? invitation.getJobTitle() : currentUser.getJobTitle())
-                        .phone(currentUser.getPhone())
-                        .language(currentUser.getLanguage() != null ? currentUser.getLanguage() : invitation.getLanguage())
-                        .isActive(true)
-                        .build();
-                targetUser.setOrganizationId(targetOrgId);
-                targetUser = userRepository.save(targetUser);
-            }
-
-            invitation.setStatus(InvitationStatus.ACCEPTED);
-            invitation.setAcceptedAt(Instant.now());
-            invitation.setAcceptedUserId(targetUser.getId());
-            invitation.setRawToken(null);
-            invitationRepository.save(invitation);
-
-            entityManager.flush();
-
-            log.info("Invitation {} accepted by logged-in user {} -- joined organization {}",
-                    invitation.getId(), currentUser.getId(), targetOrgId);
-
-            return authService.issueSession(targetUser);
-        } finally {
-            if (originalTenant != null) {
-                TenantContext.setCurrentOrganizationId(originalTenant);
-                updateHibernateTenantFilter(originalTenant);
-            } else {
-                TenantContext.clear();
-            }
+            entityManager.detach(currentUser);
+        } catch (Exception ignored) {
         }
+
+        UUID targetOrgId = invitation.getOrganizationId();
+
+        // Switch to the target tenant context for the rest of this request and commit
+        TenantContext.setCurrentOrganizationId(targetOrgId);
+        updateHibernateTenantFilter(targetOrgId);
+
+        UUID assignedTeamId = invitation.getTeamId();
+        if (assignedTeamId != null && teamRepository.findByOrganizationIdAndId(targetOrgId, assignedTeamId).isEmpty()) {
+            assignedTeamId = null;
+        }
+
+        Optional<AppUser> existingInTarget = userRepository.findByOrganizationIdAndEmailAcrossOrganizations(targetOrgId, email);
+        AppUser targetUser;
+        if (existingInTarget.isPresent()) {
+            targetUser = existingInTarget.get();
+            targetUser.setRole(invitation.getRole());
+            targetUser.setTeamId(assignedTeamId);
+            if (invitation.getJobTitle() != null) {
+                targetUser.setJobTitle(invitation.getJobTitle());
+            }
+            targetUser.setIsActive(true);
+            targetUser = userRepository.save(targetUser);
+        } else {
+            targetUser = AppUser.builder()
+                    .email(email)
+                    .passwordHash(passwordHash)
+                    .displayName(displayName)
+                    .initials(deriveInitials(displayName))
+                    .role(invitation.getRole())
+                    .teamId(assignedTeamId)
+                    .jobTitle(jobTitle)
+                    .phone(phone)
+                    .language(language)
+                    .isActive(true)
+                    .build();
+            targetUser.setOrganizationId(targetOrgId);
+            targetUser = userRepository.save(targetUser);
+        }
+
+        invitation.setStatus(InvitationStatus.ACCEPTED);
+        invitation.setAcceptedAt(Instant.now());
+        invitation.setAcceptedUserId(targetUser.getId());
+        invitation.setRawToken(null);
+        invitationRepository.save(invitation);
+
+        log.info("Invitation {} accepted by logged-in user {} -- joined organization {}",
+                invitation.getId(), currentUserId, targetOrgId);
+
+        return authService.issueSession(targetUser);
     }
 
     private void updateHibernateTenantFilter(UUID orgId) {
