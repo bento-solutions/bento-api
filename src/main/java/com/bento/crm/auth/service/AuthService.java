@@ -109,6 +109,7 @@ public class AuthService {
                                 .organizationId(u.getOrganizationId())
                                 .organizationName(orgName)
                                 .role(u.getRole() != null ? u.getRole().name() : null)
+                                .joinedAt(u.getCreatedAt())
                                 .lastActiveAt(u.getLastActiveAt())
                                 .build();
                     })
@@ -126,6 +127,23 @@ public class AuthService {
         }
 
         AppUser user = activeMatched.get(0);
+
+        // A user can only belong to one organization. If an organization was explicitly selected,
+        // leave all other organizations so the user strictly belongs to this single chosen organization.
+        if (organizationId != null) {
+            List<AppUser> otherAccounts = userRepository.findAllByEmailAcrossOrganizations(normalizeEmail(email)).stream()
+                    .filter(u -> !organizationId.equals(u.getOrganizationId()))
+                    .filter(u -> Boolean.TRUE.equals(u.getIsActive()))
+                    .toList();
+            for (AppUser other : otherAccounts) {
+                other.setIsActive(false);
+                userRepository.save(other);
+                refreshTokenRepository.revokeAllForUser(other.getId(), Instant.now());
+                log.info("User {} left organization {} upon choosing organization {}",
+                        other.getId(), other.getOrganizationId(), organizationId);
+            }
+        }
+
         return issueSession(user);
     }
 

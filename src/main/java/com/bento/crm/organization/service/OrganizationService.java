@@ -12,8 +12,11 @@ import com.bento.crm.organization.repository.OrganizationRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.crypto.password.PasswordEncoder;
+import com.bento.crm.file.model.StoredFile;
+import com.bento.crm.file.service.FileStorageService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.util.UUID;
 
@@ -25,6 +28,7 @@ public class OrganizationService {
     private final OrganizationRepository organizationRepository;
     private final AppUserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
+    private final FileStorageService fileStorageService;
 
     @Transactional
     public Organization createOrganization(CreateOrganizationRequest request) {
@@ -77,9 +81,15 @@ public class OrganizationService {
     public Organization updateCurrentOrganization(UpdateOrganizationRequest request) {
         Organization organization = getCurrentOrganization();
 
-        organization.setName(request.getName());
-        organization.setIndustry(request.getIndustry());
-        organization.setLogoUrl(request.getLogoUrl());
+        if (request.getName() != null && !request.getName().isBlank()) {
+            organization.setName(request.getName());
+        }
+        if (request.getIndustry() != null) {
+            organization.setIndustry(request.getIndustry());
+        }
+        if (request.getLogoUrl() != null) {
+            organization.setLogoUrl(request.getLogoUrl().isBlank() ? null : request.getLogoUrl());
+        }
         if (request.getTimezone() != null) {
             organization.setTimezone(request.getTimezone());
         }
@@ -92,6 +102,16 @@ public class OrganizationService {
 
         organization = organizationRepository.save(organization);
         log.info("Organization updated: {}", organization.getId());
+        return organization;
+    }
+
+    @Transactional
+    public Organization uploadLogo(MultipartFile file) {
+        Organization organization = getCurrentOrganization();
+        StoredFile storedFile = fileStorageService.store(file, "ORGANIZATION", organization.getId());
+        organization.setLogoUrl("/api/v1/files/public/" + storedFile.getId());
+        organization = organizationRepository.save(organization);
+        log.info("Organization {} logo uploaded: {}", organization.getId(), storedFile.getId());
         return organization;
     }
 }

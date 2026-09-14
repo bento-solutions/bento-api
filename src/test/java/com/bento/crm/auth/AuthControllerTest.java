@@ -11,6 +11,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 class AuthControllerTest extends IntegrationTestBase {
 
+    @org.springframework.beans.factory.annotation.Autowired
+    private com.bento.crm.identity.repository.AppUserRepository appUserRepository;
+
     @Test
     void login_withValidCredentials_returnsTokensAndSnakeCaseUser() throws Exception {
         String uniqueSuffix = System.nanoTime() + "";
@@ -219,7 +222,23 @@ class AuthControllerTest extends IntegrationTestBase {
                                 """.formatted(rawToken, sharedPassword)))
                 .andExpect(status().isOk());
 
-        // 5. Login with userEmail and sharedPassword without organization_id -> returns 409 Conflict with organizations
+        // Accepting an invitation deactivates the old organization account (single-org rule)
+        // So logging in now logs directly into the newly joined organization (Org 2)
+        mockMvc.perform(post("/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"email": "%s", "password": "%s"}
+                                """.formatted(userEmail, sharedPassword)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.access_token").isNotEmpty());
+
+        // 5. To verify legacy/multi-org choice flow: reactivate both accounts
+        appUserRepository.findAllByEmailAcrossOrganizations(userEmail).forEach(u -> {
+            u.setIsActive(true);
+            appUserRepository.save(u);
+        });
+
+        // Login with userEmail and sharedPassword without organization_id -> returns 409 Conflict with organizations and joined_at
         String multiOrgResponse = mockMvc.perform(post("/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
@@ -228,11 +247,12 @@ class AuthControllerTest extends IntegrationTestBase {
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.organizations").isArray())
                 .andExpect(jsonPath("$.organizations.length()").value(2))
+                .andExpect(jsonPath("$.organizations[0].joined_at").isNotEmpty())
                 .andReturn().getResponse().getContentAsString();
 
         String org1Id = objectMapper.readTree(multiOrgResponse).get("organizations").get(0).get("organization_id").asText();
 
-        // 6. Login specifying organization_id succeeds
+        // 6. Login specifying organization_id succeeds and deactivates the other organization
         mockMvc.perform(post("/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
@@ -242,6 +262,15 @@ class AuthControllerTest extends IntegrationTestBase {
                                   "organization_id": "%s"
                                 }
                                 """.formatted(userEmail, sharedPassword, org1Id)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.access_token").isNotEmpty());
+
+        // 7. Verify subsequent login without organization_id succeeds directly because other org was left
+        mockMvc.perform(post("/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"email": "%s", "password": "%s"}
+                                """.formatted(userEmail, sharedPassword)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.access_token").isNotEmpty());
     }

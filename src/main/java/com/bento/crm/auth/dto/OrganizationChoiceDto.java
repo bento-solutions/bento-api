@@ -24,6 +24,9 @@ public class OrganizationChoiceDto {
     @JsonProperty("role")
     private String role;
 
+    @JsonProperty("joined_at")
+    private Instant joinedAt;
+
     @JsonProperty("last_active_at")
     private Instant lastActiveAt;
 }

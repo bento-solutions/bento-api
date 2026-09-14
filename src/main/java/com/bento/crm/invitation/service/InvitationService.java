@@ -16,6 +16,7 @@ import com.bento.crm.invitation.model.InvitationStatus;
 import com.bento.crm.invitation.model.UserInvitation;
 import com.bento.crm.invitation.repository.UserInvitationRepository;
 import com.bento.crm.identity.model.Team;
+import com.bento.crm.identity.repository.RefreshTokenRepository;
 import com.bento.crm.identity.repository.TeamRepository;
 import com.bento.crm.notification.model.Notification;
 import com.bento.crm.notification.service.NotificationService;
@@ -55,6 +56,7 @@ public class InvitationService {
 
     private final UserInvitationRepository invitationRepository;
     private final AppUserRepository userRepository;
+    private final RefreshTokenRepository refreshTokenRepository;
     private final OrganizationRepository organizationRepository;
     private final TeamRepository teamRepository;
     private final NotificationService notificationService;
@@ -262,6 +264,20 @@ public class InvitationService {
         user.setOrganizationId(orgId);
         user = userRepository.save(user);
 
+        // A user can only belong to one organization. When accepting an invitation to join orgId,
+        // leave any other organizations the email was previously registered in.
+        List<AppUser> existingOtherAccounts = userRepository.findAllByEmailAcrossOrganizations(invitation.getEmail().trim().toLowerCase()).stream()
+                .filter(u -> !orgId.equals(u.getOrganizationId()))
+                .filter(u -> Boolean.TRUE.equals(u.getIsActive()))
+                .toList();
+        for (AppUser oldAccount : existingOtherAccounts) {
+            oldAccount.setIsActive(false);
+            userRepository.save(oldAccount);
+            refreshTokenRepository.revokeAllForUser(oldAccount.getId(), Instant.now());
+            log.info("User {} left previous organization {} to accept invitation to organization {}",
+                    oldAccount.getId(), oldAccount.getOrganizationId(), orgId);
+        }
+
         invitation.setStatus(InvitationStatus.ACCEPTED);
         invitation.setAcceptedAt(Instant.now());
         invitation.setAcceptedUserId(user.getId());
@@ -293,6 +309,13 @@ public class InvitationService {
         if (!invitation.getEmail().equalsIgnoreCase(currentUser.getEmail())) {
             throw new IllegalStateException("This invitation was sent to a different email address");
         }
+
+        // A user can only belong to one organization. Deactivate currentUser in previous organization.
+        currentUser.setIsActive(false);
+        userRepository.save(currentUser);
+        refreshTokenRepository.revokeAllForUser(currentUser.getId(), Instant.now());
+        log.info("User {} left previous organization {} to join organization {}",
+                currentUser.getId(), currentUser.getOrganizationId(), invitation.getOrganizationId());
 
         // Extract needed fields and detach currentUser from Hibernate session
         String email = currentUser.getEmail();

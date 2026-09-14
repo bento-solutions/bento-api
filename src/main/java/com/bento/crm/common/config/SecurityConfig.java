@@ -63,6 +63,9 @@ public class SecurityConfig {
                                 // Public invitations
                                 AntPathRequestMatcher.antMatcher("/public/invitations/**"),
                                 AntPathRequestMatcher.antMatcher("/api/v1/public/invitations/**"),
+                                // Public file viewing (e.g. logos)
+                                AntPathRequestMatcher.antMatcher("/files/public/**"),
+                                AntPathRequestMatcher.antMatcher("/api/v1/files/public/**"),
                                 // Actuator health & metrics
                                 AntPathRequestMatcher.antMatcher("/actuator/**"),
                                 AntPathRequestMatcher.antMatcher("/api/v1/actuator/**"),

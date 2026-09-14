@@ -100,4 +100,24 @@ public class FileController {
         fileStorageService.delete(id);
         return ResponseEntity.noContent().build();
     }
+
+    @GetMapping("/public/{id}")
+    @Operation(summary = "View public file inline", description = "Stream public file such as organization logo")
+    public ResponseEntity<Resource> viewPublicFile(@PathVariable UUID id) {
+        StoredFile storedFile = fileStorageService.getMetadata(id);
+        Resource resource = fileStorageService.load(id);
+
+        MediaType mediaType;
+        try {
+            mediaType = MediaType.parseMediaType(storedFile.getContentType());
+        } catch (Exception e) {
+            mediaType = MediaType.APPLICATION_OCTET_STREAM;
+        }
+
+        return ResponseEntity.ok()
+                .contentType(mediaType)
+                .header(HttpHeaders.CONTENT_DISPOSITION, "inline")
+                .header(HttpHeaders.CACHE_CONTROL, "public, max-age=86400")
+                .body(resource);
+    }
 }

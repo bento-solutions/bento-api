@@ -43,4 +43,12 @@ public class OrganizationController {
         Organization organization = organizationService.updateCurrentOrganization(request);
         return ResponseEntity.ok(OrganizationResponse.fromEntity(organization));
     }
+
+    @PostMapping(value = "/me/logo", consumes = org.springframework.http.MediaType.MULTIPART_FORM_DATA_VALUE)
+    @PreAuthorize("hasAuthority('ADMIN_ACCESS')")
+    @Operation(summary = "Upload organization logo", description = "Upload a logo image for the current organization")
+    public ResponseEntity<OrganizationResponse> uploadLogo(@RequestParam("file") org.springframework.web.multipart.MultipartFile file) {
+        Organization organization = organizationService.uploadLogo(file);
+        return ResponseEntity.ok(OrganizationResponse.fromEntity(organization));
+    }
 }

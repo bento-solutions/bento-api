@@ -57,6 +57,8 @@ public class TenantFilterInterceptor extends OncePerRequestFilter {
     );
 
     private static final List<String> PUBLIC_PREFIXES = List.of(
+            "/files/public",
+            "/api/v1/files/public",
             "/actuator",
             "/api/v1/actuator",
             "/swagger-ui",

@@ -54,7 +54,12 @@ if [ -n "${GHCR_LOGIN_TOKEN:-}" ]; then
 fi
 
 export BACKEND_IMAGE_TAG="$IMAGE_TAG"
-dc pull app
+if ! dc pull app; then
+  echo "Pull failed (likely transient containerd layer conflict or corrupted cache). Pruning image cache and retrying..."
+  docker image prune -f || true
+  sleep 3
+  dc pull app
+fi
 
 # Full `up -d` so committed changes to postgres/redis/pgadmin are applied too.
 # Compose only recreates services whose config or image actually changed, so a
