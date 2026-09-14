@@ -11,6 +11,8 @@ import com.bento.crm.whatsapp.repository.WaAccountRepository;
 import com.bento.crm.whatsapp.service.WaConversationService;
 import com.bento.crm.whatsapp.service.WaFollowupService;
 import com.bento.crm.whatsapp.service.WhatsAppSendService;
+import com.bento.crm.common.mail.EmailService;
+import com.bento.crm.partner.repository.PartnerRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.task.TaskExecutor;
@@ -22,7 +24,7 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Turns a set of selected partners into a running WhatsApp campaign.
+ * Turns a set of selected partners into a running WhatsApp or Email campaign.
  *
  * <p>Dispatch happens off the request thread: a campaign of several hundred
  * contacts is several hundred network calls, which must not block the HTTP
@@ -41,6 +43,8 @@ public class CampaignLaunchService {
     private final WhatsAppSendService sendService;
     private final WaFollowupService followupService;
     private final TaskExecutor whatsAppTaskExecutor;
+    private final EmailService emailService;
+    private final PartnerRepository partnerRepository;
 
     /**
      * Creates a WhatsApp campaign from the /marketing composer and enrols the
@@ -86,11 +90,20 @@ public class CampaignLaunchService {
     public Campaign launch(UUID orgId, UUID campaignId) {
         Campaign campaign = requireCampaign(orgId, campaignId);
 
-        if (campaign.getChannel() != Campaign.Channel.WHATSAPP) {
-            throw new IllegalStateException("Only WhatsApp campaigns can be launched through this endpoint");
-        }
         if (campaign.getStatus() == Campaign.Status.SENDING) {
             throw new IllegalStateException("Campaign is already sending");
+        }
+
+        if (campaign.getChannel() == Campaign.Channel.EMAIL) {
+            campaign.setStatus(Campaign.Status.SENDING);
+            campaign.setLaunchedAt(Instant.now());
+            Campaign saved = campaignRepository.save(campaign);
+            whatsAppTaskExecutor.execute(() -> dispatchAllEmail(orgId, campaignId));
+            return saved;
+        }
+
+        if (campaign.getChannel() != Campaign.Channel.WHATSAPP) {
+            throw new IllegalStateException("Only WhatsApp and Email campaigns can be launched through this endpoint");
         }
         if (campaign.getTemplateName() == null || campaign.getTemplateName().isBlank()) {
             throw new IllegalStateException("Campaign has no WhatsApp template selected");
@@ -107,6 +120,61 @@ public class CampaignLaunchService {
         whatsAppTaskExecutor.execute(() -> dispatchAll(orgId, campaignId));
 
         return saved;
+    }
+
+    /**
+     * Sends the Email campaign to every PENDING recipient. Runs off-request.
+     */
+    public void dispatchAllEmail(UUID orgId, UUID campaignId) {
+        try {
+            Campaign campaign = campaignRepository.findByOrganizationIdAndId(orgId, campaignId).orElse(null);
+            if (campaign == null) {
+                return;
+            }
+
+            List<CampaignRecipient> recipients = recipientRepository.findAllByCampaign(orgId, campaignId);
+            long sent = 0;
+
+            for (CampaignRecipient recipient : recipients) {
+                if (recipient.getStatus() != CampaignRecipient.Status.PENDING) {
+                    continue;
+                }
+                String email = recipient.getEmail();
+                if (email == null || email.isBlank() || !email.contains("@")) {
+                    if (recipient.getPartnerId() != null) {
+                        var pOpt = partnerRepository.findByOrganizationIdAndId(orgId, recipient.getPartnerId());
+                        if (pOpt.isPresent()) {
+                            email = pOpt.get().getEmail();
+                        }
+                    }
+                }
+
+                if (email != null && !email.isBlank() && email.contains("@")) {
+                    String subject = campaign.getTitle();
+                    String body = campaign.getBodyPreview() != null && !campaign.getBodyPreview().isBlank()
+                            ? campaign.getBodyPreview()
+                            : campaign.getTitle();
+                    emailService.sendRawHtml(email, subject, "<div style='font-family:sans-serif;line-height:1.6;color:#333;'>" + body + "</div>");
+                    recipient.setStatus(CampaignRecipient.Status.SENT);
+                    recipient.setSentAt(Instant.now());
+                    recipientRepository.save(recipient);
+                    sent++;
+                } else {
+                    recipient.setStatus(CampaignRecipient.Status.FAILED);
+                    recipient.setErrorCode("NO_EMAIL");
+                    recipient.setErrorTitle("Missing or invalid recipient email address");
+                    recipientRepository.save(recipient);
+                }
+            }
+
+            campaign.setSentCount(sent);
+            campaign.setStatus(Campaign.Status.COMPLETED);
+            campaignRepository.save(campaign);
+
+            log.info("[email] campaign {} dispatched: {}/{} sent", campaignId, sent, recipients.size());
+        } catch (Exception e) {
+            log.error("[email] dispatch failed for campaign {}", campaignId, e);
+        }
     }
 
     /**

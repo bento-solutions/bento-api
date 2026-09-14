@@ -54,12 +54,27 @@ public class AutomationRuleService {
         rule.setActions(request.getActions());
         rule.setPriority(request.getPriority());
         rule.setStopOnMatch(request.getStopOnMatch());
-        rule.setVersion(request.getVersion());
+        rule.setRuleVersion(request.getVersion());
     }
 
     @Transactional
     public void deleteAutomationRule(UUID id) {
         AutomationRule rule = getAutomationRule(id);
-        automationRuleRepository.delete(rule);
+        rule.setDeletedAt(java.time.Instant.now());
+        automationRuleRepository.save(rule);
+    }
+
+    @Transactional
+    public AutomationRule restoreAutomationRule(UUID id) {
+        UUID orgId = TenantContext.getCurrentOrganizationId();
+        AutomationRule rule = automationRuleRepository.findByOrganizationIdAndIdIncludingDeleted(orgId, id)
+                .orElseThrow(() -> new ResourceNotFoundException("Automation Rule not found"));
+        rule.setDeletedAt(null);
+        return automationRuleRepository.save(rule);
+    }
+
+    public Page<AutomationRule> listDeleted(Pageable pageable) {
+        UUID orgId = TenantContext.getCurrentOrganizationId();
+        return automationRuleRepository.findDeletedByOrganizationId(orgId, pageable);
     }
 }

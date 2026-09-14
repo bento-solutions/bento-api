@@ -80,4 +80,19 @@ public class PaymentController {
         paymentService.deletePayment(id);
         return ResponseEntity.noContent().build();
     }
+
+    @PostMapping("/{id}/restore")
+    @PreAuthorize("hasAuthority('PAYMENTS_DELETE')")
+    @Operation(summary = "Restore payment", description = "Undo a soft delete on a payment")
+    public ResponseEntity<PaymentResponse> restorePayment(@PathVariable UUID id) {
+        return ResponseEntity.ok(PaymentResponse.fromEntity(paymentService.restorePayment(id)));
+    }
+
+    @GetMapping("/deleted")
+    @PreAuthorize("hasAuthority('PAYMENTS_DELETE')")
+    @Operation(summary = "List deleted payments", description = "Soft-deleted payments still inside the retention window")
+    public ResponseEntity<PageResponse<PaymentResponse>> listDeleted(Pageable pageable) {
+        Page<PaymentResponse> page = paymentService.listDeleted(pageable).map(PaymentResponse::fromEntity);
+        return ResponseEntity.ok(PageResponse.fromPage(page));
+    }
 }

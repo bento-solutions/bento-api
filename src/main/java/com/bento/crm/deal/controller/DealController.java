@@ -46,9 +46,14 @@ public class DealController {
 
     @GetMapping
     @PreAuthorize("hasAuthority('DEALS_READ')")
-    @Operation(summary = "List deals", description = "List all deals in the organization")
-    public ResponseEntity<PageResponse<DealResponse>> listDeals(Pageable pageable) {
-        Page<Deal> page = dealService.listDeals(pageable);
+    @Operation(summary = "List deals", description = "List all deals with optional search and multi-criteria filters")
+    public ResponseEntity<PageResponse<DealResponse>> listDeals(
+            @RequestParam(required = false) String q,
+            @RequestParam(required = false) com.bento.crm.deal.model.Deal.DealStage stage,
+            @RequestParam(required = false) UUID partnerId,
+            @RequestParam(required = false) UUID salesPersonUserId,
+            Pageable pageable) {
+        Page<Deal> page = dealService.listDeals(q, stage, partnerId, salesPersonUserId, pageable);
         Page<DealResponse> dtoPage = page.map(DealResponse::fromEntity);
         return ResponseEntity.ok(PageResponse.fromPage(dtoPage));
     }
@@ -63,9 +68,24 @@ public class DealController {
 
     @DeleteMapping("/{id}")
     @PreAuthorize("hasAuthority('DEALS_DELETE')")
-    @Operation(summary = "Delete deal", description = "Delete deal record")
+    @Operation(summary = "Delete deal", description = "Soft delete deal record")
     public ResponseEntity<Void> deleteDeal(@PathVariable UUID id) {
         dealService.deleteDeal(id);
         return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/{id}/restore")
+    @PreAuthorize("hasAuthority('DEALS_DELETE')")
+    @Operation(summary = "Restore deal", description = "Undo a soft delete on a deal")
+    public ResponseEntity<DealResponse> restoreDeal(@PathVariable UUID id) {
+        return ResponseEntity.ok(DealResponse.fromEntity(dealService.restoreDeal(id)));
+    }
+
+    @GetMapping("/deleted")
+    @PreAuthorize("hasAuthority('DEALS_DELETE')")
+    @Operation(summary = "List deleted deals", description = "Soft-deleted deals still inside the retention window")
+    public ResponseEntity<PageResponse<DealResponse>> listDeleted(Pageable pageable) {
+        Page<DealResponse> page = dealService.listDeleted(pageable).map(DealResponse::fromEntity);
+        return ResponseEntity.ok(PageResponse.fromPage(page));
     }
 }

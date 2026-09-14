@@ -7,6 +7,14 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Entity
@@ -27,9 +35,27 @@ public class PurchaseOrder extends BaseTenantEntity {
     @Column(nullable = false)
     private Status status;
 
-    private java.time.LocalDate deliveryDate;
+    private String orderNumber;
+
+    private LocalDate orderDate;
+
+    private LocalDate deliveryDate;
 
     private String sentVia;
+
+    private BigDecimal subtotal;
+
+    private BigDecimal tax;
+
+    private BigDecimal total;
+
+    @Column(columnDefinition = "text")
+    private String notes;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(columnDefinition = "jsonb")
+    @Builder.Default
+    private List<Map<String, Object>> lines = new ArrayList<>();
 
     public enum Status {
         DRAFT, SENT, CONFIRMED, DELIVERED, INVOICED

@@ -72,9 +72,24 @@ public class TaskController {
 
     @DeleteMapping("/{id}")
     @PreAuthorize("hasAuthority('TASKS_DELETE')")
-    @Operation(summary = "Delete task", description = "Delete task record")
+    @Operation(summary = "Delete task", description = "Soft delete task record")
     public ResponseEntity<Void> deleteTask(@PathVariable UUID id) {
         taskService.deleteTask(id);
         return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/{id}/restore")
+    @PreAuthorize("hasAuthority('TASKS_DELETE')")
+    @Operation(summary = "Restore task", description = "Undo a soft delete on a task")
+    public ResponseEntity<TaskResponse> restoreTask(@PathVariable UUID id) {
+        return ResponseEntity.ok(TaskResponse.fromEntity(taskService.restoreTask(id)));
+    }
+
+    @GetMapping("/deleted")
+    @PreAuthorize("hasAuthority('TASKS_DELETE')")
+    @Operation(summary = "List deleted tasks", description = "Soft-deleted tasks still inside the retention window")
+    public ResponseEntity<PageResponse<TaskResponse>> listDeleted(Pageable pageable) {
+        Page<TaskResponse> page = taskService.listDeleted(pageable).map(TaskResponse::fromEntity);
+        return ResponseEntity.ok(PageResponse.fromPage(page));
     }
 }

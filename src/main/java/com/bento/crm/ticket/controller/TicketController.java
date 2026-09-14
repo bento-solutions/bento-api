@@ -102,9 +102,45 @@ public class TicketController {
 
     @DeleteMapping("/{id}")
     @PreAuthorize("hasAuthority('TICKETS_DELETE')")
-    @Operation(summary = "Delete ticket", description = "Delete ticket record")
+    @Operation(summary = "Delete ticket", description = "Soft delete ticket record")
     public ResponseEntity<Void> deleteTicket(@PathVariable UUID id) {
         ticketService.deleteTicket(id);
         return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/{id}/restore")
+    @PreAuthorize("hasAuthority('TICKETS_DELETE')")
+    @Operation(summary = "Restore ticket", description = "Undo a soft delete on a ticket")
+    public ResponseEntity<TicketResponse> restoreTicket(@PathVariable UUID id) {
+        return ResponseEntity.ok(TicketResponse.fromEntity(ticketService.restoreTicket(id)));
+    }
+
+    @GetMapping("/deleted")
+    @PreAuthorize("hasAuthority('TICKETS_DELETE')")
+    @Operation(summary = "List deleted tickets", description = "Soft-deleted tickets still inside the retention window")
+    public ResponseEntity<PageResponse<TicketResponse>> listDeleted(Pageable pageable) {
+        Page<TicketResponse> page = ticketService.listDeleted(pageable).map(TicketResponse::fromEntity);
+        return ResponseEntity.ok(PageResponse.fromPage(page));
+    }
+
+    @GetMapping("/{id}/comments")
+    @PreAuthorize("hasAuthority('TICKETS_READ')")
+    @Operation(summary = "List ticket comments", description = "Get conversation thread for a ticket")
+    public ResponseEntity<java.util.List<com.bento.crm.ticket.dto.TicketCommentResponse>> getComments(@PathVariable UUID id) {
+        var list = ticketService.getComments(id).stream()
+                .map(com.bento.crm.ticket.dto.TicketCommentResponse::fromEntity)
+                .toList();
+        return ResponseEntity.ok(list);
+    }
+
+    @PostMapping("/{id}/comments")
+    @PreAuthorize("hasAuthority('TICKETS_WRITE') or hasAuthority('TICKETS_READ')")
+    @Operation(summary = "Add comment to ticket", description = "Add a comment or internal note to a ticket thread")
+    public ResponseEntity<com.bento.crm.ticket.dto.TicketCommentResponse> addComment(
+            @PathVariable UUID id,
+            @Valid @RequestBody com.bento.crm.ticket.dto.CreateTicketCommentRequest request) {
+        var comment = ticketService.addComment(id, request);
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(com.bento.crm.ticket.dto.TicketCommentResponse.fromEntity(comment));
     }
 }

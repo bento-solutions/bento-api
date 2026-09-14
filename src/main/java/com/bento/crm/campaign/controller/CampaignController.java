@@ -63,9 +63,24 @@ public class CampaignController {
 
     @DeleteMapping("/{id}")
     @PreAuthorize("hasAuthority('CAMPAIGNS_DELETE')")
-    @Operation(summary = "Delete campaign", description = "Delete campaign record")
+    @Operation(summary = "Delete campaign", description = "Soft delete campaign record")
     public ResponseEntity<Void> deleteCampaign(@PathVariable UUID id) {
         campaignService.deleteCampaign(id);
         return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/{id}/restore")
+    @PreAuthorize("hasAuthority('CAMPAIGNS_DELETE')")
+    @Operation(summary = "Restore campaign", description = "Undo a soft delete on a campaign")
+    public ResponseEntity<CampaignResponse> restoreCampaign(@PathVariable UUID id) {
+        return ResponseEntity.ok(CampaignResponse.fromEntity(campaignService.restoreCampaign(id)));
+    }
+
+    @GetMapping("/deleted")
+    @PreAuthorize("hasAuthority('CAMPAIGNS_DELETE')")
+    @Operation(summary = "List deleted campaigns", description = "Soft-deleted campaigns still inside the retention window")
+    public ResponseEntity<PageResponse<CampaignResponse>> listDeleted(Pageable pageable) {
+        Page<CampaignResponse> page = campaignService.listDeleted(pageable).map(CampaignResponse::fromEntity);
+        return ResponseEntity.ok(PageResponse.fromPage(page));
     }
 }

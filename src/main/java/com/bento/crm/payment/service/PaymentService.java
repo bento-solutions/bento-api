@@ -75,9 +75,27 @@ public class PaymentService {
     public void deletePayment(UUID id) {
         Payment payment = getPayment(id);
         UUID invoiceId = payment.getInvoiceId();
-        paymentRepository.delete(payment);
+        payment.setDeletedAt(Instant.now());
+        paymentRepository.save(payment);
         paymentRepository.flush();
         syncInvoiceStatus(invoiceId);
+    }
+
+    @Transactional
+    public Payment restorePayment(UUID id) {
+        UUID orgId = TenantContext.getCurrentOrganizationId();
+        Payment payment = paymentRepository.findByOrganizationIdAndIdIncludingDeleted(orgId, id)
+                .orElseThrow(() -> new ResourceNotFoundException("Payment not found"));
+        payment.setDeletedAt(null);
+        Payment saved = paymentRepository.save(payment);
+        paymentRepository.flush();
+        syncInvoiceStatus(saved.getInvoiceId());
+        return saved;
+    }
+
+    public Page<Payment> listDeleted(Pageable pageable) {
+        UUID orgId = TenantContext.getCurrentOrganizationId();
+        return paymentRepository.findDeletedByOrganizationId(orgId, pageable);
     }
 
     private void applyRequest(Payment payment, CreatePaymentRequest request) {

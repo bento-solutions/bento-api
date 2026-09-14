@@ -48,14 +48,17 @@ public class EmailService {
     @Async
     public void sendHtml(String to, String subject, String templateName, Map<String, String> variables) {
         String body = render(templateName, variables);
+        sendRawHtml(to, subject, body);
+    }
 
+    /**
+     * Sends an HTML email with direct HTML content (e.g. reminder text or custom campaign markup).
+     */
+    @Async
+    public void sendRawHtml(String to, String subject, String bodyHtml) {
         JavaMailSender sender = mailSender.getIfAvailable();
-        // Unconfigured credentials count as "off" rather than an error: a developer running the
-        // app locally, and the test suite, would otherwise open a doomed connection to the
-        // production relay on every invite. The rendered body is logged so the invitation link
-        // is still recoverable without a mail server.
-        if (!properties.isEnabled() || sender == null || smtpUsername == null || smtpUsername.isBlank()) {
-            log.warn("Mail not configured -- skipping '{}' to {}. Rendered body:\n{}", subject, to, body);
+        if (!properties.isEnabled() || sender == null) {
+            log.warn("Mail disabled or sender not available -- skipping '{}' to {}. Body:\n{}", subject, to, bodyHtml);
             return;
         }
 
@@ -64,18 +67,15 @@ public class EmailService {
             MimeMessageHelper helper = new MimeMessageHelper(message, false, StandardCharsets.UTF_8.name());
             helper.setTo(to);
             helper.setSubject(subject);
-            helper.setText(body, true);
+            helper.setText(bodyHtml, true);
             helper.setFrom(new InternetAddress(properties.getFrom(), properties.getFromName(), StandardCharsets.UTF_8.name()));
             if (properties.getReplyTo() != null && !properties.getReplyTo().isBlank()) {
                 helper.setReplyTo(properties.getReplyTo());
             }
             sender.send(message);
-            log.info("Sent '{}' to {}", subject, to);
+            log.info("Successfully sent email '{}' to {}", subject, to);
         } catch (Exception e) {
-            // Swallowed deliberately: the caller has already committed its work, and on the
-            // async thread there is nobody to propagate to. Delivery failures are recoverable
-            // by resending.
-            log.error("Failed to send '{}' to {}: {}", subject, to, e.getMessage(), e);
+            log.error("Failed to send email '{}' to {}: {}", subject, to, e.getMessage(), e);
         }
     }
 

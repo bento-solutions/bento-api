@@ -65,6 +65,21 @@ public class ProposalService {
     @Transactional
     public void deleteProposal(UUID id) {
         Proposal proposal = getProposal(id);
-        proposalRepository.delete(proposal);
+        proposal.setDeletedAt(java.time.Instant.now());
+        proposalRepository.save(proposal);
+    }
+
+    @Transactional
+    public Proposal restoreProposal(UUID id) {
+        UUID orgId = TenantContext.getCurrentOrganizationId();
+        Proposal proposal = proposalRepository.findByOrganizationIdAndIdIncludingDeleted(orgId, id)
+                .orElseThrow(() -> new ResourceNotFoundException("Proposal not found"));
+        proposal.setDeletedAt(null);
+        return proposalRepository.save(proposal);
+    }
+
+    public Page<Proposal> listDeleted(Pageable pageable) {
+        UUID orgId = TenantContext.getCurrentOrganizationId();
+        return proposalRepository.findDeletedByOrganizationId(orgId, pageable);
     }
 }

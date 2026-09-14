@@ -60,6 +60,21 @@ public class CampaignService {
     @Transactional
     public void deleteCampaign(UUID id) {
         Campaign campaign = getCampaign(id);
-        campaignRepository.delete(campaign);
+        campaign.setDeletedAt(java.time.Instant.now());
+        campaignRepository.save(campaign);
+    }
+
+    @Transactional
+    public Campaign restoreCampaign(UUID id) {
+        UUID orgId = TenantContext.getCurrentOrganizationId();
+        Campaign campaign = campaignRepository.findByOrganizationIdAndIdIncludingDeleted(orgId, id)
+                .orElseThrow(() -> new ResourceNotFoundException("Campaign not found"));
+        campaign.setDeletedAt(null);
+        return campaignRepository.save(campaign);
+    }
+
+    public Page<Campaign> listDeleted(Pageable pageable) {
+        UUID orgId = TenantContext.getCurrentOrganizationId();
+        return campaignRepository.findDeletedByOrganizationId(orgId, pageable);
     }
 }

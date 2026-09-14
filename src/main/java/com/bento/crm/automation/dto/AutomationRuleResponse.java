@@ -46,7 +46,7 @@ public class AutomationRuleResponse {
                 .actions(automationRule.getActions())
                 .priority(automationRule.getPriority())
                 .stopOnMatch(automationRule.getStopOnMatch())
-                .version(automationRule.getVersion())
+                .version(automationRule.getRuleVersion())
                 .createdBy(automationRule.getCreatedBy())
                 .updatedBy(automationRule.getUpdatedBy())
                 .createdAt(automationRule.getCreatedAt())

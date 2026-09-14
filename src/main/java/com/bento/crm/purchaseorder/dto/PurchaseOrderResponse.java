@@ -21,8 +21,15 @@ public class PurchaseOrderResponse {
     private UUID dealId;
     private UUID vendorPartnerId;
     private PurchaseOrder.Status status;
+    private String orderNumber;
+    private LocalDate orderDate;
     private LocalDate deliveryDate;
     private String sentVia;
+    private java.math.BigDecimal subtotal;
+    private java.math.BigDecimal tax;
+    private java.math.BigDecimal total;
+    private String notes;
+    private java.util.List<java.util.Map<String, Object>> lines;
     private UUID createdBy;
     private UUID updatedBy;
     // Kept as Instant to match the entity: LocalDateTime.from(Instant) throws DateTimeException
@@ -37,8 +44,15 @@ public class PurchaseOrderResponse {
                 .dealId(purchaseOrder.getDealId())
                 .vendorPartnerId(purchaseOrder.getVendorPartnerId())
                 .status(purchaseOrder.getStatus())
+                .orderNumber(purchaseOrder.getOrderNumber())
+                .orderDate(purchaseOrder.getOrderDate())
                 .deliveryDate(purchaseOrder.getDeliveryDate())
                 .sentVia(purchaseOrder.getSentVia())
+                .subtotal(purchaseOrder.getSubtotal())
+                .tax(purchaseOrder.getTax())
+                .total(purchaseOrder.getTotal())
+                .notes(purchaseOrder.getNotes())
+                .lines(purchaseOrder.getLines())
                 .createdBy(purchaseOrder.getCreatedBy())
                 .updatedBy(purchaseOrder.getUpdatedBy())
                 .createdAt(purchaseOrder.getCreatedAt())

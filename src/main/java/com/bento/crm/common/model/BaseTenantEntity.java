@@ -47,4 +47,14 @@ public abstract class BaseTenantEntity {
     @LastModifiedBy
     @Column(columnDefinition = "uuid")
     private UUID updatedBy;
+
+    @Version
+    @Column(nullable = false)
+    private Long version = 0L;
+
+    /**
+     * Set when the record is removed. Soft-deleted entities are hidden from standard listings
+     * but remain restorable for a 30-day grace period, after which EntityPurgeScheduler hard-deletes them.
+     */
+    private Instant deletedAt;
 }

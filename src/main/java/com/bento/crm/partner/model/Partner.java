@@ -104,13 +104,6 @@ public class Partner extends BaseTenantEntity {
     @Column(columnDefinition = "text")
     private String sourceUrl;
 
-    /**
-     * Set when the record is removed. Soft-deleted partners are hidden from every list but stay
-     * restorable for a grace period, after which {@code PartnerPurgeScheduler} removes them for
-     * good.
-     */
-    private java.time.Instant deletedAt;
-
     public enum PartnerType {
         LEAD, PROSPECT, CUSTOMER, VENDOR
     }

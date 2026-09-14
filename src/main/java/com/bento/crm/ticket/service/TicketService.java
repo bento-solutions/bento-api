@@ -36,6 +36,7 @@ public class TicketService {
     private final TicketRepository ticketRepository;
     private final TaskService taskService;
     private final ApplicationEventPublisher eventPublisher;
+    private final com.bento.crm.ticket.repository.TicketCommentRepository ticketCommentRepository;
 
     @Transactional
     public Ticket createTicket(CreateTicketRequest request) {
@@ -45,6 +46,13 @@ public class TicketService {
         ticket.setOrganizationId(orgId);
         Ticket saved = ticketRepository.save(ticket);
         notifyIfAssigned(orgId, null, saved);
+        eventPublisher.publishEvent(com.bento.crm.automation.event.EntityChangedEvent.builder()
+                .organizationId(orgId)
+                .trigger(com.bento.crm.automation.model.AutomationRule.Trigger.TICKET_CREATED)
+                .entityType("TICKET")
+                .entityId(saved.getId())
+                .payload(ticketToPayload(saved))
+                .build());
         return saved;
     }
 
@@ -133,7 +141,26 @@ public class TicketService {
         applyRequest(ticket, request);
         Ticket saved = ticketRepository.save(ticket);
         notifyIfAssigned(saved.getOrganizationId(), previousAssignee, saved);
+        eventPublisher.publishEvent(com.bento.crm.automation.event.EntityChangedEvent.builder()
+                .organizationId(saved.getOrganizationId())
+                .trigger(com.bento.crm.automation.model.AutomationRule.Trigger.TICKET_UPDATED)
+                .entityType("TICKET")
+                .entityId(saved.getId())
+                .payload(ticketToPayload(saved))
+                .build());
         return saved;
+    }
+
+    private java.util.Map<String, Object> ticketToPayload(Ticket t) {
+        java.util.Map<String, Object> map = new java.util.HashMap<>();
+        map.put("id", t.getId());
+        map.put("title", t.getTitle());
+        map.put("status", t.getStatus() != null ? t.getStatus().name() : null);
+        map.put("priority", t.getPriority() != null ? t.getPriority().name() : null);
+        map.put("type", t.getType());
+        map.put("partnerId", t.getPartnerId());
+        map.put("assignedToUserId", t.getAssignedToUserId());
+        return map;
     }
 
     private void notifyIfAssigned(UUID orgId, UUID previousAssignee, Ticket ticket) {
@@ -181,6 +208,43 @@ public class TicketService {
     @Transactional
     public void deleteTicket(UUID id) {
         Ticket ticket = getTicket(id);
-        ticketRepository.delete(ticket);
+        ticket.setDeletedAt(java.time.Instant.now());
+        ticketRepository.save(ticket);
+    }
+
+    @Transactional
+    public Ticket restoreTicket(UUID id) {
+        UUID orgId = TenantContext.getCurrentOrganizationId();
+        Ticket ticket = ticketRepository.findByOrganizationIdAndIdIncludingDeleted(orgId, id)
+                .orElseThrow(() -> new ResourceNotFoundException("Ticket not found"));
+        ticket.setDeletedAt(null);
+        return ticketRepository.save(ticket);
+    }
+
+    public Page<Ticket> listDeleted(Pageable pageable) {
+        UUID orgId = TenantContext.getCurrentOrganizationId();
+        return ticketRepository.findDeletedByOrganizationId(orgId, pageable);
+    }
+
+    public List<com.bento.crm.ticket.model.TicketComment> getComments(UUID ticketId) {
+        getTicket(ticketId);
+        UUID orgId = TenantContext.getCurrentOrganizationId();
+        return ticketCommentRepository.findByOrganizationIdAndTicketId(orgId, ticketId);
+    }
+
+    @Transactional
+    public com.bento.crm.ticket.model.TicketComment addComment(UUID ticketId, com.bento.crm.ticket.dto.CreateTicketCommentRequest request) {
+        Ticket ticket = getTicket(ticketId);
+        UUID orgId = TenantContext.getCurrentOrganizationId();
+        com.bento.crm.ticket.model.TicketComment comment = com.bento.crm.ticket.model.TicketComment.builder()
+                .ticketId(ticket.getId())
+                .authorId(request.getAuthorId() != null ? request.getAuthorId() : currentActor())
+                .authorName(request.getAuthorName() != null ? request.getAuthorName() : "User")
+                .authorRole(request.getAuthorRole() != null ? request.getAuthorRole() : "AGENT")
+                .content(request.getContent())
+                .isInternal(Boolean.TRUE.equals(request.getIsInternal()))
+                .build();
+        comment.setOrganizationId(orgId);
+        return ticketCommentRepository.save(comment);
     }
 }

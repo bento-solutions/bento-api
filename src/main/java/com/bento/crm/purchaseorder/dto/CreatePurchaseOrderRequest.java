@@ -6,7 +6,10 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Data
@@ -23,7 +26,21 @@ public class CreatePurchaseOrderRequest {
     @NotNull
     private PurchaseOrder.Status status;
 
+    private String orderNumber;
+
+    private LocalDate orderDate;
+
     private LocalDate deliveryDate;
 
     private String sentVia;
+
+    private BigDecimal subtotal;
+
+    private BigDecimal tax;
+
+    private BigDecimal total;
+
+    private String notes;
+
+    private List<Map<String, Object>> lines;
 }

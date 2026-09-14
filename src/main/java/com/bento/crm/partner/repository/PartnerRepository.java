@@ -4,6 +4,7 @@ import com.bento.crm.partner.model.Partner;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -13,7 +14,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 @Repository
-public interface PartnerRepository extends JpaRepository<Partner, UUID> {
+public interface PartnerRepository extends JpaRepository<Partner, UUID>, JpaSpecificationExecutor<Partner> {
 
     @Query("SELECT p FROM Partner p WHERE p.organizationId = :orgId AND p.type = :type AND p.deletedAt IS NULL")
     Page<Partner> findByOrganizationIdAndType(@Param("orgId") UUID orgId, @Param("type") Partner.PartnerType type, Pageable pageable);

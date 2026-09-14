@@ -46,9 +46,15 @@ public class PartnerController {
 
     @GetMapping
     @PreAuthorize("hasAuthority('PARTNERS_READ')")
-    @Operation(summary = "List partners", description = "List all partners in organization")
-    public ResponseEntity<PageResponse<PartnerResponse>> listPartners(Pageable pageable) {
-        Page<PartnerResponse> page = partnerService.listPartners(pageable).map(PartnerResponse::fromEntity);
+    @Operation(summary = "List partners", description = "List all partners with optional search and multi-criteria filters")
+    public ResponseEntity<PageResponse<PartnerResponse>> listPartners(
+            @RequestParam(required = false) String q,
+            @RequestParam(required = false) Partner.PartnerType type,
+            @RequestParam(required = false) Partner.PartnerStage stage,
+            @RequestParam(required = false) UUID assignedToUserId,
+            Pageable pageable) {
+        Page<PartnerResponse> page = partnerService.listPartners(q, type, stage, assignedToUserId, pageable)
+                .map(PartnerResponse::fromEntity);
         return ResponseEntity.ok(PageResponse.fromPage(page));
     }
 

@@ -6,6 +6,7 @@ import com.bento.crm.notification.event.AssignmentNotificationFactory;
 import com.bento.crm.partner.dto.CreatePartnerRequest;
 import com.bento.crm.partner.model.Partner;
 import com.bento.crm.partner.repository.PartnerRepository;
+import com.bento.crm.partner.repository.PartnerSpecification;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
@@ -83,6 +84,13 @@ public class PartnerService {
 
         Partner saved = partnerRepository.save(partner);
         notifyIfAssigned(orgId, null, saved);
+        eventPublisher.publishEvent(com.bento.crm.automation.event.EntityChangedEvent.builder()
+                .organizationId(orgId)
+                .trigger(com.bento.crm.automation.model.AutomationRule.Trigger.PARTNER_CREATED)
+                .entityType("PARTNER")
+                .entityId(saved.getId())
+                .payload(partnerToPayload(saved))
+                .build());
         return saved;
     }
 
@@ -93,8 +101,15 @@ public class PartnerService {
     }
 
     public Page<Partner> listPartners(Pageable pageable) {
+        return listPartners(null, null, null, null, pageable);
+    }
+
+    public Page<Partner> listPartners(String q, Partner.PartnerType type, Partner.PartnerStage stage, UUID assignedToUserId, Pageable pageable) {
         UUID orgId = TenantContext.getCurrentOrganizationId();
-        return partnerRepository.findByOrganizationId(orgId, pageable);
+        if ((q == null || q.isBlank()) && type == null && stage == null && assignedToUserId == null) {
+            return partnerRepository.findByOrganizationId(orgId, pageable);
+        }
+        return partnerRepository.findAll(PartnerSpecification.filter(orgId, q, type, stage, assignedToUserId), pageable);
     }
 
     public Page<Partner> listPartnersByType(Partner.PartnerType type, Pageable pageable) {
@@ -140,7 +155,29 @@ public class PartnerService {
 
         Partner saved = partnerRepository.save(partner);
         notifyIfAssigned(saved.getOrganizationId(), previousAssignee, saved);
+        eventPublisher.publishEvent(com.bento.crm.automation.event.EntityChangedEvent.builder()
+                .organizationId(saved.getOrganizationId())
+                .trigger(com.bento.crm.automation.model.AutomationRule.Trigger.PARTNER_UPDATED)
+                .entityType("PARTNER")
+                .entityId(saved.getId())
+                .payload(partnerToPayload(saved))
+                .build());
         return saved;
+    }
+
+    private java.util.Map<String, Object> partnerToPayload(Partner p) {
+        java.util.Map<String, Object> map = new java.util.HashMap<>();
+        map.put("id", p.getId());
+        map.put("name", p.getName());
+        map.put("companyName", p.getCompanyName());
+        map.put("type", p.getType() != null ? p.getType().name() : null);
+        map.put("stage", p.getStage() != null ? p.getStage().name() : null);
+        map.put("score", p.getScore());
+        map.put("city", p.getCity());
+        map.put("country", p.getCountry());
+        map.put("source", p.getSource() != null ? p.getSource().name() : null);
+        map.put("estimatedDealValue", p.getEstimatedDealValue());
+        return map;
     }
 
     private void notifyIfAssigned(UUID orgId, UUID previousAssignee, Partner partner) {

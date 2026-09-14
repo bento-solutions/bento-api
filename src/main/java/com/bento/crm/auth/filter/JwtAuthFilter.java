@@ -29,12 +29,15 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
         String authHeader = request.getHeader("Authorization");
-
+        String token = null;
         if (authHeader != null && authHeader.startsWith("Bearer ")) {
-            // Only an access token authenticates a request. A refresh token is signed with the
-            // same key and would otherwise pass here, handing a 30-day credential the same reach
-            // as a 15-minute one.
-            Claims claims = jwtService.tryParseAccessToken(authHeader.substring(7));
+            token = authHeader.substring(7);
+        } else if (request.getParameter("token") != null && !request.getParameter("token").isBlank()) {
+            token = request.getParameter("token");
+        }
+
+        if (token != null) {
+            Claims claims = jwtService.tryParseAccessToken(token);
 
             if (claims != null) {
                 @SuppressWarnings("unchecked")

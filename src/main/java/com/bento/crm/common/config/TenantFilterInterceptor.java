@@ -100,12 +100,18 @@ public class TenantFilterInterceptor extends OncePerRequestFilter {
 
     private UUID resolveOrganizationId(HttpServletRequest request) {
         String authHeader = request.getHeader("Authorization");
-        if (authHeader == null || !authHeader.startsWith("Bearer ")) {
+        String token = null;
+        if (authHeader != null && authHeader.startsWith("Bearer ")) {
+            token = authHeader.substring(7);
+        } else if (request.getParameter("token") != null && !request.getParameter("token").isBlank()) {
+            token = request.getParameter("token");
+        }
+        if (token == null) {
             return null;
         }
         // Access tokens only: a refresh token also carries an "org" claim, and honouring it here
         // would let a 30-day credential open a tenant-scoped session.
-        Claims claims = jwtService.tryParseAccessToken(authHeader.substring(7));
+        Claims claims = jwtService.tryParseAccessToken(token);
         if (claims == null) {
             return null;
         }

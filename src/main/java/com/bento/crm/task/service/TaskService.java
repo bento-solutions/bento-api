@@ -131,6 +131,21 @@ public class TaskService {
     @Transactional
     public void deleteTask(UUID id) {
         Task task = getTask(id);
-        taskRepository.delete(task);
+        task.setDeletedAt(java.time.Instant.now());
+        taskRepository.save(task);
+    }
+
+    @Transactional
+    public Task restoreTask(UUID id) {
+        UUID orgId = TenantContext.getCurrentOrganizationId();
+        Task task = taskRepository.findByOrganizationIdAndIdIncludingDeleted(orgId, id)
+                .orElseThrow(() -> new ResourceNotFoundException("Task not found"));
+        task.setDeletedAt(null);
+        return taskRepository.save(task);
+    }
+
+    public Page<Task> listDeleted(Pageable pageable) {
+        UUID orgId = TenantContext.getCurrentOrganizationId();
+        return taskRepository.findDeletedByOrganizationId(orgId, pageable);
     }
 }

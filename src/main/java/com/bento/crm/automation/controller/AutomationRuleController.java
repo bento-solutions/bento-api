@@ -62,9 +62,24 @@ public class AutomationRuleController {
 
     @DeleteMapping("/{id}")
     @PreAuthorize("hasAuthority('AUTOMATION_RULES_DELETE')")
-    @Operation(summary = "Delete automation rule", description = "Delete automation rule record")
+    @Operation(summary = "Delete automation rule", description = "Soft delete automation rule record")
     public ResponseEntity<Void> deleteAutomationRule(@PathVariable UUID id) {
         automationRuleService.deleteAutomationRule(id);
         return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/{id}/restore")
+    @PreAuthorize("hasAuthority('AUTOMATION_RULES_DELETE')")
+    @Operation(summary = "Restore automation rule", description = "Undo a soft delete on an automation rule")
+    public ResponseEntity<AutomationRule> restoreAutomationRule(@PathVariable UUID id) {
+        return ResponseEntity.ok(automationRuleService.restoreAutomationRule(id));
+    }
+
+    @GetMapping("/deleted")
+    @PreAuthorize("hasAuthority('AUTOMATION_RULES_DELETE')")
+    @Operation(summary = "List deleted automation rules", description = "Soft-deleted automation rules still inside the retention window")
+    public ResponseEntity<PageResponse<AutomationRule>> listDeleted(Pageable pageable) {
+        Page<AutomationRule> page = automationRuleService.listDeleted(pageable);
+        return ResponseEntity.ok(PageResponse.fromPage(page));
     }
 }

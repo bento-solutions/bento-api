@@ -18,6 +18,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
+import com.bento.crm.identity.service.GroupStreamService;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
 import java.util.UUID;
 
 @RestController
@@ -26,9 +29,11 @@ import java.util.UUID;
 public class GroupController {
 
     private final CrmGroupService crmGroupService;
+    private final GroupStreamService groupStreamService;
 
-    public GroupController(CrmGroupService crmGroupService) {
+    public GroupController(CrmGroupService crmGroupService, GroupStreamService groupStreamService) {
         this.crmGroupService = crmGroupService;
+        this.groupStreamService = groupStreamService;
     }
 
     @PostMapping
@@ -82,7 +87,16 @@ public class GroupController {
     @PreAuthorize("hasAuthority('GROUPS_WRITE')")
     @Operation(summary = "Create group message", description = "Post a message to a group")
     public ResponseEntity<GroupMessage> createGroupMessage(@PathVariable UUID groupId, @Valid @RequestBody CreateGroupMessageRequest request) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(crmGroupService.createMessage(groupId, request));
+        GroupMessage message = crmGroupService.createMessage(groupId, request);
+        groupStreamService.broadcast(groupId, message);
+        return ResponseEntity.status(HttpStatus.CREATED).body(message);
+    }
+
+    @GetMapping("/{groupId}/stream")
+    @PreAuthorize("hasAuthority('GROUPS_READ')")
+    @Operation(summary = "Subscribe to group event stream", description = "Server-Sent Events stream for real-time collaboration")
+    public SseEmitter subscribeToGroupStream(@PathVariable UUID groupId) {
+        return groupStreamService.subscribe(groupId);
     }
 
     @GetMapping("/{groupId}/meetings")

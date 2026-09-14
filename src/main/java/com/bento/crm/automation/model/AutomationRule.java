@@ -43,7 +43,16 @@ public class AutomationRule extends BaseTenantEntity {
 
     private Boolean stopOnMatch;
 
-    private Integer version;
+    @Column(name = "rule_version")
+    private Integer ruleVersion;
+
+    public Integer getRuleVersion() {
+        return ruleVersion;
+    }
+
+    public void setRuleVersion(Integer ruleVersion) {
+        this.ruleVersion = ruleVersion;
+    }
 
     public enum Trigger {
         PARTNER_CREATED, PARTNER_UPDATED, DEAL_CREATED, DEAL_UPDATED,
