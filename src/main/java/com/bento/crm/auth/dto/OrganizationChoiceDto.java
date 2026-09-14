@@ -29,4 +29,7 @@ public class OrganizationChoiceDto {
 
     @JsonProperty("last_active_at")
     private Instant lastActiveAt;
+
+    @JsonProperty("logo_url")
+    private String logoUrl;
 }

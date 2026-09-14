@@ -105,9 +105,11 @@ public class AuthService {
                     .map(u -> {
                         Organization org = orgMap.get(u.getOrganizationId());
                         String orgName = org != null ? org.getName() : "Workspace";
+                        String logoUrl = org != null ? org.getLogoUrl() : null;
                         return OrganizationChoiceDto.builder()
                                 .organizationId(u.getOrganizationId())
                                 .organizationName(orgName)
+                                .logoUrl(logoUrl)
                                 .role(u.getRole() != null ? u.getRole().name() : null)
                                 .joinedAt(u.getCreatedAt())
                                 .lastActiveAt(u.getLastActiveAt())
