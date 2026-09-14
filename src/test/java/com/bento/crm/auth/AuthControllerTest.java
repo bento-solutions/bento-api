@@ -125,11 +125,11 @@ class AuthControllerTest extends IntegrationTestBase {
     }
 
     @Test
-    void refresh_withEmptyBody_returns400() throws Exception {
+    void refresh_withEmptyBody_returns401() throws Exception {
         mockMvc.perform(post("/auth/refresh")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{}"))
-                .andExpect(status().isBadRequest());
+                .andExpect(status().isUnauthorized());
     }
 
     @Test
@@ -148,5 +148,101 @@ class AuthControllerTest extends IntegrationTestBase {
     void me_withoutToken_returns401() throws Exception {
         mockMvc.perform(get("/auth/me"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void login_whenUserBelongsToMultipleOrganizationsWithSamePassword_returns409WithChoices() throws Exception {
+        String uniqueSuffix = System.nanoTime() + "";
+        String userEmail = "multi-" + uniqueSuffix + "@example.com";
+        String sharedPassword = "SharedPassword123!";
+
+        // 1. Create Org 1 with userEmail as Admin
+        mockMvc.perform(post("/organizations")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "First Org",
+                                  "admin_email": "%s",
+                                  "admin_name": "First Admin",
+                                  "admin_password": "%s"
+                                }
+                                """.formatted(userEmail, sharedPassword)))
+                .andExpect(status().isCreated());
+
+        // 2. Create Org 2 with another admin
+        String org2AdminEmail = "org2admin-" + uniqueSuffix + "@example.com";
+        mockMvc.perform(post("/organizations")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "name": "Second Org",
+                                  "admin_email": "%s",
+                                  "admin_name": "Second Admin",
+                                  "admin_password": "Org2Password123!"
+                                }
+                                """.formatted(org2AdminEmail)))
+                .andExpect(status().isCreated());
+
+        String org2Login = mockMvc.perform(post("/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"email": "%s", "password": "Org2Password123!"}
+                                """.formatted(org2AdminEmail)))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        String org2Token = objectMapper.readTree(org2Login).get("access_token").asText();
+
+        // 3. Org 2 invites userEmail
+        String inviteResponse = mockMvc.perform(post("/invitations")
+                        .header("Authorization", "Bearer " + org2Token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "email": "%s",
+                                  "role": "SUPPORT",
+                                  "display_name": "Invited User"
+                                }
+                                """.formatted(userEmail)))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+        String rawToken = objectMapper.readTree(inviteResponse).get("token").asText();
+
+        // 4. Accept invite with the same sharedPassword
+        mockMvc.perform(post("/public/invitations/accept")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "token": "%s",
+                                  "display_name": "Invited User",
+                                  "password": "%s"
+                                }
+                                """.formatted(rawToken, sharedPassword)))
+                .andExpect(status().isOk());
+
+        // 5. Login with userEmail and sharedPassword without organization_id -> returns 409 Conflict with organizations
+        String multiOrgResponse = mockMvc.perform(post("/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"email": "%s", "password": "%s"}
+                                """.formatted(userEmail, sharedPassword)))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.organizations").isArray())
+                .andExpect(jsonPath("$.organizations.length()").value(2))
+                .andReturn().getResponse().getContentAsString();
+
+        String org1Id = objectMapper.readTree(multiOrgResponse).get("organizations").get(0).get("organization_id").asText();
+
+        // 6. Login specifying organization_id succeeds
+        mockMvc.perform(post("/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {
+                                  "email": "%s",
+                                  "password": "%s",
+                                  "organization_id": "%s"
+                                }
+                                """.formatted(userEmail, sharedPassword, org1Id)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.access_token").isNotEmpty());
     }
 }

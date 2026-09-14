@@ -1,13 +1,17 @@
 package com.bento.crm.auth.service;
 
 import com.bento.crm.auth.dto.LoginResponse;
+import com.bento.crm.auth.dto.OrganizationChoiceDto;
 import com.bento.crm.common.exception.AuthenticationFailedException;
+import com.bento.crm.common.exception.MultipleOrganizationsException;
 import com.bento.crm.identity.dto.UserResponseDto;
 import com.bento.crm.identity.mapper.UserMapper;
 import com.bento.crm.identity.model.AppUser;
 import com.bento.crm.identity.model.RefreshToken;
 import com.bento.crm.identity.repository.AppUserRepository;
 import com.bento.crm.identity.repository.RefreshTokenRepository;
+import com.bento.crm.organization.model.Organization;
+import com.bento.crm.organization.repository.OrganizationRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -21,7 +25,10 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -38,6 +45,7 @@ public class AuthService {
 
     private final AppUserRepository userRepository;
     private final RefreshTokenRepository refreshTokenRepository;
+    private final OrganizationRepository organizationRepository;
     private final JwtService jwtService;
     private final PasswordEncoder passwordEncoder;
     private final UserMapper userMapper;
@@ -53,9 +61,8 @@ public class AuthService {
      *
      * <p>Email is unique per organization, not globally, so an address can belong to several
      * tenants. The password decides which: every candidate account is checked and exactly one
-     * must match. Two accounts sharing an email <em>and</em> a password is the only ambiguous
-     * case, and it is refused rather than resolved arbitrarily — silently picking the first row
-     * of an unordered scan is how a user ends up locked out of the tenant they meant to reach.
+     * must match. Two accounts sharing an email <em>and</em> a password is disambiguated by
+     * providing organization_id, or prompted with the list of available workspaces.
      */
     @Transactional
     public LoginResponse login(String email, String password, UUID organizationId) {
@@ -79,18 +86,46 @@ public class AuthService {
         if (matched.isEmpty()) {
             throw new AuthenticationFailedException("Invalid credentials");
         }
-        if (matched.size() > 1) {
-            log.warn("Login for {} matched {} accounts across organizations", email, matched.size());
-            throw new AuthenticationFailedException(
-                    "This email and password combination is registered with more than one organization. "
-                            + "Send organization_id with the login request to choose one.");
-        }
 
-        AppUser user = matched.get(0);
-        if (!Boolean.TRUE.equals(user.getIsActive())) {
+        List<AppUser> activeMatched = matched.stream()
+                .filter(u -> Boolean.TRUE.equals(u.getIsActive()))
+                .toList();
+
+        if (activeMatched.isEmpty()) {
             throw new AuthenticationFailedException("User account is inactive");
         }
 
+        if (activeMatched.size() > 1) {
+            log.warn("Login for {} matched {} active accounts across organizations", email, activeMatched.size());
+            List<UUID> orgIds = activeMatched.stream().map(AppUser::getOrganizationId).toList();
+            Map<UUID, Organization> orgMap = organizationRepository.findAllById(orgIds).stream()
+                    .collect(Collectors.toMap(Organization::getId, Function.identity()));
+
+            List<OrganizationChoiceDto> choices = activeMatched.stream()
+                    .map(u -> {
+                        Organization org = orgMap.get(u.getOrganizationId());
+                        String orgName = org != null ? org.getName() : "Workspace";
+                        return OrganizationChoiceDto.builder()
+                                .organizationId(u.getOrganizationId())
+                                .organizationName(orgName)
+                                .role(u.getRole() != null ? u.getRole().name() : null)
+                                .lastActiveAt(u.getLastActiveAt())
+                                .build();
+                    })
+                    .sorted((a, b) -> {
+                        if (a.getLastActiveAt() == null && b.getLastActiveAt() == null) return 0;
+                        if (a.getLastActiveAt() == null) return 1;
+                        if (b.getLastActiveAt() == null) return -1;
+                        return b.getLastActiveAt().compareTo(a.getLastActiveAt());
+                    })
+                    .toList();
+
+            throw new MultipleOrganizationsException(
+                    "This account belongs to multiple organizations. Please select an organization to sign in to.",
+                    choices);
+        }
+
+        AppUser user = activeMatched.get(0);
         return issueSession(user);
     }
 

@@ -82,6 +82,23 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(apiError, HttpStatus.UNAUTHORIZED);
     }
 
+    @ExceptionHandler(MultipleOrganizationsException.class)
+    public ResponseEntity<ApiError> handleMultipleOrganizationsException(
+            MultipleOrganizationsException ex,
+            WebRequest request) {
+        ApiError apiError = ApiError.builder()
+                .type("https://api.example.com/errors/multiple-organizations")
+                .title("Multiple Organizations Found")
+                .status(HttpStatus.CONFLICT.value())
+                .detail(ex.getMessage())
+                .instance(request.getDescription(false).replace("uri=", ""))
+                .timestamp(Instant.now())
+                .organizations(ex.getOrganizations())
+                .build();
+
+        return new ResponseEntity<>(apiError, HttpStatus.CONFLICT);
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ApiError> handleIllegalArgumentException(
             IllegalArgumentException ex,
