@@ -16,9 +16,17 @@ BEGIN
     END LOOP;
 END $$;
 
-ALTER TABLE payment
-    ADD CONSTRAINT fk_payment_invoice
-    FOREIGN KEY (invoice_id) REFERENCES invoice(id) ON DELETE RESTRICT;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE table_name = 'payment' AND constraint_name = 'fk_payment_invoice'
+    ) THEN
+        ALTER TABLE payment
+            ADD CONSTRAINT fk_payment_invoice
+            FOREIGN KEY (invoice_id) REFERENCES invoice(id) ON DELETE RESTRICT;
+    END IF;
+END $$;
 
 -- 2. Rename existing version column on automation_rule so optimistic locking 'version' does not collide
 DO $$
@@ -42,7 +50,7 @@ DECLARE
         'app_user', 'team', 'crm_group', 'group_meeting', 'group_message',
         'lead_contact', 'lead_activity', 'lead_status_history', 'customer_card',
         'stored_file', 'wa_account', 'wa_conversation', 'wa_message', 'wa_followup',
-        'notification', 'user_invitation', 'tag'
+        'notification', 'user_invitation', 'tag', 'ticket_comment'
     ];
 BEGIN
     FOREACH tbl IN ARRAY tables LOOP
@@ -93,9 +101,9 @@ CREATE TABLE IF NOT EXISTS ticket_comment (
     organization_id UUID NOT NULL REFERENCES organization(id),
     ticket_id UUID NOT NULL REFERENCES ticket(id) ON DELETE CASCADE,
     author_id UUID,
-    author_name VARCHAR(128) NOT NULL,
+    author_name VARCHAR(128) NOT NULL DEFAULT '',
     author_role VARCHAR(64),
-    content TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
     is_internal BOOLEAN NOT NULL DEFAULT false,
     deleted_at TIMESTAMPTZ,
     version BIGINT NOT NULL DEFAULT 0,
@@ -105,5 +113,48 @@ CREATE TABLE IF NOT EXISTS ticket_comment (
     updated_by UUID
 );
 
+-- Ensure all columns exist if ticket_comment already existed from V6
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'ticket_comment' AND column_name = 'author_user_id'
+    ) THEN
+        ALTER TABLE ticket_comment ALTER COLUMN author_user_id DROP NOT NULL;
+    END IF;
+END $$;
+
+ALTER TABLE ticket_comment
+    ADD COLUMN IF NOT EXISTS author_id UUID,
+    ADD COLUMN IF NOT EXISTS author_name VARCHAR(128) NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS author_role VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS is_internal BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS version BIGINT NOT NULL DEFAULT 0;
+
 CREATE INDEX IF NOT EXISTS idx_ticket_comment_ticket ON ticket_comment(ticket_id);
 CREATE INDEX IF NOT EXISTS idx_ticket_comment_org_deleted ON ticket_comment(organization_id, deleted_at);
+
+-- 7. Automation Execution Log Table
+CREATE TABLE IF NOT EXISTS automation_execution_log (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    organization_id UUID NOT NULL REFERENCES organization(id),
+    rule_id UUID NOT NULL,
+    rule_version INTEGER,
+    trigger VARCHAR(64),
+    entity_type VARCHAR(64),
+    entity_id UUID,
+    dry_run BOOLEAN,
+    conditions_trace JSONB,
+    actions_executed JSONB,
+    status VARCHAR(32),
+    deleted_at TIMESTAMPTZ,
+    version BIGINT NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_by UUID,
+    updated_by UUID
+);
+
+CREATE INDEX IF NOT EXISTS idx_auto_exec_log_org ON automation_execution_log(organization_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_auto_exec_log_rule ON automation_execution_log(organization_id, rule_id);
