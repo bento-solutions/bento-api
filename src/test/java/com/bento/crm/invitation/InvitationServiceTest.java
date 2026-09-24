@@ -8,6 +8,7 @@ import com.bento.crm.common.model.UserRole;
 import com.bento.crm.identity.model.AppUser;
 import com.bento.crm.identity.model.Team;
 import com.bento.crm.identity.repository.AppUserRepository;
+import com.bento.crm.identity.repository.RefreshTokenRepository;
 import com.bento.crm.identity.repository.TeamRepository;
 import com.bento.crm.invitation.dto.CreateInvitationRequest;
 import com.bento.crm.invitation.dto.InvitationResponse;
@@ -52,6 +53,8 @@ class InvitationServiceTest {
     private UserInvitationRepository invitationRepository;
     @Mock
     private AppUserRepository userRepository;
+    @Mock
+    private RefreshTokenRepository refreshTokenRepository;
     @Mock
     private OrganizationRepository organizationRepository;
     @Mock
@@ -191,7 +194,9 @@ class InvitationServiceTest {
 
         when(userRepository.save(any(AppUser.class))).thenAnswer(invocationOnMock -> {
             AppUser u = invocationOnMock.getArgument(0);
-            u.setId(UUID.randomUUID());
+            if (u.getId() == null) {
+                u.setId(UUID.randomUUID());
+            }
             return u;
         });
 
@@ -208,9 +213,14 @@ class InvitationServiceTest {
         assertThat(invitation.getStatus()).isEqualTo(InvitationStatus.ACCEPTED);
         assertThat(invitation.getAcceptedUserId()).isNotNull();
 
+        // Single-org rule: the previous membership is deactivated and its sessions revoked
+        // before the new-organization account is created.
+        assertThat(currentUser.getIsActive()).isFalse();
+        verify(refreshTokenRepository).revokeAllForUser(eq(currentUserId), any(Instant.class));
+
         ArgumentCaptor<AppUser> userCaptor = ArgumentCaptor.forClass(AppUser.class);
-        verify(userRepository).save(userCaptor.capture());
-        AppUser savedUser = userCaptor.getValue();
+        verify(userRepository, times(2)).save(userCaptor.capture());
+        AppUser savedUser = userCaptor.getAllValues().get(1);
         assertThat(savedUser.getOrganizationId()).isEqualTo(targetOrgId);
         assertThat(savedUser.getEmail()).isEqualTo(email);
         assertThat(savedUser.getRole()).isEqualTo(UserRole.MANAGER);

@@ -14,7 +14,6 @@ import com.bento.crm.whatsapp.repository.WaFollowupRepository;
 import com.bento.crm.whatsapp.util.PhoneNumbers;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,6 +21,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -48,15 +48,25 @@ public class CampaignRecipientService {
      * campaign's own channel (phone for WhatsApp/SMS, email for Email). A partner missing that
      * detail is still recorded — as SKIPPED — rather than silently dropped: the agent selected
      * N contacts and should see all N accounted for, not wonder why the count is short.
-     * Partners already enrolled are left as they are (re-selecting them is a no-op, not a
-     * duplicate row — the table has a unique constraint on campaign_id + partner_id).
+     * Partners already enrolled are left as they are and returned unchanged (re-selecting them
+     * is a no-op, not a duplicate row — the table has a unique constraint on campaign_id +
+     * partner_id). They are checked up front rather than by catching the constraint violation:
+     * a failed flush marks the surrounding transaction rollback-only, so the whole request
+     * would fail on commit.
      */
     @Transactional
     public List<CampaignRecipient> enroll(UUID orgId, UUID campaignId, List<UUID> partnerIds) {
         Campaign campaign = requireCampaign(orgId, campaignId);
-        List<CampaignRecipient> created = new ArrayList<>();
+        Map<UUID, CampaignRecipient> existing = recipientRepository.findAllByCampaign(orgId, campaignId).stream()
+                .collect(Collectors.toMap(CampaignRecipient::getPartnerId, r -> r, (a, b) -> a));
+        List<CampaignRecipient> enrolled = new ArrayList<>();
 
-        for (UUID partnerId : partnerIds) {
+        for (UUID partnerId : new LinkedHashSet<>(partnerIds)) {
+            CampaignRecipient already = existing.get(partnerId);
+            if (already != null) {
+                enrolled.add(already);
+                continue;
+            }
             Partner partner = partnerRepository.findByOrganizationIdAndId(orgId, partnerId).orElse(null);
             if (partner == null) {
                 log.warn("[campaign] partner {} not found in org {}, skipping", partnerId, orgId);
@@ -69,14 +79,9 @@ public class CampaignRecipientService {
             recipient.setPartnerId(partnerId);
             recipient.setFollowupCount(0);
             resolveContact(campaign.getChannel(), partner, recipient);
-
-            try {
-                created.add(recipientRepository.saveAndFlush(recipient));
-            } catch (DataIntegrityViolationException e) {
-                log.debug("[campaign] partner {} already in campaign {}", partnerId, campaignId);
-            }
+            enrolled.add(recipientRepository.save(recipient));
         }
-        return created;
+        return enrolled;
     }
 
     /** Fills in the recipient's reachable contact detail, or marks it SKIPPED when there is none. */
