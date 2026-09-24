@@ -23,7 +23,9 @@ RUN groupadd -g 1001 appgroup && \
 
 COPY --from=builder /build/target/*.jar app.jar
 
-RUN chown -R appuser:appgroup /app
+RUN mkdir -p /data/uploads && \
+    chown -R appuser:appgroup /data/uploads && \
+    chown -R appuser:appgroup /app
 
 USER appuser
 

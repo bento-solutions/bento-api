@@ -104,8 +104,8 @@ public class FileController {
     @GetMapping("/public/{id}")
     @Operation(summary = "View public file inline", description = "Stream public file such as organization logo")
     public ResponseEntity<Resource> viewPublicFile(@PathVariable UUID id) {
-        StoredFile storedFile = fileStorageService.getMetadata(id);
-        Resource resource = fileStorageService.load(id);
+        StoredFile storedFile = fileStorageService.getPublicMetadata(id);
+        Resource resource = fileStorageService.loadPublic(id);
 
         MediaType mediaType;
         try {

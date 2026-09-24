@@ -17,5 +17,9 @@ public interface FileStorageService {
 
     Resource load(UUID fileId);
 
+    StoredFile getPublicMetadata(UUID fileId);
+
+    Resource loadPublic(UUID fileId);
+
     void delete(UUID fileId);
 }

@@ -13,6 +13,11 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.PostgreSQLContainer;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
 /**
@@ -47,6 +52,7 @@ public abstract class IntegrationTestBase {
 
     public static final PostgreSQLContainer<?> postgres;
     public static final GenericContainer<?> redis;
+    private static final Path fileStorage;
 
     static {
         // Match the production/dev image (docker-compose*.yml) so schema behaviour the tests
@@ -59,6 +65,12 @@ public abstract class IntegrationTestBase {
                 .withExposedPorts(6379);
         postgres.start();
         redis.start();
+        // The default FILE_STORAGE_PATH (/data/uploads) only exists inside the container image.
+        try {
+            fileStorage = Files.createTempDirectory("crm-test-uploads");
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     // Testcontainers assigns random host ports, so the datasource/redis coordinates baked into
@@ -72,6 +84,7 @@ public abstract class IntegrationTestBase {
         registry.add("spring.datasource.password", postgres::getPassword);
         registry.add("spring.data.redis.host", redis::getHost);
         registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
+        registry.add("FILE_STORAGE_PATH", fileStorage::toString);
     }
 
     @Autowired

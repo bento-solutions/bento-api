@@ -61,6 +61,16 @@ if ! dc pull app; then
   dc pull app
 fi
 
+# Ensure the uploads directory exists and is owned by container appuser (1001:1001)
+mkdir -p uploads
+if [ "$(id -u)" -eq 0 ]; then
+  chown -R 1001:1001 uploads
+  chmod 775 uploads
+elif sudo -n true 2>/dev/null; then
+  sudo chown -R 1001:1001 uploads
+  sudo chmod 775 uploads
+fi
+
 # Full `up -d` so committed changes to postgres/redis/pgadmin are applied too.
 # Compose only recreates services whose config or image actually changed, so a
 # normal app-only deploy leaves the database and cache untouched.

@@ -110,6 +110,24 @@ public class LocalFileStorageService implements FileStorageService {
     }
 
     @Override
+    public StoredFile getPublicMetadata(UUID fileId) {
+        return fileRepository.findPublicById(fileId)
+                .orElseThrow(() -> new ResourceNotFoundException("File not found"));
+    }
+
+    @Override
+    public Resource loadPublic(UUID fileId) {
+        StoredFile storedFile = getPublicMetadata(fileId);
+
+        Path storageRoot = Paths.get(storagePath).toAbsolutePath().normalize();
+        Path path = Paths.get(storedFile.getStoragePath()).toAbsolutePath().normalize();
+        if (!path.startsWith(storageRoot) || !Files.exists(path)) {
+            throw new ResourceNotFoundException("File not found in storage");
+        }
+        return new FileSystemResource(path);
+    }
+
+    @Override
     public void delete(UUID fileId) {
         UUID orgId = TenantContext.getCurrentOrganizationId();
         StoredFile storedFile = fileRepository.findByOrganizationIdAndId(orgId, fileId)
