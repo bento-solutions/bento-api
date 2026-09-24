@@ -100,9 +100,9 @@ management:
     # so it must not gate the deploy healthcheck.
     mail:
       enabled: false
-  metrics:
-    export:
-      prometheus:
+  prometheus:
+    metrics:
+      export:
         enabled: true
 
 logging:

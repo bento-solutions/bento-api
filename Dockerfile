@@ -1,5 +1,5 @@
 # Build stage
-FROM maven:3.9-eclipse-temurin-17 AS builder
+FROM maven:3.9-eclipse-temurin-21 AS builder
 
 WORKDIR /build
 
@@ -14,7 +14,7 @@ RUN mvn clean package -DskipTests \
     -Dmaven.wagon.http.ssl.ignore.validity.dates=true
 
 # Runtime stage
-FROM maven:3.9-eclipse-temurin-17
+FROM maven:3.9-eclipse-temurin-21
 
 WORKDIR /app
 
