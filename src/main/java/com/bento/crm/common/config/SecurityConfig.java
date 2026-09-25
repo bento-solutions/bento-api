@@ -1,6 +1,7 @@
 package com.bento.crm.common.config;
 
 import com.bento.crm.auth.filter.JwtAuthFilter;
+import jakarta.servlet.DispatcherType;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
@@ -50,6 +51,11 @@ public class SecurityConfig {
                 .csrf(csrf -> csrf.disable())
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
                 .authorizeHttpRequests(authz -> authz
+                        // Re-dispatches of a request that was already authorized on its REQUEST
+                        // dispatch: an SSE stream completing (ASYNC) or an error page (ERROR). With
+                        // stateless JWT auth they carry no security context and would otherwise be
+                        // denied, turning a clean stream close into an access-denied error.
+                        .dispatcherTypeMatchers(DispatcherType.ASYNC, DispatcherType.ERROR).permitAll()
                         .requestMatchers(AntPathRequestMatcher.antMatcher(HttpMethod.OPTIONS, "/**")).permitAll()
                         .requestMatchers(
                                 // Organization registration (signup)

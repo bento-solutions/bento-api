@@ -53,8 +53,9 @@ public class WhatsAppSendService {
         // The caller's instance belongs to another persistence context: campaign dispatch holds
         // it detached, and a relance holds it in the worker's own REQUIRES_NEW transaction.
         // Updating that instance here would save it against a stale @Version (and, for a
-        // relance, leave it dirty in the worker's context). Work on this transaction's copy.
-        CampaignRecipient recipient = recipientRepository.findById(callerRecipient.getId()).orElse(null);
+        // relance, leave it dirty in the worker's context). Work on this transaction's copy,
+        // locked so a concurrent reply or receipt for the same recipient waits for this send.
+        CampaignRecipient recipient = recipientRepository.findByIdForUpdate(callerRecipient.getId()).orElse(null);
         if (recipient == null) {
             return new Outcome(false, null, "RECIPIENT_REMOVED", false);
         }
@@ -76,6 +77,7 @@ public class WhatsAppSendService {
         message.setTemplateParams(campaign.getTemplateParams());
         message.setBody(campaign.getBodyPreview());
         message.setSequenceStep(sequenceStep);
+        message.setSource(WaMessage.Source.CAMPAIGN);
         message.setStatus(WaMessage.Status.QUEUED);
 
         WhatsAppProvider provider = providerRegistry.forAccount(account);
@@ -89,6 +91,8 @@ public class WhatsAppSendService {
         if (result.success()) {
             message.setWamid(result.wamid());
             message.setStatus(WaMessage.Status.SENT);
+            message.setOccurredAt(now);
+            message.setSentAt(now);
             messageRepository.save(message);
 
             // Delivery states only ever move forward: a contact who already replied
@@ -102,7 +106,7 @@ public class WhatsAppSendService {
                 recipient.setLastFollowupAt(now);
             }
             recipientRepository.save(recipient);
-            conversationService.recordOutbound(conversation.getId(), now);
+            conversationService.recordOutbound(conversation.getId(), now, message.getBody());
 
             return new Outcome(true, message.getId(), null, false);
         }

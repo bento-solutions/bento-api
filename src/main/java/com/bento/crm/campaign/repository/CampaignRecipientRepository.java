@@ -3,7 +3,9 @@ package com.bento.crm.campaign.repository;
 import com.bento.crm.campaign.model.CampaignRecipient;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -33,6 +35,19 @@ public interface CampaignRecipientRepository extends JpaRepository<CampaignRecip
      */
     @Query("SELECT r FROM CampaignRecipient r WHERE r.conversationId = :conversationId")
     List<CampaignRecipient> findByConversation(@Param("conversationId") UUID conversationId);
+
+    /**
+     * Same rows as {@link #findByConversation}, locked for update in id order. An inbound reply
+     * and delivery receipts can update one recipient at the same moment; the row lock serializes
+     * them, where the entity's {@code @Version} would reject the loser and drop its update.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT r FROM CampaignRecipient r WHERE r.conversationId = :conversationId ORDER BY r.id")
+    List<CampaignRecipient> findByConversationForUpdate(@Param("conversationId") UUID conversationId);
+
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT r FROM CampaignRecipient r WHERE r.id = :id")
+    Optional<CampaignRecipient> findByIdForUpdate(@Param("id") UUID id);
 
     @Query("""
             SELECT r.status, COUNT(r) FROM CampaignRecipient r
