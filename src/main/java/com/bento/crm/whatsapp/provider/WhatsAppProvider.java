@@ -2,6 +2,7 @@ package com.bento.crm.whatsapp.provider;
 
 import com.bento.crm.whatsapp.model.WaAccount;
 
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -47,6 +48,24 @@ public interface WhatsAppProvider {
     }
 
     /**
+     * Same, with what the outbox knows about the conversation. A linked personal number uses it to
+     * behave like a person: refuse first messages while WhatsApp restricts the number, and read the
+     * contact's last message before replying.
+     */
+    default SendResult sendText(WaAccount account, String toPhoneE164, String body, String clientMessageId,
+                                SendHints hints) {
+        return sendText(account, toPhoneE164, body, clientMessageId);
+    }
+
+    /**
+     * @param newChat       the message opens the conversation (nothing was sent to the contact before)
+     * @param readUpToWamid the contact's latest message, to mark read before replying (null when not replying)
+     */
+    record SendHints(boolean newChat, String readUpToWamid) {
+        public static final SendHints NONE = new SendHints(false, null);
+    }
+
+    /**
      * Whether sends must be spaced out and capped by the outbox. True for a personal number
      * linked through Baileys, where WhatsApp bans numbers that behave like bulk senders; Meta's
      * Cloud API does its own rate limiting.
@@ -72,12 +91,18 @@ public interface WhatsAppProvider {
      * @param retryable  whether a later retry could plausibly succeed (rate limits,
      *                   transport failures) as opposed to permanent rejections
      *                   (unknown template, number not on WhatsApp)
+     * @param retryAt    set for a deferral: when the send may be tried again (see {@link #deferred})
      */
     record SendResult(boolean success,
                       String wamid,
                       String errorCode,
                       String errorTitle,
-                      boolean retryable) {
+                      boolean retryable,
+                      Instant retryAt) {
+
+        public SendResult(boolean success, String wamid, String errorCode, String errorTitle, boolean retryable) {
+            this(success, wamid, errorCode, errorTitle, retryable, null);
+        }
 
         public static SendResult ok(String wamid) {
             return new SendResult(true, wamid, null, null, false);
@@ -89,6 +114,18 @@ public interface WhatsAppProvider {
 
         public static SendResult retryableFailure(String code, String title) {
             return new SendResult(false, null, code, title, true);
+        }
+
+        /**
+         * Not a failure of this message: the number's limits or WhatsApp's restriction hold it for
+         * now. It goes back to the queue until {@code retryAt} without using up an attempt.
+         */
+        public static SendResult deferred(String code, String title, Instant retryAt) {
+            return new SendResult(false, null, code, title, true, retryAt);
+        }
+
+        public boolean isDeferral() {
+            return !success && retryAt != null;
         }
     }
 }

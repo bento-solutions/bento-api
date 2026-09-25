@@ -156,43 +156,136 @@ class WaOutboxTest extends IntegrationTestBase {
         send(s, "{\"text\": \"promo\"}").andExpect(status().isConflict());
     }
 
+    // --- pacing (paced accounts; see docs/whatsapp-anti-spam-policy.md) ------------------------
+
+    private static final ZoneId CASABLANCA = ZoneId.of("Africa/Casablanca");
+    /** A Wednesday at 11:00 local: inside business hours. */
+    private static final Instant WEDNESDAY = ZonedDateTime.of(2026, 9, 23, 11, 0, 0, 0, CASABLANCA).toInstant();
+    private static final Instant THURSDAY_9AM = ZonedDateTime.of(2026, 9, 24, 9, 0, 0, 0, CASABLANCA).toInstant();
+
     @Test
-    void pacing_spacesRepliesAndHoldsOutreachToCapsAndBusinessHours() throws Exception {
+    void gaps_areAtLeastTheMinimum_andNeverTheSameTwice() throws Exception {
         UUID orgId = orgIdOf(signUpAndLogin());
-        ZoneId casablanca = ZoneId.of("Africa/Casablanca");
-        // A Wednesday at 11:00 local: inside business hours.
-        Instant wednesday = ZonedDateTime.of(2026, 9, 23, 11, 0, 0, 0, casablanca).toInstant();
-        UUID conversationId = conversationFor(orgId, "+2126" + digits8());
-        com.bento.crm.whatsapp.model.WaAccount account = new com.bento.crm.whatsapp.model.WaAccount();
-        account.setOrganizationId(orgId);
-
+        com.bento.crm.whatsapp.model.WaAccount account = account(orgId);
         WaMessage reply = message(WaMessage.Lane.REPLY, false);
-        assertThat(pacingPolicy.eligibleAt(account, reply, wednesday)).isEqualTo(wednesday);
+        assertThat(pacingPolicy.eligibleAt(account, reply, WEDNESDAY)).as("nothing sent yet").isEqualTo(WEDNESDAY);
 
-        insertSent(orgId, conversationId, wednesday.minusSeconds(1), WaMessage.Lane.REPLY, false);
-        assertThat(pacingPolicy.eligibleAt(account, reply, wednesday))
-                .as("3s minimum gap after the last send").isEqualTo(wednesday.plusSeconds(2));
-        assertThat(pacingPolicy.eligibleAt(account, message(WaMessage.Lane.OUTREACH, false), wednesday))
-                .as("10s gap for outreach").isEqualTo(wednesday.plusSeconds(9));
+        insertSent(orgId, conversationFor(orgId, "+2126" + digits8()), WEDNESDAY.minusSeconds(1), WaMessage.Lane.REPLY, false);
+        assertThat(pacingPolicy.eligibleAt(account, reply, WEDNESDAY)).as("8s minimum after the last send").isEqualTo(WEDNESDAY.plusSeconds(7));
+        assertThat(pacingPolicy.eligibleAt(account, message(WaMessage.Lane.OUTREACH, false), WEDNESDAY))
+                .as("90s minimum for outreach").isEqualTo(WEDNESDAY.plusSeconds(89));
 
-        Instant sunday = ZonedDateTime.of(2026, 9, 27, 11, 0, 0, 0, casablanca).toInstant();
+        java.util.Set<Instant> replyTimes = new java.util.HashSet<>();
+        for (int i = 0; i < 20; i++) {
+            WaMessage m = message(WaMessage.Lane.REPLY, false);
+            m.setId(UUID.randomUUID());
+            Instant at = pacingPolicy.eligibleAt(account, m, WEDNESDAY);
+            assertThat(at).as("8–20s after the last send").isBetween(WEDNESDAY.plusSeconds(7), WEDNESDAY.plusSeconds(19));
+            assertThat(pacingPolicy.eligibleAt(account, m, WEDNESDAY)).as("stable for one message").isEqualTo(at);
+            replyTimes.add(at);
+
+            WaMessage o = message(WaMessage.Lane.OUTREACH, false);
+            o.setId(UUID.randomUUID());
+            assertThat(pacingPolicy.eligibleAt(account, o, WEDNESDAY)).as("90–225s for outreach")
+                    .isBetween(WEDNESDAY.plusSeconds(89), WEDNESDAY.plusSeconds(224));
+        }
+        assertThat(replyTimes).as("sends never tick at a regular interval").hasSizeGreaterThan(15);
+    }
+
+    @Test
+    void outreach_waitsForBusinessHours_andStopsAtTheDailyAndHourlyCaps() throws Exception {
+        com.bento.crm.whatsapp.model.WaAccount account = account(orgIdOf(signUpAndLogin()));
+        UUID orgId = account.getOrganizationId();
+        UUID conversationId = conversationFor(orgId, "+2126" + digits8());
+
+        Instant sunday = ZonedDateTime.of(2026, 9, 27, 11, 0, 0, 0, CASABLANCA).toInstant();
         assertThat(pacingPolicy.eligibleAt(account, message(WaMessage.Lane.OUTREACH, false), sunday))
-                .as("no outreach on Sunday").isEqualTo(ZonedDateTime.of(2026, 9, 28, 9, 0, 0, 0, casablanca).toInstant());
-        assertThat(pacingPolicy.eligibleAt(account, reply, sunday))
+                .as("no outreach on Sunday").isEqualTo(ZonedDateTime.of(2026, 9, 28, 9, 0, 0, 0, CASABLANCA).toInstant());
+        assertThat(pacingPolicy.eligibleAt(account, message(WaMessage.Lane.REPLY, false), sunday))
                 .as("replies ignore business hours").isEqualTo(sunday);
 
-        for (int i = 0; i < 15; i++) {
-            insertSent(orgId, conversationId, wednesday.minus(Duration.ofMinutes(90 + i)), WaMessage.Lane.OUTREACH, true);
+        for (int i = 0; i < 10; i++) {
+            insertSent(orgId, conversationId, WEDNESDAY.minus(Duration.ofMinutes(90 + i)), WaMessage.Lane.OUTREACH, true);
         }
-        assertThat(pacingPolicy.eligibleAt(account, message(WaMessage.Lane.OUTREACH, true), wednesday))
-                .as("15 new chats already opened today")
-                .isEqualTo(ZonedDateTime.of(2026, 9, 24, 9, 0, 0, 0, casablanca).toInstant());
+        assertThat(pacingPolicy.eligibleAt(account, message(WaMessage.Lane.OUTREACH, true), WEDNESDAY))
+                .as("10 new chats already opened today").isEqualTo(THURSDAY_9AM);
 
-        for (int i = 0; i < 30; i++) {
-            insertSent(orgId, conversationId, wednesday.minus(Duration.ofMinutes(50 - i)), WaMessage.Lane.OUTREACH, false);
+        for (int i = 0; i < 8; i++) {
+            insertSent(orgId, conversationId, WEDNESDAY.minus(Duration.ofMinutes(50 - i)), WaMessage.Lane.OUTREACH, false);
         }
-        assertThat(pacingPolicy.eligibleAt(account, message(WaMessage.Lane.OUTREACH, false), wednesday))
-                .as("30 outreach messages in the last hour").isAfter(wednesday.plusSeconds(60));
+        assertThat(pacingPolicy.eligibleAt(account, message(WaMessage.Lane.OUTREACH, false), WEDNESDAY))
+                .as("8 outreach messages in the last hour").isEqualTo(WEDNESDAY.plus(Duration.ofMinutes(2)));
+
+        com.bento.crm.whatsapp.model.WaAccount other = account(orgIdOf(signUpAndLogin()));
+        UUID otherConversation = conversationFor(other.getOrganizationId(), "+2126" + digits8());
+        for (int i = 0; i < 22; i++) {
+            insertSent(other.getOrganizationId(), otherConversation,
+                    ZonedDateTime.of(2026, 9, 23, 9, 2 * i, 0, 0, CASABLANCA).toInstant(), WaMessage.Lane.OUTREACH, false);
+        }
+        assertThat(pacingPolicy.eligibleAt(other, message(WaMessage.Lane.OUTREACH, false), WEDNESDAY))
+                .as("22 outreach messages today: about two per allowed new chat").isEqualTo(THURSDAY_9AM);
+    }
+
+    @Test
+    void warmup_repliesOnlyForTwoDays_thenTheNewChatCapRisesStepByStep() throws Exception {
+        com.bento.crm.whatsapp.model.WaAccount account = account(orgIdOf(signUpAndLogin()));
+        account.setWarmupStartedAt(WEDNESDAY.minus(Duration.ofHours(1)));
+        assertThat(pacingPolicy.eligibleAt(account, message(WaMessage.Lane.OUTREACH, true), WEDNESDAY))
+                .as("48h quiet period after linking").isEqualTo(WEDNESDAY.plus(Duration.ofHours(47)));
+        assertThat(pacingPolicy.eligibleAt(account, message(WaMessage.Lane.REPLY, false), WEDNESDAY)).isEqualTo(WEDNESDAY);
+
+        java.util.function.IntFunction<Integer> capOnRampDay = day -> {
+            account.setWarmupStartedAt(WEDNESDAY.minus(Duration.ofDays(2L + day)));
+            return pacingPolicy.newChatsCap(account, WEDNESDAY);
+        };
+        assertThat(capOnRampDay.apply(0)).isEqualTo(3);
+        assertThat(capOnRampDay.apply(4)).isEqualTo(3);
+        assertThat(capOnRampDay.apply(5)).isEqualTo(6);
+        assertThat(capOnRampDay.apply(12)).isEqualTo(10);
+        account.setNewChatsPerDay(20);
+        assertThat(capOnRampDay.apply(25)).as("still warming up").isEqualTo(10);
+        assertThat(capOnRampDay.apply(26)).as("then the account's own cap").isEqualTo(20);
+
+        account.setNewChatsPerDay(null);
+        account.setWarmupStartedAt(WEDNESDAY.minus(Duration.ofDays(2)));
+        UUID conversationId = conversationFor(account.getOrganizationId(), "+2126" + digits8());
+        for (int i = 0; i < 3; i++) {
+            insertSent(account.getOrganizationId(), conversationId, WEDNESDAY.minus(Duration.ofMinutes(60 + i)),
+                    WaMessage.Lane.OUTREACH, true);
+        }
+        assertThat(pacingPolicy.eligibleAt(account, message(WaMessage.Lane.OUTREACH, true), WEDNESDAY))
+                .as("first ramp day: 3 new chats").isEqualTo(THURSDAY_9AM);
+    }
+
+    @Test
+    void outreach_waitsOutAPauseAndWhatsAppsRestriction_whileRepliesStillGo() throws Exception {
+        com.bento.crm.whatsapp.model.WaAccount account = account(orgIdOf(signUpAndLogin()));
+        account.setOutreachPausedUntil(WEDNESDAY.plus(Duration.ofHours(5)));
+        assertThat(pacingPolicy.eligibleAt(account, message(WaMessage.Lane.OUTREACH, false), WEDNESDAY))
+                .isEqualTo(WEDNESDAY.plus(Duration.ofHours(5)));
+
+        account.setReachoutLockedUntil(WEDNESDAY.plus(Duration.ofHours(30)));
+        assertThat(pacingPolicy.eligibleAt(account, message(WaMessage.Lane.OUTREACH, true), WEDNESDAY))
+                .as("the later of the two").isEqualTo(WEDNESDAY.plus(Duration.ofHours(30)));
+        assertThat(pacingPolicy.eligibleAt(account, message(WaMessage.Lane.REPLY, false), WEDNESDAY)).isEqualTo(WEDNESDAY);
+    }
+
+    @Test
+    void whatsAppsQuota_isNeverUsedPastHalf_andAWarningHalvesTheCap() throws Exception {
+        com.bento.crm.whatsapp.model.WaAccount account = account(orgIdOf(signUpAndLogin()));
+        account.setNewChatQuota(10);
+        assertThat(pacingPolicy.newChatsCap(account, WEDNESDAY)).isEqualTo(5);
+        account.setNewChatCapStatus("FIRST_WARNING");
+        assertThat(pacingPolicy.newChatsCap(account, WEDNESDAY)).isEqualTo(2);
+
+        Instant cycleEnd = ZonedDateTime.of(2026, 9, 24, 14, 0, 0, 0, CASABLANCA).toInstant();
+        account.setNewChatCapStatus("NONE");
+        account.setNewChatQuotaUsed(5);
+        account.setNewChatCycleEndsAt(cycleEnd);
+        assertThat(pacingPolicy.eligibleAt(account, message(WaMessage.Lane.OUTREACH, true), WEDNESDAY))
+                .as("half the quota is used: new chats wait for the next cycle").isEqualTo(cycleEnd);
+        assertThat(pacingPolicy.eligibleAt(account, message(WaMessage.Lane.OUTREACH, false), WEDNESDAY))
+                .as("a relance to an existing chat is not a new chat").isEqualTo(WEDNESDAY);
     }
 
     // --- helpers -----------------------------------------------------------------------------
@@ -254,6 +347,12 @@ class WaOutboxTest extends IntegrationTestBase {
                 VALUES (?, ?, ?, 'OUT', 'text', 'x', 'SENT', 'HUMAN', ?, ?, ?, ?)
                 """, UUID.randomUUID(), orgId, conversationId, Timestamp.from(sentAt), Timestamp.from(sentAt),
                 lane.name(), newChat);
+    }
+
+    private static com.bento.crm.whatsapp.model.WaAccount account(UUID orgId) {
+        com.bento.crm.whatsapp.model.WaAccount account = new com.bento.crm.whatsapp.model.WaAccount();
+        account.setOrganizationId(orgId);
+        return account;
     }
 
     private static WaMessage message(WaMessage.Lane lane, boolean newChat) {

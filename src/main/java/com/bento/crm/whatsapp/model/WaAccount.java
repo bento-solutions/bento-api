@@ -92,6 +92,40 @@ public class WaAccount extends BaseTenantEntity {
     @Column(name = "session_error", length = 500)
     private String sessionError;
 
+    // --- Anti-spam state (provider BAILEYS) ----------------------------------------------------
+
+    /** Outreach waits until this time (replies still go); set by the circuit breaker or an admin. */
+    @Column(name = "outreach_paused_until")
+    private Instant outreachPausedUntil;
+
+    @Column(name = "outreach_pause_reason", length = 300)
+    private String outreachPauseReason;
+
+    /** Start of the warm-up (quiet period, then a rising daily cap on new chats). */
+    @Column(name = "warmup_started_at")
+    private Instant warmupStartedAt;
+
+    /** WhatsApp's reachout timelock: the number may not start new chats until then. */
+    @Column(name = "reachout_locked_until")
+    private Instant reachoutLockedUntil;
+
+    @Column(name = "reachout_enforcement", length = 60)
+    private String reachoutEnforcement;
+
+    /** WhatsApp's quota of first messages for the current cycle. */
+    @Column(name = "new_chat_quota")
+    private Integer newChatQuota;
+
+    @Column(name = "new_chat_quota_used")
+    private Integer newChatQuotaUsed;
+
+    /** NONE, FIRST_WARNING, SECOND_WARNING or CAPPED, as WhatsApp reports it. */
+    @Column(name = "new_chat_cap_status", length = 30)
+    private String newChatCapStatus;
+
+    @Column(name = "new_chat_cycle_ends_at")
+    private Instant newChatCycleEndsAt;
+
     // --- Organization settings ----------------------------------------------------------------
 
     @Column(name = "reply_min_gap_seconds")

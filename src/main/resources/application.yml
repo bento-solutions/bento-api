@@ -174,12 +174,25 @@ whatsapp:
     poll-interval-ms: ${WHATSAPP_OUTBOX_POLL_MS:2000}
     max-attempts: 5
     stale-sending-after: PT2M
-    # Defaults for a paced (personal) number; each organization can override them.
+    # Defaults for a paced (personal) number; each organization can override the first four
+    # within the bounds Settings -> WhatsApp enforces. See docs/whatsapp-anti-spam-policy.md.
     pacing:
-      reply-min-gap: PT3S
-      outreach-min-gap: PT10S
-      outreach-per-hour: 30
-      new-chats-per-day: 15
+      reply-min-gap: PT8S
+      outreach-min-gap: PT90S
+      outreach-per-hour: 8
+      new-chats-per-day: 10
+      outreach-per-day: 25
+      gap-jitter: 1.5
+      quiet-period: PT48H
+      warmup: 5x3,7x6,14x10
+      quota-share: 0.5
+      window-spread: PT30M
+    safety:
+      pause-after-logout: PT72H
+      pause-after-refusal: PT24H
+      delivery-grace: PT3H
+      delivery-min-sample: 6
+      delivery-max-undelivered: 0.5
   stream:
     heartbeat-ms: 25000
 

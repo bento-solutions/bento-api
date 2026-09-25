@@ -19,9 +19,18 @@ export function loadConfig(env = process.env) {
         webhookSecret: env.WEBHOOK_SECRET || '',
         dataDir: path.resolve(env.DATA_DIR || '/data'),
         logLevel: env.LOG_LEVEL || 'info',
-        maxPairingAttempts: int(env.MAX_PAIRING_ATTEMPTS, 5),
-        guardPerMinute: int(env.GUARD_PER_MINUTE, 20),
-        guardPerHour: int(env.GUARD_PER_HOUR, 200),
+        // Each code is a request to WhatsApp's linking service; a few is plenty for a person
+        // standing at the phone, and a stream of them looks like an automated takeover attempt.
+        maxPairingAttempts: int(env.MAX_PAIRING_ATTEMPTS, 3),
+        // Hard backstops, far below anything the CRM's pacing should ever reach: a person does not
+        // send more than a handful of messages a minute, or open more than a few chats a day.
+        guardPerMinute: int(env.GUARD_PER_MINUTE, 6),
+        guardPerHour: int(env.GUARD_PER_HOUR, 60),
+        guardNewChatsPerDay: int(env.GUARD_NEW_CHATS_PER_DAY, 15),
+        // Read the chat and show "typing…" before each send, as a person would.
+        simulateTyping: env.SIMULATE_TYPING !== 'false',
+        // How often to ask WhatsApp for the number's restriction and new-chat quota while open.
+        safetyRefreshMinutes: int(env.SAFETY_REFRESH_MINUTES, 30),
         sentRetentionDays: int(env.SENT_RETENTION_DAYS, 7),
         lidHoldHours: int(env.LID_HOLD_HOURS, 24),
         webhookBatchSize: int(env.WEBHOOK_BATCH_SIZE, 50),

@@ -3,6 +3,7 @@ package com.bento.crm.whatsapp.controller;
 import com.bento.crm.common.context.TenantContext;
 import com.bento.crm.common.exception.ResourceNotFoundException;
 import com.bento.crm.identity.repository.AppUserRepository;
+import com.bento.crm.whatsapp.service.WaOutreachGuard;
 import com.bento.crm.whatsapp.service.WaSessionService;
 import com.bento.crm.whatsapp.model.WaAccount;
 import com.bento.crm.whatsapp.repository.WaAccountRepository;
@@ -32,6 +33,8 @@ public class WaAccountController {
     private final WaAccountRepository accountRepository;
     private final WaSessionService sessionService;
     private final AppUserRepository userRepository;
+    private final WaOutreachGuard outreachGuard;
+    private final jakarta.persistence.EntityManager entityManager;
 
     @GetMapping
     @PreAuthorize("hasAuthority('CAMPAIGNS_READ')")
@@ -107,7 +110,7 @@ public class WaAccountController {
     @PreAuthorize("hasAuthority('WHATSAPP_ADMIN')")
     @Operation(summary = "Lead creation, visibility and pacing settings")
     public ResponseEntity<SettingsDto> settings() {
-        return ResponseEntity.ok(SettingsDto.from(requireAccount()));
+        return ResponseEntity.ok(withSafety(requireAccount()));
     }
 
     @PutMapping("/settings")
@@ -127,11 +130,41 @@ public class WaAccountController {
             throw new IllegalArgumentException("Unknown user for the default assignee");
         }
         account.setDefaultAssigneeUserId(request.getDefaultAssigneeUserId());
-        account.setReplyMinGapSeconds(atLeast(request.getReplyMinGapSeconds(), 1, "replyMinGapSeconds"));
-        account.setOutreachMinGapSeconds(atLeast(request.getOutreachMinGapSeconds(), 5, "outreachMinGapSeconds"));
-        account.setOutreachPerHour(atLeast(request.getOutreachPerHour(), 1, "outreachPerHour"));
-        account.setNewChatsPerDay(atLeast(request.getNewChatsPerDay(), 0, "newChatsPerDay"));
-        return ResponseEntity.ok(SettingsDto.from(accountRepository.save(account)));
+        // Bounds from docs/whatsapp-anti-spam-policy.md: looser than this and a personal number
+        // behaves like a bulk sender, whatever the admin intends.
+        account.setReplyMinGapSeconds(within(request.getReplyMinGapSeconds(), 5, 300, "replyMinGapSeconds"));
+        account.setOutreachMinGapSeconds(within(request.getOutreachMinGapSeconds(), 60, 3600, "outreachMinGapSeconds"));
+        account.setOutreachPerHour(within(request.getOutreachPerHour(), 1, 15, "outreachPerHour"));
+        account.setNewChatsPerDay(within(request.getNewChatsPerDay(), 0, 25, "newChatsPerDay"));
+        return ResponseEntity.ok(withSafety(accountRepository.save(account)));
+    }
+
+    @PostMapping("/outreach/pause")
+    @PreAuthorize("hasAuthority('WHATSAPP_ADMIN')")
+    @Operation(summary = "Stop first messages, relances and campaigns for a while; replies still go out")
+    public ResponseEntity<SettingsDto> pauseOutreach(@RequestBody PauseRequest request) {
+        int hours = request.getHours() == null ? 24 : request.getHours();
+        if (hours < 1 || hours > 720) {
+            throw new IllegalArgumentException("hours must be between 1 and 720");
+        }
+        outreachGuard.manualPause(TenantContext.getCurrentOrganizationId(), java.time.Duration.ofHours(hours), request.getReason());
+        return ResponseEntity.ok(withSafety(freshAccount()));
+    }
+
+    @PostMapping("/outreach/resume")
+    @PreAuthorize("hasAuthority('WHATSAPP_ADMIN')")
+    @Operation(summary = "Lift Bento's outreach pause (WhatsApp's own restriction and the warm-up still apply)")
+    public ResponseEntity<SettingsDto> resumeOutreach() {
+        outreachGuard.resume(TenantContext.getCurrentOrganizationId());
+        return ResponseEntity.ok(withSafety(freshAccount()));
+    }
+
+    private SettingsDto withSafety(WaAccount account) {
+        SettingsDto dto = SettingsDto.from(account);
+        if (account.getProvider() == WaAccount.Provider.BAILEYS) {
+            dto.setSafety(outreachGuard.view(account, java.time.Instant.now()));
+        }
+        return dto;
     }
 
     // --- Linked personal number (Baileys) ------------------------------------------------------
@@ -188,16 +221,31 @@ public class WaAccountController {
         }
     }
 
+    /**
+     * The account as stored now. The guard writes with direct UPDATEs, and within one request
+     * (open-session-in-view) an entity loaded earlier would still show the old values.
+     */
+    private WaAccount freshAccount() {
+        entityManager.clear();
+        return requireAccount();
+    }
+
     private WaAccount requireAccount() {
         return accountRepository.findByOrganizationId(TenantContext.getCurrentOrganizationId())
                 .orElseThrow(() -> new ResourceNotFoundException("No WhatsApp account"));
     }
 
-    private static Integer atLeast(Integer value, int min, String field) {
-        if (value != null && value < min) {
-            throw new IllegalArgumentException(field + " must be at least " + min);
+    private static Integer within(Integer value, int min, int max, String field) {
+        if (value != null && (value < min || value > max)) {
+            throw new IllegalArgumentException(field + " must be between " + min + " and " + max);
         }
         return value;
+    }
+
+    @Data
+    public static class PauseRequest {
+        private Integer hours;
+        private String reason;
     }
 
     @Data
@@ -218,6 +266,8 @@ public class WaAccountController {
         private Integer outreachMinGapSeconds;
         private Integer outreachPerHour;
         private Integer newChatsPerDay;
+        /** Read-only: pause, WhatsApp's restriction and quota, warm-up, today's counts (linked numbers). */
+        private WaOutreachGuard.SafetyView safety;
 
         static SettingsDto from(WaAccount a) {
             return SettingsDto.builder()
@@ -259,6 +309,10 @@ public class WaAccountController {
         private boolean hasAccessToken;
         private String sessionState;
         private String linkedPhone;
+        /** Outreach waits until then (Bento's pause); null when not paused. */
+        private java.time.Instant outreachPausedUntil;
+        /** WhatsApp forbids starting new chats until then; null when not restricted. */
+        private java.time.Instant reachoutLockedUntil;
 
         static WaAccountResponse from(WaAccount a) {
             return WaAccountResponse.builder()
@@ -272,6 +326,8 @@ public class WaAccountController {
                     .hasAccessToken(a.getAccessToken() != null && !a.getAccessToken().isBlank())
                     .sessionState(a.getSessionState())
                     .linkedPhone(a.getLinkedPhone())
+                    .outreachPausedUntil(a.getOutreachPausedUntil())
+                    .reachoutLockedUntil(a.getReachoutLockedUntil())
                     .build();
         }
     }

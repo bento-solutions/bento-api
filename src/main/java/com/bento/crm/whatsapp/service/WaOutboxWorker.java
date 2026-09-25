@@ -50,10 +50,21 @@ public class WaOutboxWorker {
     private final WaOutboxProperties properties;
     private final ApplicationEventPublisher events;
     private final CampaignOutboxHooks campaignHooks;
+    private final WaOutreachGuard outreachGuard;
 
-    /** Everything the send needs, captured while the message was locked. */
+    /**
+     * Everything the send needs, captured while the message was locked.
+     *
+     * @param newChat       the message opens the conversation
+     * @param readUpToWamid for a reply on a paced account, the contact's latest message (marked read first)
+     */
     public record Claim(UUID messageId, UUID organizationId, UUID conversationId, WaAccount account,
-                        String toPhoneE164, String body, String wamid, int attempts, boolean paced) {
+                        String toPhoneE164, String body, String wamid, int attempts, boolean paced,
+                        boolean newChat, String readUpToWamid) {
+
+        public WhatsAppProvider.SendHints hints() {
+            return new WhatsAppProvider.SendHints(newChat, readUpToWamid);
+        }
     }
 
     public List<UUID> organizationsWithDueMessages() {
@@ -99,9 +110,16 @@ public class WaOutboxWorker {
             if (provider.assignsMessageIds() && candidate.getWamid() == null) {
                 candidate.setWamid(newMessageId());
             }
+            String readUpTo = provider.paced() && candidate.getLane() == WaMessage.Lane.REPLY
+                    ? messageRepository.findLatestInboundWamid(orgId, candidate.getConversationId()).orElse(null)
+                    : null;
+            // Only writing first to someone who never wrote opens a chat in WhatsApp's eyes; a first
+            // reply to an inbound message does not, and must still go out while new chats are restricted.
+            boolean opensChat = candidate.isNewChat() && candidate.getLane() == WaMessage.Lane.OUTREACH
+                    && conversation.getLastInboundAt() == null;
             return Optional.of(new Claim(candidate.getId(), orgId, candidate.getConversationId(), account,
                     conversation.getPhoneE164(), candidate.getBody(), candidate.getWamid(),
-                    candidate.getAttempts(), provider.paced()));
+                    candidate.getAttempts(), provider.paced(), opensChat, readUpTo));
         }
         return Optional.empty();
     }
@@ -119,6 +137,11 @@ public class WaOutboxWorker {
             if (campaign) {
                 campaignHooks.onSent(message, now);
             }
+        } else if (result.isDeferral()) {
+            // Held by WhatsApp's restriction or a limit, not failed: back in line, attempt not spent.
+            messageRepository.defer(claim.messageId(), result.retryAt(), result.errorCode(), truncate(result.errorTitle()));
+            outreachGuard.onSendRefused(claim.account(), result.errorCode(), result.retryAt());
+            log.info("[wa-outbox] send of {} deferred until {}: {}", claim.messageId(), result.retryAt(), result.errorCode());
         } else if (result.retryable() && claim.attempts() < properties.getMaxAttempts()) {
             messageRepository.requeue(claim.messageId(), now.plus(backoff(claim.attempts())),
                     result.errorCode(), truncate(result.errorTitle()));

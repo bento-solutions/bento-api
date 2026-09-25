@@ -13,6 +13,7 @@ import com.bento.crm.whatsapp.repository.WaAccountRepository;
 import com.bento.crm.whatsapp.repository.WaBlockedNumberRepository;
 import com.bento.crm.whatsapp.repository.WaMessageRepository;
 import com.bento.crm.whatsapp.util.PhoneNumbers;
+import com.bento.crm.whatsapp.util.WaMessageText;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.security.access.AccessDeniedException;
@@ -39,6 +40,10 @@ public class WaOutboxService {
     public static final int PRIORITY_HUMAN = 30;
     public static final int PRIORITY_AGENT = 20;
     public static final int PRIORITY_CAMPAIGN = 10;
+
+    /** Why a linked number may not send a link to someone who never wrote to it. */
+    public static final String LINK_TO_STRANGER = "Links in a message to someone who has never written to this number "
+            + "are one of WhatsApp's strongest spam signals. Send the link once they reply.";
 
     private final WaMessageRepository messageRepository;
     private final WaAccountRepository accountRepository;
@@ -104,6 +109,10 @@ public class WaOutboxService {
         if (account.getProvider() == WaAccount.Provider.META && !conversation.isWindowOpen()) {
             throw new IllegalStateException(
                     "The contact has not written in the last 24 hours; WhatsApp only allows an approved template");
+        }
+        if (account.getProvider() == WaAccount.Provider.BAILEYS && conversation.getLastInboundAt() == null
+                && WaMessageText.containsLink(text)) {
+            throw new IllegalStateException(LINK_TO_STRANGER);
         }
 
         WaMessage message = new WaMessage();

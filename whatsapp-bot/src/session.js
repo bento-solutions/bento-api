@@ -19,12 +19,16 @@ import {
     pnJidToE164,
 } from './jid.js';
 import { receiptStatus, toInbound } from './normalize.js';
+import { cappingState, newChatBlock, reachoutState, readingPauseMs, typingDelayMs } from './safety.js';
 
 const INSTANCE_ID = crypto.randomUUID();
 const LOCK_STALE_MS = 90_000;
 const LOCK_HEARTBEAT_MS = 30_000;
 /** WhatsApp drops an unused pairing code after roughly this long. */
 const PAIRING_CODE_TTL_MS = 3.5 * 60_000;
+const DAY_MS = 24 * 3_600_000;
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 let cachedVersion = null;
 async function waVersion() {
@@ -36,11 +40,17 @@ async function waVersion() {
 }
 
 export class SendError extends Error {
-    constructor(code, message, { retryable, status }) {
+    /**
+     * @param until        when the refusal ends (ISO), for restrictions with a known end
+     * @param retryAfterMs how long to wait before a retry can succeed, for rate limits
+     */
+    constructor(code, message, { retryable, status, until = null, retryAfterMs = null }) {
         super(message);
         this.code = code;
         this.retryable = retryable;
         this.status = status;
+        this.until = until;
+        this.retryAfterMs = retryAfterMs;
     }
 }
 
@@ -50,8 +60,9 @@ export class SendError extends Error {
  * data volume.
  *
  * States: stopped, needs_pairing, connecting, pairing, open, reconnecting, logged_out, replaced,
- * pairing_failed, error. Every change is spooled to the CRM as a `session.status` event carrying
- * a per-session sequence number, so the CRM can apply them in order.
+ * forbidden, pairing_failed, error. Every change is spooled to the CRM as a `session.status` event
+ * carrying a per-session sequence number, so the CRM can apply them in order. The same event also
+ * carries WhatsApp's restriction and new-chat quota for the number whenever they change.
  */
 export class Session {
     constructor({ id, config, spool, guard, logger }) {
@@ -71,6 +82,11 @@ export class Session {
         this.stopping = false;
         this.lockTimer = null;
         this.reconnectTimer = null;
+        /** WhatsApp's reachout timelock: {active, until, type}. */
+        this.reachout = null;
+        /** WhatsApp's new-chat quota: {totalQuota, usedQuota, status, cycleEndsAt}. */
+        this.capping = null;
+        this.safetyTimer = null;
     }
 
     get linked() {
@@ -93,6 +109,13 @@ export class Session {
             pairingAttempt: this.pairingAttempts,
             maxPairingAttempts: this.config.maxPairingAttempts,
             error: this.lastError,
+            reachoutLocked: Boolean(this.reachout?.active),
+            reachoutUntil: this.reachout?.until ?? null,
+            reachoutType: this.reachout?.type ?? null,
+            newChatQuota: this.capping?.totalQuota ?? null,
+            newChatUsed: this.capping?.usedQuota ?? null,
+            newChatCapStatus: this.capping?.status ?? null,
+            newChatCycleEndsAt: this.capping?.cycleEndsAt ?? null,
         };
     }
 
@@ -125,6 +148,7 @@ export class Session {
     async stop() {
         this.stopping = true;
         clearTimeout(this.reconnectTimer);
+        this.stopSafetyWatch();
         this.sock?.end(undefined);
         this.sock = null;
         this.releaseLock();
@@ -136,6 +160,7 @@ export class Session {
     async logout() {
         this.stopping = true;
         clearTimeout(this.reconnectTimer);
+        this.stopSafetyWatch();
         try {
             if (this.sock && this.state === 'open') await this.sock.logout();
         } catch (err) {
@@ -194,7 +219,9 @@ export class Session {
 
         sock.ev.on('connection.update', async update => {
             if (sock !== this.sock) return;
-            const { connection, lastDisconnect, qr } = update;
+            const { connection, lastDisconnect, qr, reachoutTimeLock } = update;
+            // Pushed by WhatsApp when a restriction starts or ends (and emitted after each query).
+            if (reachoutTimeLock) this.applyReachout(reachoutTimeLock);
 
             // The first qr event is the signal that the socket can request a pairing code.
             if (qr && !this.auth.creds.registered && this.phoneNumber && !pairingRequested) {
@@ -221,9 +248,11 @@ export class Session {
                 this.setState('open');
                 this.logger.info({ me: this.me }, 'connection open');
                 this.retryHeld();
+                this.startSafetyWatch();
                 return;
             }
             if (connection !== 'close' || this.stopping) return;
+            this.stopSafetyWatch();
 
             const code = lastDisconnect?.error?.output?.statusCode;
             this.logger.warn({ code, reason: lastDisconnect?.error?.message }, 'connection closed');
@@ -235,6 +264,15 @@ export class Session {
                 await fs.rm(this.dir, { recursive: true, force: true });
                 this.auth = null;
                 this.setState('logged_out');
+                return;
+            }
+            if (code === DisconnectReason.forbidden) {
+                // WhatsApp refuses this account outright (a ban). Reconnecting in a loop would only
+                // add to what got it banned; a person has to look at the phone first.
+                this.sock = null;
+                this.releaseLock();
+                this.lastError = 'WhatsApp refused the connection (403): the number may be banned';
+                this.setState('forbidden');
                 return;
             }
             if (code === DisconnectReason.connectionReplaced) {
@@ -285,9 +323,20 @@ export class Session {
                 const status = receiptStatus(update.status);
                 if (!status) continue;
                 const at = update.messageTimestamp ? new Date(Number(update.messageTimestamp) * 1000) : new Date();
-                this.spool.enqueue(this.id, 'message.status', { wamid: key.id, status, at: at.toISOString() });
+                const event = { wamid: key.id, status, at: at.toISOString() };
+                if (status === 'FAILED') {
+                    // WhatsApp refused the message itself, e.g. 463 when the number may not start
+                    // new chats. Pass the code on, and re-read the restriction it may signal.
+                    const [errorCode, errorTitle] = update.messageStubParameters ?? [];
+                    if (errorCode) event.errorCode = String(errorCode);
+                    if (errorTitle) event.errorTitle = String(errorTitle);
+                    this.refreshSafety();
+                }
+                this.spool.enqueue(this.id, 'message.status', event);
             }
         });
+
+        sock.ev.on('message-capping.update', info => this.applyCapping(info));
 
         sock.ev.on('lid-mapping.update', ({ lid }) => {
             if (lid) this.retryHeld(lid);
@@ -307,7 +356,14 @@ export class Session {
             this.logger.info({ lid: inbound.chatJid, wamid: inbound.wamid }, 'holding message until its LID resolves');
             return;
         }
+        this.rememberInbound(inbound, phone);
         this.spool.enqueue(this.id, 'message.upsert', this.toEvent(inbound, phone));
+    }
+
+    /** A chat with a message from the contact, or one the owner wrote from the phone, is known. */
+    rememberInbound(inbound, phone) {
+        const source = inbound.direction === 'OUT' ? 'phone' : 'in';
+        this.spool.rememberContact(this.id, [e164ToPnJid(phone), jidNormalizedUser(inbound.chatJid)], source);
     }
 
     toEvent(inbound, phone) {
@@ -344,6 +400,7 @@ export class Session {
         for (const row of this.spool.held(this.id, lid)) {
             const phone = await this.resolveContactPhone(row.data);
             if (!phone) continue;
+            this.rememberInbound(row.data, phone);
             this.spool.enqueue(this.id, 'message.upsert', this.toEvent(row.data, phone));
             this.spool.release(row.id);
         }
@@ -360,8 +417,16 @@ export class Session {
     /**
      * Sends text under the CRM-assigned id. Idempotent: a repeated messageId returns the stored
      * result instead of sending again, which is what makes the CRM's retries safe.
+     *
+     * A first message to a contact this number has never exchanged a message with is what WhatsApp
+     * polices, so it is refused while WhatsApp restricts new chats or its quota is used up, and
+     * capped per day by the bot itself whatever the CRM asks. Before sending, the bot reads the
+     * contact's last message (when replying) and shows "typing…" for about as long as a person would.
+     *
+     * @param newChat  the CRM's view that this message opens the conversation
+     * @param readUpTo the contact's latest message ({id}), marked read before replying
      */
-    async sendText({ messageId, to, jid, text }) {
+    async sendText({ messageId, to, jid, text, newChat = false, readUpTo = null }) {
         const previous = this.spool.getSent(messageId);
         if (previous?.result) return previous.result;
         if (previous && !previous.result) {
@@ -372,15 +437,19 @@ export class Session {
         if (this.state !== 'open' || !this.sock) {
             throw new SendError('SESSION_NOT_OPEN', `session is ${this.state}`, { retryable: true, status: 409 });
         }
+
+        const pnJid = to ? e164ToPnJid(to) : null;
+        const opensChat = newChat || !this.spool.isKnownContact(this.id, [pnJid, jid && jidNormalizedUser(jid)]);
+        if (opensChat) this.assertMayOpenChat();
+
         const guard = this.guard.tryAcquire(this.id);
         if (!guard.ok) {
             throw new SendError('RATE_GUARD', `bot safety limit reached; retry in ${Math.ceil(guard.retryAfterMs / 1000)}s`,
-                { retryable: true, status: 429 });
+                { retryable: true, status: 429, retryAfterMs: guard.retryAfterMs });
         }
 
         let target = jid && (isPnUser(jid) || isLidUser(jid)) ? jid : null;
         if (!target) {
-            const pnJid = e164ToPnJid(to);
             if (!pnJid) throw new SendError('INVALID_NUMBER', 'not a valid phone number', { retryable: false, status: 422 });
             let lookup;
             try {
@@ -396,6 +465,7 @@ export class Session {
 
         this.spool.markSending(this.id, messageId, target, text);
         try {
+            await this.actLikeAPerson(target, text, readUpTo);
             const sent = await this.sock.sendMessage(target, { text }, { messageId });
             const result = {
                 wamid: sent?.key?.id ?? messageId,
@@ -403,6 +473,8 @@ export class Session {
                 timestamp: new Date().toISOString(),
             };
             this.spool.completeSent(messageId, result);
+            // Only a chat that was new counts toward the daily cap; a known one just gains an alias.
+            this.spool.rememberContact(this.id, [pnJid ?? jidNormalizedUser(target), jidNormalizedUser(target)], 'out');
             return result;
         } catch (err) {
             this.spool.forgetUnsent(messageId);
@@ -410,12 +482,102 @@ export class Session {
         }
     }
 
+    /** Throws unless WhatsApp and the bot's own daily cap both allow opening another chat now. */
+    assertMayOpenChat(now = Date.now()) {
+        if (this.reachout?.active) {
+            // Retrying a refused first message counts as another reach-out: never retry these.
+            throw new SendError('REACHOUT_LOCKED',
+                `WhatsApp restricted this number from starting new chats${this.reachout.until ? ` until ${this.reachout.until}` : ''}`,
+                { retryable: false, status: 423, until: this.reachout.until });
+        }
+        const block = newChatBlock(this.capping, now);
+        if (block.blocked) {
+            throw new SendError('NEW_CHAT_CAP_REACHED', "WhatsApp's new-chat quota for this number is used up",
+                { retryable: true, status: 429, until: block.until });
+        }
+        const opened = this.spool.chatsOpenedSince(this.id, now - DAY_MS);
+        if (opened.n >= this.config.guardNewChatsPerDay) {
+            throw new SendError('NEW_CHAT_GUARD',
+                `bot safety limit of ${this.config.guardNewChatsPerDay} new chats a day reached`,
+                { retryable: true, status: 429, retryAfterMs: Math.max(60_000, opened.oldest + DAY_MS - now) });
+        }
+    }
+
+    /** Reads the contact's last message when replying, then shows "typing…" before the send. */
+    async actLikeAPerson(target, text, readUpTo) {
+        if (!this.config.simulateTyping) return;
+        const sock = this.sock;
+        try {
+            if (readUpTo?.id) {
+                await sock.readMessages([{ remoteJid: target, id: readUpTo.id, fromMe: false }]);
+                await sleep(readingPauseMs());
+            }
+            await sock.presenceSubscribe(target);
+            await sock.sendPresenceUpdate('composing', target);
+            await sleep(typingDelayMs(text));
+            await sock.sendPresenceUpdate('paused', target);
+        } catch (err) {
+            this.logger.debug({ err: err.message }, 'read/typing simulation failed; sending anyway');
+        }
+    }
+
+    // ── WhatsApp's restriction and quota ─────────────────────────────────
+
+    applyReachout(lock) {
+        const next = reachoutState(lock);
+        const changed = JSON.stringify(next) !== JSON.stringify(this.reachout ?? reachoutState(null));
+        this.reachout = next;
+        if (!changed) return;
+        this.logger.warn({ reachout: next }, next.active ? 'WhatsApp restricted new chats' : 'WhatsApp lifted the new-chat restriction');
+        this.publishStatus();
+    }
+
+    applyCapping(info) {
+        const next = cappingState(info);
+        if (!next || JSON.stringify(next) === JSON.stringify(this.capping)) return;
+        this.capping = next;
+        this.logger.info({ capping: next }, 'new-chat quota update');
+        this.publishStatus();
+    }
+
+    /** Asks WhatsApp for the number's restriction and new-chat quota; failures are logged, never thrown. */
+    async refreshSafety() {
+        const sock = this.sock;
+        if (!sock || this.state !== 'open') return;
+        try {
+            this.applyReachout(await sock.fetchAccountReachoutTimelock());
+        } catch (err) {
+            this.logger.warn({ err: err.message }, 'restriction query failed');
+        }
+        try {
+            this.applyCapping(await sock.fetchNewChatMessageCap());
+        } catch (err) {
+            this.logger.warn({ err: err.message }, 'new-chat quota query failed');
+        }
+    }
+
+    startSafetyWatch() {
+        this.stopSafetyWatch();
+        this.refreshSafety();
+        this.safetyTimer = setInterval(() => this.refreshSafety(), this.config.safetyRefreshMinutes * 60_000);
+        this.safetyTimer.unref();
+    }
+
+    stopSafetyWatch() {
+        clearInterval(this.safetyTimer);
+        this.safetyTimer = null;
+    }
+
     // ── state + lock ─────────────────────────────────────────────────────
 
     setState(state) {
         const changed = state !== this.state || state === 'pairing';
         this.state = state;
-        if (!changed) return;
+        if (changed) this.publishStatus();
+    }
+
+    /** Reports the session to the CRM: on every state change, and when the restriction or quota moves. */
+    publishStatus() {
         this.spool.enqueue(this.id, 'session.status', {
             ...this.status(),
             seq: this.spool.nextSeq(this.id),

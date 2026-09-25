@@ -47,6 +47,7 @@ public class WaFollowupWorker {
     private final WhatsAppSendService sendService;
     private final WaFollowupService followupService;
     private final WaOutboxService outboxService;
+    private final com.bento.crm.partner.repository.PartnerRepository partnerRepository;
 
     @Value("${whatsapp.followup.batch-size:50}")
     private int batchSize;
@@ -147,6 +148,10 @@ public class WaFollowupWorker {
                 finish(followup, WaFollowup.State.SKIPPED, "Campaign has no relance text");
                 return;
             }
+            var partner = partnerRepository.findById(recipient.getPartnerId()).orElse(null);
+            text = com.bento.crm.whatsapp.util.WaMessageText.render(text, partner == null ? null : partner.getName(),
+                    partner == null ? null : partner.getCompanyName(),
+                    recipient.getId().getMostSignificantBits() ^ recipient.getId().getLeastSignificantBits());
             WaMessage queued = outboxService.enqueueCampaign(orgId, campaign, recipient, conversation, text,
                     followup.getSequenceStep());
             followup.setSentMessageId(queued.getId());

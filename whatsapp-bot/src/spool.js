@@ -9,6 +9,8 @@ const MAX_ATTEMPTS = 200;
  *   CRM acknowledges it, so a backend deploy or outage loses nothing;
  * - sent: ids this bot sent (for idempotent retries, echo suppression and Baileys' getMessage);
  * - held: messages from a LID contact whose phone number is not known yet;
+ * - contacts: every chat this session has exchanged a message with, so a send can tell a reply
+ *   to a known contact from a first message to a stranger (which is what WhatsApp polices);
  * - dead_letter: events that could not be delivered or resolved, kept for inspection.
  */
 export class Spool {
@@ -45,6 +47,16 @@ export class Spool {
                 created_at INTEGER NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_held_lid ON held (session_id, lid);
+            CREATE TABLE IF NOT EXISTS contacts (
+                session_id TEXT NOT NULL,
+                jid TEXT NOT NULL,
+                -- in (contact wrote), phone (the owner wrote from the phone), out (this bot opened
+                -- the chat); an '-alias' suffix marks a second address (LID/PN) of the same chat.
+                first_source TEXT NOT NULL,
+                first_seen_at INTEGER NOT NULL,
+                PRIMARY KEY (session_id, jid)
+            );
+            CREATE INDEX IF NOT EXISTS idx_contacts_opened ON contacts (session_id, first_source, first_seen_at);
             CREATE TABLE IF NOT EXISTS dead_letter (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT,
@@ -77,6 +89,11 @@ export class Spool {
             heldAll: this.db.prepare('SELECT * FROM held WHERE session_id = ? ORDER BY id'),
             release: this.db.prepare('DELETE FROM held WHERE id = ?'),
             expiredHeld: this.db.prepare('SELECT * FROM held WHERE created_at < ?'),
+            getContact: this.db.prepare('SELECT 1 FROM contacts WHERE session_id = ? AND jid = ?'),
+            rememberContact: this.db.prepare(
+                'INSERT OR IGNORE INTO contacts (session_id, jid, first_source, first_seen_at) VALUES (?, ?, ?, ?)'),
+            chatsOpenedSince: this.db.prepare(`SELECT count(*) AS n, min(first_seen_at) AS oldest FROM contacts
+                WHERE session_id = ? AND first_source = 'out' AND first_seen_at >= ?`),
             counts: this.db.prepare(`SELECT
                 (SELECT count(*) FROM events) AS events,
                 (SELECT count(*) FROM held) AS held,
@@ -145,6 +162,31 @@ export class Spool {
 
     pruneSent(olderThan) {
         return this.q.pruneSent.run(olderThan).changes;
+    }
+
+    /** Whether this session has exchanged a message with any of these addresses of a contact. */
+    isKnownContact(sessionId, jids) {
+        return jids.some(jid => jid && this.q.getContact.get(sessionId, jid));
+    }
+
+    /**
+     * Remembers a contact the first time a message goes to or comes from it (later calls change
+     * nothing). The first address counts as the chat; further ones (its LID or phone form) are aliases.
+     */
+    rememberContact(sessionId, jids, source, now = Date.now()) {
+        const [chat, ...aliases] = [...new Set(jids.filter(Boolean))];
+        if (!chat) return;
+        const tx = this.db.transaction(() => {
+            const known = this.isKnownContact(sessionId, [chat, ...aliases]);
+            this.q.rememberContact.run(sessionId, chat, known ? `${source}-alias` : source, now);
+            for (const alias of aliases) this.q.rememberContact.run(sessionId, alias, `${source}-alias`, now);
+        });
+        tx();
+    }
+
+    /** Chats this bot opened itself (its message came first) since `since`, and the oldest one's time. */
+    chatsOpenedSince(sessionId, since) {
+        return this.q.chatsOpenedSince.get(sessionId, since);
     }
 
     hold(sessionId, lid, payload, now = Date.now()) {

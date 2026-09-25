@@ -12,6 +12,7 @@ import org.springframework.test.web.servlet.ResultActions;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HexFormat;
@@ -190,10 +191,10 @@ class BaileysIntegrationTest extends IntegrationTestBase {
 
         mockMvc.perform(put("/whatsapp/account/settings").header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"autoCreateLeads\": \"INBOUND\", \"visibility\": \"ALL\", \"outreachPerHour\": 20}"))
+                        .content("{\"autoCreateLeads\": \"INBOUND\", \"visibility\": \"ALL\", \"outreachPerHour\": 12}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.autoCreateLeads").value("INBOUND"))
-                .andExpect(jsonPath("$.outreachPerHour").value(20));
+                .andExpect(jsonPath("$.outreachPerHour").value(12));
         mockMvc.perform(post("/whatsapp/account/mock").header("Authorization", "Bearer " + token))
                 .andExpect(status().isConflict());
     }
@@ -239,6 +240,177 @@ class BaileysIntegrationTest extends IntegrationTestBase {
         assertThat(fakeBot.sends().getLast().body().path("to").asText()).isEqualTo(phone);
     }
 
+    // --- anti-spam: circuit breaker, deferrals, content rules ------------------------------------
+
+    @Test
+    void whatsAppsRestriction_pausesOutreach_andTheWarmupStartsOverWhenItEnds() throws Exception {
+        Account account = baileysAccount("OFF");
+        openSession(account);
+        assertThat(jdbc.queryForObject("SELECT warmup_started_at FROM wa_account WHERE id = ?", java.sql.Timestamp.class, account.id))
+                .as("linking starts the warm-up").isNotNull();
+
+        Instant until = Instant.now().plus(Duration.ofHours(20)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        webhook(events(account.id, """
+                {"id": %d, "sessionId": "__SESSION__", "type": "session.status", "data": {
+                  "seq": 101, "state": "open", "phoneNumber": "+212600000999", "reachoutLocked": true,
+                  "reachoutUntil": "%s", "reachoutType": "BIZ_QUALITY",
+                  "newChatQuota": 20, "newChatUsed": 3, "newChatCapStatus": "NONE"}}
+                """.formatted(EVENT_IDS.incrementAndGet(), until))).andExpect(status().isOk());
+
+        Map<String, Object> row = jdbc.queryForMap("SELECT * FROM wa_account WHERE id = ?", account.id);
+        assertThat(instantOf(row.get("reachout_locked_until"))).isEqualTo(until);
+        assertThat(row.get("reachout_enforcement")).isEqualTo("BIZ_QUALITY");
+        assertThat(instantOf(row.get("outreach_paused_until"))).isEqualTo(until);
+        assertThat(instantOf(row.get("warmup_started_at"))).as("the warm-up starts over when the restriction ends").isEqualTo(until);
+        assertThat(row.get("new_chat_quota")).isEqualTo(20);
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM notification WHERE organization_id = ? AND title = 'WhatsApp outreach paused'",
+                Integer.class, account.orgId)).isEqualTo(1);
+
+        mockMvc.perform(get("/whatsapp/account/settings").header("Authorization", "Bearer " + account.token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.safety.outreach").value("RESTRICTED"))
+                .andExpect(jsonPath("$.safety.reachoutEnforcement").value("BIZ_QUALITY"))
+                .andExpect(jsonPath("$.safety.newChatQuota").value(20));
+    }
+
+    @Test
+    void secondWarningFromWhatsApp_pausesOutreachForADay() throws Exception {
+        Account account = baileysAccount("OFF");
+        openSession(account);
+        webhook(events(account.id, """
+                {"id": %d, "sessionId": "__SESSION__", "type": "session.status", "data": {
+                  "seq": 101, "state": "open", "phoneNumber": "+212600000999", "newChatCapStatus": "SECOND_WARNING"}}
+                """.formatted(EVENT_IDS.incrementAndGet()))).andExpect(status().isOk());
+        Instant paused = instantOf(jdbc.queryForObject("SELECT outreach_paused_until FROM wa_account WHERE id = ?",
+                java.sql.Timestamp.class, account.id));
+        assertThat(paused).isBetween(Instant.now().plus(Duration.ofHours(23)), Instant.now().plus(Duration.ofHours(25)));
+    }
+
+    @Test
+    void aRestrictionReportedBySendIsDeferred_withoutSpendingAnAttempt_andPausesOutreach() throws Exception {
+        Account account = baileysAccount("OFF");
+        openSession(account);
+        pastWarmup(account);
+        String partnerId = partner(account, "Karim Benali", phone());
+        Instant until = Instant.now().plus(Duration.ofHours(10)).truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
+        fakeBot.failNextSend(423, "{\"code\":\"REACHOUT_LOCKED\",\"message\":\"restricted\",\"retryable\":false,\"until\":\"" + until + "\"}");
+
+        anyTimeOfDay(() -> {
+            String sent = mockMvc.perform(post("/whatsapp/messages").header("Authorization", "Bearer " + account.token)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"partnerId\": \"" + partnerId + "\", \"text\": \"Bonjour Karim\"}"))
+                    .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+            Map<String, Object> row = awaitMessage(UUID.fromString(JsonPath.read(sent, "$.id")),
+                    r -> "REACHOUT_LOCKED".equals(r.get("error_code")));
+            assertThat(row.get("status")).isEqualTo("QUEUED");
+            assertThat(row.get("attempts")).as("held back, not failed").isEqualTo(0);
+            assertThat(instantOf(row.get("not_before"))).isEqualTo(until);
+            assertThat(fakeBot.sends().getLast().body().path("newChat").asBoolean()).as("the bot is told it opens a chat").isTrue();
+        });
+        assertThat(instantOf(jdbc.queryForObject("SELECT outreach_paused_until FROM wa_account WHERE id = ?",
+                java.sql.Timestamp.class, account.id))).isEqualTo(until);
+    }
+
+    @Test
+    void aReplyMarksTheContactsLastMessageRead_andA463ReceiptPausesOutreach() throws Exception {
+        Account account = baileysAccount("OFF");
+        openSession(account);
+        pastWarmup(account);
+        String phone = phone();
+        String inbound = "3EB0%018X".formatted(ThreadLocalRandom.current().nextLong() & Long.MAX_VALUE);
+        webhook(events(account.id, messageEvent(inbound, "IN", "live", phone, "Salma", "Bonjour, vous êtes ouverts ?")));
+        UUID conversationId = (UUID) conversation(account.orgId, phone).get("id");
+
+        String sent = mockMvc.perform(post("/whatsapp/conversations/" + conversationId + "/messages")
+                        .header("Authorization", "Bearer " + account.token)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"text\": \"Oui, jusqu'à 19h\"}"))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString();
+        Map<String, Object> row = awaitMessage(UUID.fromString(JsonPath.read(sent, "$.id")), r -> "SENT".equals(r.get("status")));
+        assertThat(fakeBot.sends().getLast().body().path("readUpTo").path("id").asText()).isEqualTo(inbound);
+        assertThat(fakeBot.sends().getLast().body().path("newChat").asBoolean())
+                .as("answering someone who wrote first does not open a chat").isFalse();
+
+        webhook(events(account.id, """
+                {"id": %d, "sessionId": "__SESSION__", "type": "message.status", "data": {
+                  "wamid": "%s", "status": "FAILED", "errorCode": "463", "at": "%s"}}
+                """.formatted(EVENT_IDS.incrementAndGet(), row.get("wamid"), Instant.now()))).andExpect(status().isOk());
+        Map<String, Object> accountRow = jdbc.queryForMap("SELECT outreach_paused_until, outreach_pause_reason FROM wa_account WHERE id = ?", account.id);
+        assertThat(instantOf(accountRow.get("outreach_paused_until")))
+                .isBetween(Instant.now().plus(Duration.ofHours(23)), Instant.now().plus(Duration.ofHours(25)));
+        assertThat((String) accountRow.get("outreach_pause_reason")).contains("463");
+    }
+
+    @Test
+    void settingsRefuseLooseLimits_andAdminsCanPauseAndResumeOutreach() throws Exception {
+        Account account = baileysAccount("OFF");
+        openSession(account);
+        for (String loose : List.of("{\"outreachPerHour\": 20}", "{\"newChatsPerDay\": 50}",
+                "{\"outreachMinGapSeconds\": 10}", "{\"replyMinGapSeconds\": 1}")) {
+            mockMvc.perform(put("/whatsapp/account/settings").header("Authorization", "Bearer " + account.token)
+                            .contentType(MediaType.APPLICATION_JSON).content(loose))
+                    .andExpect(status().isBadRequest());
+        }
+
+        mockMvc.perform(post("/whatsapp/account/outreach/pause").header("Authorization", "Bearer " + account.token)
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"hours\": 6, \"reason\": \"Salon\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.safety.outreach").value("PAUSED"))
+                .andExpect(jsonPath("$.safety.outreachPauseReason").value("Salon"));
+        mockMvc.perform(post("/whatsapp/account/outreach/resume").header("Authorization", "Bearer " + account.token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.safety.outreach").value("QUIET"))
+                .andExpect(jsonPath("$.safety.outreachPausedUntil").doesNotExist());
+    }
+
+    @Test
+    void aLinkToSomeoneWhoNeverWrote_isRefused() throws Exception {
+        Account account = baileysAccount("OFF");
+        openSession(account);
+        String partnerId = partner(account, "Nadia", phone());
+        mockMvc.perform(post("/whatsapp/messages").header("Authorization", "Bearer " + account.token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"partnerId\": \"" + partnerId + "\", \"text\": \"Notre catalogue : https://crmbento.com/catalogue\"}"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("spam")));
+    }
+
+    @Test
+    void campaignsFromALinkedNumber_mustBePersonalized_andEachContactGetsTheirOwnText() throws Exception {
+        Account account = baileysAccount("OFF");
+        openSession(account);
+        pastWarmup(account);
+        Map<String, String> names = new java.util.LinkedHashMap<>();
+        List<String> partnerIds = new ArrayList<>();
+        for (String name : List.of("Amine Tazi", "Sara Alaoui", "Youssef Idrissi", "Hind Berrada")) {
+            String p = phone();
+            names.put(p, name.split(" ")[0]);
+            partnerIds.add("\"" + partner(account, name, p) + "\"");
+        }
+        String campaign = """
+                {"title": "Salon", "bodyPreview": "%s", "partnerIds": [%s], "launchNow": true}
+                """;
+        mockMvc.perform(post("/campaigns/whatsapp").header("Authorization", "Bearer " + account.token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(campaign.formatted("Venez nous voir au salon ce week-end.", String.join(",", partnerIds))))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.detail").value(org.hamcrest.Matchers.containsString("{{first_name}}")));
+
+        anyTimeOfDay(() -> {
+            UUID id = UUID.fromString(JsonPath.read(mockMvc.perform(post("/campaigns/whatsapp")
+                            .header("Authorization", "Bearer " + account.token).contentType(MediaType.APPLICATION_JSON)
+                            .content(campaign.formatted("{Bonjour|Salut} {{first_name}}, venez nous voir au salon ce week-end.",
+                                    String.join(",", partnerIds))))
+                    .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "$.id"));
+            for (Map<String, Object> m : jdbc.queryForList("""
+                    SELECT c.phone_e164, m.body FROM wa_message m JOIN wa_conversation c ON c.id = m.conversation_id
+                    WHERE m.campaign_id = ?""", id)) {
+                assertThat((String) m.get("body")).matches("(Bonjour|Salut) " + names.get((String) m.get("phone_e164"))
+                        + ", venez nous voir au salon ce week-end\\.");
+            }
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM wa_message WHERE campaign_id = ?", Integer.class, id)).isEqualTo(4);
+        });
+    }
+
     // --- campaigns on a linked number ----------------------------------------------------------
 
     @Autowired
@@ -251,7 +423,7 @@ class BaileysIntegrationTest extends IntegrationTestBase {
     void campaignSendsItsTextThroughTheOutbox_skipsIgnoredAndOptedOut_andRelancesWithItsOwnText() throws Exception {
         Account account = baileysAccount("OFF");
         openSession(account);
-        jdbc.update("UPDATE wa_account SET outreach_min_gap_seconds = 0, reply_min_gap_seconds = 0 WHERE id = ?", account.id);
+        pastWarmup(account);
         String reachable = phone();
         String ignored = phone();
         String optedOut = phone();
@@ -353,6 +525,51 @@ class BaileysIntegrationTest extends IntegrationTestBase {
 
     private void openSession(Account account) throws Exception {
         webhook(events(account.id, sessionEvent(100, "open", "+212600000999")));
+    }
+
+    /** A number linked long ago: no quiet period, no warm-up cap, and no gaps to wait out. */
+    private void pastWarmup(Account account) {
+        jdbc.update("UPDATE wa_account SET warmup_started_at = now() - interval '60 days', "
+                + "outreach_min_gap_seconds = 0, reply_min_gap_seconds = 0 WHERE id = ?", account.id);
+    }
+
+    /** Runs {@code body} with business hours off, so outreach is not held by the time of day. */
+    private void anyTimeOfDay(ThrowingRunnable body) throws Exception {
+        boolean businessHours = outboxProperties.isBusinessHoursEnabled();
+        org.springframework.test.util.ReflectionTestUtils.setField(outboxProperties, "businessHoursEnabled", false);
+        try {
+            body.run();
+        } finally {
+            org.springframework.test.util.ReflectionTestUtils.setField(outboxProperties, "businessHoursEnabled", businessHours);
+        }
+    }
+
+    private interface ThrowingRunnable {
+        void run() throws Exception;
+    }
+
+    private String partner(Account account, String name, String phone) throws Exception {
+        return JsonPath.read(mockMvc.perform(post("/partners")
+                        .header("Authorization", "Bearer " + account.token).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"type\": \"LEAD\", \"name\": \"%s\", \"phone\": \"%s\"}".formatted(name, phone)))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "$.id");
+    }
+
+    private Map<String, Object> awaitMessage(UUID id, java.util.function.Predicate<Map<String, Object>> done)
+            throws InterruptedException {
+        Map<String, Object> row = Map.of();
+        for (int i = 0; i < 60; i++) {
+            row = jdbc.queryForMap("SELECT * FROM wa_message WHERE id = ?", id);
+            if (done.test(row)) {
+                return row;
+            }
+            Thread.sleep(100);
+        }
+        throw new AssertionError("message never reached the expected state: " + row);
+    }
+
+    private static Instant instantOf(Object timestamp) {
+        return timestamp == null ? null : ((java.sql.Timestamp) timestamp).toInstant();
     }
 
     private String awaitWamid(String messageId) throws InterruptedException {

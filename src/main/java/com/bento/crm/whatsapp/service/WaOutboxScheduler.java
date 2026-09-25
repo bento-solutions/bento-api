@@ -102,7 +102,7 @@ public class WaOutboxScheduler {
             WhatsAppProvider.SendResult result;
             try {
                 result = providerRegistry.forAccount(claim.account())
-                        .sendText(claim.account(), claim.toPhoneE164(), claim.body(), claim.wamid());
+                        .sendText(claim.account(), claim.toPhoneE164(), claim.body(), claim.wamid(), claim.hints());
             } catch (Exception e) {
                 log.warn("[wa-outbox] provider threw sending {}", claim.messageId(), e);
                 result = WhatsAppProvider.SendResult.retryableFailure("EXCEPTION", e.getMessage());

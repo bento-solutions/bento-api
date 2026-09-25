@@ -5,7 +5,10 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
+import java.util.Set;
 
 /**
  * A personal number linked as a device through the Baileys bot.
@@ -21,6 +24,10 @@ import java.util.List;
 @RequiredArgsConstructor
 @Slf4j
 public class BaileysWhatsAppProvider implements WhatsAppProvider {
+
+    /** Bot answers that hold a send back rather than fail it: WhatsApp's restriction or quota, the bot's own limits. */
+    static final Set<String> DEFERRALS = Set.of("REACHOUT_LOCKED", "NEW_CHAT_CAP_REACHED", "NEW_CHAT_GUARD", "RATE_GUARD");
+    private static final Duration DEFAULT_DEFERRAL = Duration.ofMinutes(15);
 
     private final BaileysBotClient bot;
 
@@ -54,15 +61,27 @@ public class BaileysWhatsAppProvider implements WhatsAppProvider {
 
     @Override
     public SendResult sendText(WaAccount account, String toPhoneE164, String body, String clientMessageId) {
+        return sendText(account, toPhoneE164, body, clientMessageId, SendHints.NONE);
+    }
+
+    @Override
+    public SendResult sendText(WaAccount account, String toPhoneE164, String body, String clientMessageId,
+                               SendHints hints) {
         if (clientMessageId == null) {
             return sendText(account, toPhoneE164, body);
         }
         try {
-            BaileysBotClient.SendResponse response = bot.sendText(account.getId(), clientMessageId, toPhoneE164, body);
+            BaileysBotClient.SendResponse response = bot.sendText(account.getId(), clientMessageId, toPhoneE164, body,
+                    hints.newChat(), hints.readUpToWamid());
             return SendResult.ok(response.wamid() != null ? response.wamid() : clientMessageId);
         } catch (BaileysBotClient.BotException e) {
             log.warn("[baileys] send {} failed: {} {} (retryable={})",
                     clientMessageId, e.code(), e.getMessage(), e.retryable());
+            if (DEFERRALS.contains(e.code())) {
+                // WhatsApp's restriction or a limit, not a problem with this message: it waits.
+                return SendResult.deferred(e.code(), e.getMessage(),
+                        e.retryAt() != null ? e.retryAt() : Instant.now().plus(DEFAULT_DEFERRAL));
+            }
             return e.retryable()
                     ? SendResult.retryableFailure(e.code(), e.getMessage())
                     : SendResult.permanentFailure(e.code(), e.getMessage());

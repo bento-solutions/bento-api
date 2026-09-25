@@ -10,6 +10,7 @@ import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientResponseException;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -41,22 +42,32 @@ public class BaileysBotClient {
     public record SendResponse(String wamid, String jid, String timestamp) {
     }
 
-    /** A non-2xx answer from the bot, with its error code and whether a retry could succeed. */
+    /**
+     * A non-2xx answer from the bot, with its error code, whether a retry could succeed, and when
+     * (for a restriction or rate limit that says so).
+     */
     public static class BotException extends RuntimeException {
         private final int status;
         private final String code;
         private final boolean retryable;
+        private final Instant retryAt;
 
         public BotException(int status, String code, String message, boolean retryable) {
+            this(status, code, message, retryable, null);
+        }
+
+        public BotException(int status, String code, String message, boolean retryable, Instant retryAt) {
             super(message);
             this.status = status;
             this.code = code;
             this.retryable = retryable;
+            this.retryAt = retryAt;
         }
 
         public int status() { return status; }
         public String code() { return code; }
         public boolean retryable() { return retryable; }
+        public Instant retryAt() { return retryAt; }
     }
 
     public SessionStatus start(UUID sessionId, String phoneNumber) {
@@ -84,8 +95,20 @@ public class BaileysBotClient {
         return call(() -> List.of(client().get().uri("/sessions").retrieve().body(SessionStatus[].class)));
     }
 
-    public SendResponse sendText(UUID sessionId, String messageId, String toE164, String text) {
-        Map<String, Object> body = Map.of("messageId", messageId, "to", toE164, "text", text);
+    /**
+     * @param newChat       the message opens the conversation; the bot refuses it while WhatsApp restricts new chats
+     * @param readUpToWamid the contact's latest message, marked read before the reply (null when not replying)
+     */
+    public SendResponse sendText(UUID sessionId, String messageId, String toE164, String text,
+                                 boolean newChat, String readUpToWamid) {
+        Map<String, Object> body = new HashMap<>();
+        body.put("messageId", messageId);
+        body.put("to", toE164);
+        body.put("text", text);
+        body.put("newChat", newChat);
+        if (readUpToWamid != null) {
+            body.put("readUpTo", Map.of("id", readUpToWamid));
+        }
         return call(() -> client().post().uri("/sessions/{id}/messages", sessionId)
                 .contentType(MediaType.APPLICATION_JSON).body(body).retrieve().body(SendResponse.class));
     }
@@ -100,6 +123,7 @@ public class BaileysBotClient {
             String code = "HTTP_" + e.getStatusCode().value();
             String message = e.getResponseBodyAsString();
             boolean retryable = e.getStatusCode().is5xxServerError() || e.getStatusCode().value() == 429;
+            Instant retryAt = null;
             try {
                 JsonNode json = objectMapper.readTree(e.getResponseBodyAsString());
                 code = json.path("code").asText(code);
@@ -107,10 +131,15 @@ public class BaileysBotClient {
                 if (json.has("retryable")) {
                     retryable = json.path("retryable").asBoolean();
                 }
+                if (json.hasNonNull("until")) {
+                    retryAt = Instant.parse(json.get("until").asText());
+                } else if (json.hasNonNull("retryAfterMs")) {
+                    retryAt = Instant.now().plusMillis(json.get("retryAfterMs").asLong());
+                }
             } catch (Exception ignored) {
                 // Not JSON: keep the HTTP status as the code.
             }
-            throw new BotException(e.getStatusCode().value(), code, message, retryable);
+            throw new BotException(e.getStatusCode().value(), code, message, retryable, retryAt);
         } catch (BotException e) {
             throw e;
         } catch (Exception e) {

@@ -35,6 +35,7 @@ public class BaileysWebhookService {
     private final WaLeadResolver leadResolver;
     private final WaIngestService ingestService;
     private final WaSessionService sessionService;
+    private final WaOutreachGuard outreachGuard;
 
     public record Result(List<Long> processed, List<Map<String, Object>> failed) {
     }
@@ -66,7 +67,14 @@ public class BaileysWebhookService {
         }
         switch (type) {
             case "message.upsert" -> ingest(account.get(), toInbound(data));
-            case "message.status" -> ingestService.applyStatus(account.get().getOrganizationId(), toStatus(data));
+            case "message.status" -> {
+                StatusUpdate status = toStatus(data);
+                ingestService.applyStatus(account.get().getOrganizationId(), status);
+                if (status.status() == com.bento.crm.whatsapp.model.WaMessage.Status.FAILED) {
+                    // WhatsApp refused a message it had accepted (e.g. 463: no new chats allowed).
+                    outreachGuard.onFailedReceipt(account.get().getOrganizationId(), status.wamid(), status.errorCode());
+                }
+            }
             case "session.status" -> sessionService.applyEvent(account.get().getId(), data);
             default -> log.debug("[baileys-hook] ignoring event type {}", type);
         }

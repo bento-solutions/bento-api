@@ -156,9 +156,11 @@ public interface WaMessageRepository extends JpaRepository<WaMessage, UUID> {
             """)
     long countOutreachSentSince(@Param("orgId") UUID orgId, @Param("since") Instant since);
 
+    /** Chats opened by outreach (a first reply to someone who wrote is not a new chat to WhatsApp). */
     @Query("""
             SELECT COUNT(m) FROM WaMessage m
-            WHERE m.organizationId = :orgId AND m.newChat = true AND m.sentAt >= :since
+            WHERE m.organizationId = :orgId AND m.newChat = true
+              AND m.lane = com.bento.crm.whatsapp.model.WaMessage.Lane.OUTREACH AND m.sentAt >= :since
             """)
     long countNewChatsSentSince(@Param("orgId") UUID orgId, @Param("since") Instant since);
 
@@ -205,6 +207,28 @@ public interface WaMessageRepository extends JpaRepository<WaMessage, UUID> {
             """)
     int requeue(@Param("id") UUID id, @Param("retryAt") Instant retryAt,
                 @Param("errorCode") String errorCode, @Param("errorTitle") String errorTitle);
+
+    /** Like {@link #requeue}, but the attempt does not count: the send was held back, not failed. */
+    @Modifying(flushAutomatically = true)
+    @Query("""
+            UPDATE WaMessage m SET
+                m.status = com.bento.crm.whatsapp.model.WaMessage.Status.QUEUED,
+                m.notBefore = :retryAt, m.claimedAt = null,
+                m.attempts = CASE WHEN m.attempts > 0 THEN m.attempts - 1 ELSE 0 END,
+                m.errorCode = :errorCode, m.errorTitle = :errorTitle,
+                m.updatedAt = CURRENT_TIMESTAMP
+            WHERE m.id = :id AND m.status = com.bento.crm.whatsapp.model.WaMessage.Status.SENDING
+            """)
+    int defer(@Param("id") UUID id, @Param("retryAt") Instant retryAt,
+              @Param("errorCode") String errorCode, @Param("errorTitle") String errorTitle);
+
+    /** The contact's latest message in a conversation, which a reply marks read. */
+    @Query(value = """
+            SELECT wamid FROM wa_message
+            WHERE organization_id = :orgId AND conversation_id = :conversationId AND direction = 'IN' AND wamid IS NOT NULL
+            ORDER BY occurred_at DESC LIMIT 1
+            """, nativeQuery = true)
+    java.util.Optional<String> findLatestInboundWamid(@Param("orgId") UUID orgId, @Param("conversationId") UUID conversationId);
 
     @Modifying(flushAutomatically = true)
     @Query("""

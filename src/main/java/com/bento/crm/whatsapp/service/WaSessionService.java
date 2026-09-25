@@ -42,8 +42,8 @@ public class WaSessionService {
 
     /** States in which the session is meant to be running on the bot. */
     private static final Set<String> RUNNING = Set.of("connecting", "pairing", "open", "reconnecting");
-    /** States that need an admin: the number was unlinked from the phone, or taken over elsewhere. */
-    private static final Set<String> ALERTING = Set.of("logged_out", "replaced", "pairing_failed");
+    /** States that need an admin: the number was unlinked, banned, or taken over elsewhere. */
+    private static final Set<String> ALERTING = Set.of("logged_out", "replaced", "forbidden", "pairing_failed");
 
     private final WaAccountRepository accountRepository;
     private final BaileysBotClient bot;
@@ -51,6 +51,7 @@ public class WaSessionService {
     private final NotificationService notificationService;
     private final JdbcTemplate jdbc;
     private final ApplicationEventPublisher events;
+    private final WaOutreachGuard outreachGuard;
 
     public record SessionView(UUID accountId, String provider, String state, String requestedPhone,
                               String linkedPhone, Instant linkedAt, Instant lastSeenAt, String pairingCode,
@@ -177,6 +178,8 @@ public class WaSessionService {
         if (updated == 0) {
             return false;
         }
+        // WhatsApp's restriction and quota ride along on every status event.
+        outreachGuard.onSessionStatus(accountId, state, data);
         WaAccount account = accountRepository.findById(accountId).orElseThrow();
         events.publishEvent(new WaChangeEvent(account.getOrganizationId(), WaChangeEvent.Type.SESSION_UPDATED, null, null));
         if (ALERTING.contains(state)) {
@@ -244,8 +247,11 @@ public class WaSessionService {
 
     private void notifyAdmins(WaAccount account, String state) {
         String message = switch (state) {
-            case "logged_out" -> "The WhatsApp number was unlinked from the phone. Link it again in Settings → WhatsApp.";
+            case "logged_out" -> "The WhatsApp number was unlinked from the phone. Outreach is paused for 72 hours; "
+                    + "check the phone for a WhatsApp warning before linking it again in Settings → WhatsApp.";
             case "replaced" -> "Another device or server took over the WhatsApp session. Check that only one bot runs it.";
+            case "forbidden" -> "WhatsApp refused the number's connection, which usually means a ban. Open WhatsApp on "
+                    + "the phone to see why, and do not link it again until the phone works normally.";
             default -> "Linking the WhatsApp number did not complete. Start again in Settings → WhatsApp.";
         };
         List<UUID> admins = jdbc.queryForList(

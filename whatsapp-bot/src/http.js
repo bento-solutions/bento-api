@@ -62,7 +62,7 @@ export function createApp({ config, manager, spool, deliverer }) {
     });
 
     app.post('/sessions/:id/messages', async (req, res) => {
-        const { messageId, to, jid, text } = req.body ?? {};
+        const { messageId, to, jid, text, newChat, readUpTo } = req.body ?? {};
         if (typeof messageId !== 'string' || !/^[0-9A-Za-z]{8,64}$/.test(messageId)) {
             return res.status(400).json({ code: 'INVALID_MESSAGE_ID', retryable: false });
         }
@@ -73,11 +73,16 @@ export function createApp({ config, manager, spool, deliverer }) {
         if (!session) {
             return res.status(409).json({ code: 'SESSION_NOT_OPEN', message: 'session not started', retryable: true });
         }
+        // Marking the contact's message read is a nicety: an unusable id is dropped, never fatal.
+        const readKey = typeof readUpTo?.id === 'string' && /^[0-9A-Za-z_-]{8,80}$/.test(readUpTo.id) ? { id: readUpTo.id } : null;
         try {
-            res.json(await session.sendText({ messageId, to, jid, text }));
+            res.json(await session.sendText({ messageId, to, jid, text, newChat: newChat === true, readUpTo: readKey }));
         } catch (err) {
             if (err instanceof SendError) {
-                return res.status(err.status).json({ code: err.code, message: err.message, retryable: err.retryable });
+                const body = { code: err.code, message: err.message, retryable: err.retryable };
+                if (err.until) body.until = err.until;
+                if (err.retryAfterMs) body.retryAfterMs = err.retryAfterMs;
+                return res.status(err.status).json(body);
             }
             res.status(500).json({ code: 'SEND_FAILED', message: err.message, retryable: true });
         }

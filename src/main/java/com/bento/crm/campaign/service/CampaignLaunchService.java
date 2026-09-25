@@ -15,6 +15,7 @@ import com.bento.crm.whatsapp.service.WaFollowupService;
 import com.bento.crm.whatsapp.service.WhatsAppSendService;
 import com.bento.crm.common.mail.EmailService;
 import com.bento.crm.partner.repository.PartnerRepository;
+import com.bento.crm.whatsapp.util.WaMessageText;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.task.TaskExecutor;
@@ -51,6 +52,9 @@ public class CampaignLaunchService {
     private final PartnerRepository partnerRepository;
     private final WaOutboxService outboxService;
     private final WaBlockedNumberRepository blockedRepository;
+
+    /** Above this many recipients, a campaign from a linked number must vary its text per contact. */
+    static final int PERSONALIZE_ABOVE = 3;
 
     /**
      * Creates a WhatsApp campaign from the /marketing composer and enrols the
@@ -144,12 +148,26 @@ public class CampaignLaunchService {
         if (text.isEmpty()) {
             throw new IllegalStateException("Write the message text for this campaign");
         }
+        String relance = blankToNull(campaign.getFollowupBody());
+        // Campaigns reach people who mostly never wrote to the number: the two content signals
+        // WhatsApp weighs most for those are links and the same words sent to everyone.
+        if (WaMessageText.containsLink(text) || WaMessageText.containsLink(relance)) {
+            throw new IllegalStateException(WaOutboxService.LINK_TO_STRANGER);
+        }
         if (!account.isSessionOpen()) {
             throw new IllegalStateException("The WhatsApp number is not connected; link it again in Settings → WhatsApp");
         }
+        List<CampaignRecipient> recipients = recipientRepository.findAllByCampaign(orgId, campaign.getId());
+        long reachable = recipients.stream()
+                .filter(r -> r.getStatus() == CampaignRecipient.Status.PENDING && r.getPhoneE164() != null).count();
+        if (reachable > PERSONALIZE_ABOVE
+                && (!WaMessageText.isPersonalized(text) || (relance != null && !WaMessageText.isPersonalized(relance)))) {
+            throw new IllegalStateException("Personalize the text for each contact, with {{first_name}} or variants "
+                    + "such as {Bonjour|Salut}: the same words sent to many people is a spam signal.");
+        }
         Instant now = Instant.now();
         int queued = 0;
-        for (CampaignRecipient recipient : recipientRepository.findAllByCampaign(orgId, campaign.getId())) {
+        for (CampaignRecipient recipient : recipients) {
             if (recipient.getStatus() != CampaignRecipient.Status.PENDING || recipient.getPhoneE164() == null) {
                 continue;
             }
@@ -172,7 +190,7 @@ public class CampaignLaunchService {
             }
             recipient.setConversationId(conversation.getId());
             recipientRepository.save(recipient);
-            outboxService.enqueueCampaign(orgId, campaign, recipient, conversation, text, 0);
+            outboxService.enqueueCampaign(orgId, campaign, recipient, conversation, personalize(text, recipient), 0);
             queued++;
         }
         if (queued == 0) {
@@ -182,6 +200,14 @@ public class CampaignLaunchService {
         campaign.setLaunchedAt(now);
         log.info("[campaign] {} queued {} message(s) in the outbox", campaign.getId(), queued);
         return campaignRepository.save(campaign);
+    }
+
+    /** The campaign text for one recipient: their details, and a stable choice among variants. */
+    private String personalize(String text, CampaignRecipient recipient) {
+        var partner = partnerRepository.findById(recipient.getPartnerId()).orElse(null);
+        return WaMessageText.render(text, partner == null ? null : partner.getName(),
+                partner == null ? null : partner.getCompanyName(),
+                recipient.getId().getMostSignificantBits() ^ recipient.getId().getLeastSignificantBits());
     }
 
     private static String blankToNull(String s) {

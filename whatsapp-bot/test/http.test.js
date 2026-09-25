@@ -57,3 +57,34 @@ test('send maps session errors to retryable/permanent codes', async () => {
         s.close();
     }
 });
+
+test('send passes the CRM hints through and returns when a refusal ends', async () => {
+    let received;
+    let next;
+    const { s, url } = await server({ sendText: async args => { received = args; return next(); } });
+    const send = body => fetch(`${url}/sessions/${SESSION}/messages`, {
+        method: 'POST', headers: auth,
+        body: JSON.stringify({ messageId: '3EB0ABCDEF1234567890AC', to: '+212600000000', text: 'hi', ...body }),
+    });
+    try {
+        next = async () => ({ wamid: 'w', jid: 'j', timestamp: 't' });
+        assert.equal((await send({ newChat: true, readUpTo: { id: 'ABCDEF123456' } })).status, 200);
+        assert.equal(received.newChat, true);
+        assert.deepEqual(received.readUpTo, { id: 'ABCDEF123456' });
+
+        assert.equal((await send({ readUpTo: { id: '../x' } })).status, 200, 'an unusable read id is dropped, not fatal');
+        assert.equal(received.readUpTo, null);
+
+        next = () => { throw new SendError('REACHOUT_LOCKED', 'restricted', { retryable: false, status: 423, until: '2026-09-26T09:49:00.000Z' }); };
+        let res = await send({});
+        assert.equal(res.status, 423);
+        assert.deepEqual(await res.json(),
+            { code: 'REACHOUT_LOCKED', message: 'restricted', retryable: false, until: '2026-09-26T09:49:00.000Z' });
+
+        next = () => { throw new SendError('RATE_GUARD', 'slow', { retryable: true, status: 429, retryAfterMs: 5000 }); };
+        res = await send({});
+        assert.equal((await res.json()).retryAfterMs, 5000);
+    } finally {
+        s.close();
+    }
+});
