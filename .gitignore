@@ -34,3 +34,7 @@ uploads/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# WhatsApp bot local state
+whatsapp-bot/data/
+whatsapp-bot/node_modules/

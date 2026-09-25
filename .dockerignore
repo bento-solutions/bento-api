@@ -4,3 +4,5 @@ target/
 .env
 *.md
 .DS_Store
+whatsapp-bot/
+node_modules/
