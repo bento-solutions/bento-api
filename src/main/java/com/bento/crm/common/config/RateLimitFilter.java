@@ -33,8 +33,13 @@ public class RateLimitFilter extends OncePerRequestFilter {
         }
         String path = request.getRequestURI();
         String clientIp = getClientIp(request);
+        String authHeader = request.getHeader("Authorization");
 
-        Bucket bucket = selectBucket(path, request.getMethod(), clientIp);
+        // An agent's token gets its own bucket (by the token's public prefix), so one busy agent
+        // neither exhausts the limit of everyone behind the same IP nor escapes it by rotating IPs.
+        Bucket bucket = authHeader != null && authHeader.startsWith("Bearer bento_pat_") && authHeader.length() > 32
+                ? rateLimitConfig.resolveBucket("pat:" + authHeader.substring(7, 25))
+                : selectBucket(path, request.getMethod(), clientIp);
         ConsumptionProbe probe = bucket.tryConsumeAndReturnRemaining(1);
 
         if (probe.isConsumed()) {

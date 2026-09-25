@@ -1,5 +1,7 @@
 package com.bento.crm.whatsapp.service;
 
+import com.bento.crm.apitoken.repository.ApiTokenRepository;
+import com.bento.crm.apitoken.service.ApiTokenService;
 import com.bento.crm.common.exception.ResourceNotFoundException;
 import com.bento.crm.common.model.Permission;
 import com.bento.crm.partner.model.Partner;
@@ -17,6 +19,7 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -39,6 +42,7 @@ public class WaOutboxService {
 
     private final WaMessageRepository messageRepository;
     private final WaAccountRepository accountRepository;
+    private final ApiTokenRepository tokenRepository;
     private final WaBlockedNumberRepository blockedRepository;
     private final WaConversationService conversationService;
     private final WaVisibility visibility;
@@ -72,6 +76,9 @@ public class WaOutboxService {
         }
         Mode mode = effectiveMode(actor, command.mode());
         UUID orgId = actor.organizationId();
+        if (actor.isAgent()) {
+            enforceTokenCap(actor);
+        }
 
         String clientRef = blankToNull(command.clientRef());
         if (clientRef != null) {
@@ -167,6 +174,20 @@ public class WaOutboxService {
         }
         events.publishEvent(WaChangeEvent.messageUpdated(actor.organizationId(), message.getConversationId(), messageId));
         return messageRepository.findByOrgAndId(actor.organizationId(), messageId).orElseThrow();
+    }
+
+    /**
+     * An agent can be steered by what contacts write to it (prompt injection), so each token has
+     * a hard hourly budget of messages, drafts included, on top of the account's pacing.
+     */
+    private void enforceTokenCap(WaActor actor) {
+        int cap = tokenRepository.findById(actor.apiTokenId())
+                .map(t -> t.getMaxSendsPerHour() == null ? ApiTokenService.DEFAULT_MAX_SENDS_PER_HOUR : t.getMaxSendsPerHour())
+                .orElse(0);
+        long lastHour = messageRepository.countByApiTokenSince(actor.apiTokenId(), Instant.now().minus(Duration.ofHours(1)));
+        if (lastHour >= cap) {
+            throw new IllegalStateException("This API token reached its limit of " + cap + " messages per hour");
+        }
     }
 
     public WaMessage requireVisibleMessage(WaActor actor, UUID messageId) {

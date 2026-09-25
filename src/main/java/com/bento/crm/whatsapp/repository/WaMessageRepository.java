@@ -100,6 +100,10 @@ public interface WaMessageRepository extends JpaRepository<WaMessage, UUID> {
     @Query("SELECT m FROM WaMessage m WHERE m.organizationId = :orgId AND m.id = :id")
     Optional<WaMessage> findByOrgAndId(@Param("orgId") UUID orgId, @Param("id") UUID id);
 
+    /** Messages (sent, queued or drafted) an API token created since {@code since}. */
+    @Query("SELECT COUNT(m) FROM WaMessage m WHERE m.apiTokenId = :tokenId AND m.createdAt >= :since")
+    long countByApiTokenSince(@Param("tokenId") UUID tokenId, @Param("since") Instant since);
+
     /** Organizations with at least one message ready to send. */
     @Query(value = """
             SELECT DISTINCT organization_id FROM wa_message

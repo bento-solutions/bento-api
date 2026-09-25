@@ -1,6 +1,8 @@
 package com.bento.crm.auth.filter;
 
+import com.bento.crm.apitoken.security.ApiTokenPrincipal;
 import com.bento.crm.auth.service.JwtService;
+import com.bento.crm.whatsapp.service.WaActor;
 import io.jsonwebtoken.Claims;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -29,6 +31,17 @@ public class JwtAuthFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
             throws ServletException, IOException {
         if ("OPTIONS".equalsIgnoreCase(request.getMethod())) {
+            filterChain.doFilter(request, response);
+            return;
+        }
+        if (request.getAttribute(ApiTokenPrincipal.REQUEST_ATTRIBUTE) instanceof ApiTokenPrincipal principal) {
+            // Authenticated by TenantFilterInterceptor as a personal API token: act as its owner,
+            // narrowed to the token's scopes, and mark the authentication so WaActor knows.
+            UsernamePasswordAuthenticationToken auth = new UsernamePasswordAuthenticationToken(
+                    principal.userId().toString(), null,
+                    principal.authorities().stream().map(SimpleGrantedAuthority::new).toList());
+            auth.setDetails(new WaActor.ApiTokenDetails(principal.tokenId()));
+            SecurityContextHolder.getContext().setAuthentication(auth);
             filterChain.doFilter(request, response);
             return;
         }

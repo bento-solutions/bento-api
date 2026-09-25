@@ -1,5 +1,8 @@
 package com.bento.crm.common.config;
 
+import com.bento.crm.apitoken.security.ApiTokenPaths;
+import com.bento.crm.apitoken.security.ApiTokenPrincipal;
+import com.bento.crm.apitoken.service.ApiTokenService;
 import com.bento.crm.auth.service.JwtService;
 import com.bento.crm.common.context.TenantContext;
 import io.jsonwebtoken.Claims;
@@ -74,6 +77,7 @@ public class TenantFilterInterceptor extends OncePerRequestFilter {
 
     private final EntityManager entityManager;
     private final JwtService jwtService;
+    private final ApiTokenService apiTokenService;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
@@ -83,7 +87,30 @@ public class TenantFilterInterceptor extends OncePerRequestFilter {
             return;
         }
         try {
-            UUID organizationId = resolveOrganizationId(request);
+            String authHeader = request.getHeader("Authorization");
+            String bearer = authHeader != null && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null;
+            String queryToken = request.getParameter("token");
+            UUID organizationId;
+            if (ApiTokenPrincipal.looksLikeToken(queryToken)) {
+                // A personal API token in a URL ends up in proxy logs and browser history.
+                reject(response, HttpServletResponse.SC_UNAUTHORIZED, "API tokens are only accepted in the Authorization header");
+                return;
+            } else if (ApiTokenPrincipal.looksLikeToken(bearer)) {
+                ApiTokenPrincipal principal = apiTokenService.authenticate(bearer).orElse(null);
+                if (principal == null) {
+                    response.setHeader("WWW-Authenticate", "Bearer error=\"invalid_token\"");
+                    reject(response, HttpServletResponse.SC_UNAUTHORIZED, "Invalid, expired or revoked API token");
+                    return;
+                }
+                if (!ApiTokenPaths.allows(request.getMethod(), pathWithinApplication(request))) {
+                    reject(response, HttpServletResponse.SC_FORBIDDEN, "API tokens cannot access this endpoint");
+                    return;
+                }
+                request.setAttribute(ApiTokenPrincipal.REQUEST_ATTRIBUTE, principal);
+                organizationId = principal.organizationId();
+            } else {
+                organizationId = resolveOrganizationId(request);
+            }
 
             if (organizationId == null) {
                 if (isPublicEndpoint(request)) {
@@ -105,6 +132,12 @@ public class TenantFilterInterceptor extends OncePerRequestFilter {
         } finally {
             TenantContext.clear();
         }
+    }
+
+    private static void reject(HttpServletResponse response, int status, String message) throws IOException {
+        response.setStatus(status);
+        response.setContentType("application/json");
+        response.getWriter().write("{\"error\":\"" + message + "\"}");
     }
 
     private UUID resolveOrganizationId(HttpServletRequest request) {
