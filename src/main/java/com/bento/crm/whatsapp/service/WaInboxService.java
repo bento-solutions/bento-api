@@ -82,7 +82,7 @@ public class WaInboxService {
         StringBuilder sql = new StringBuilder(CONVERSATION_COLUMNS).append("""
                 WHERE c.organization_id = :orgId AND c.deleted_at IS NULL AND c.last_message_at IS NOT NULL
                 """);
-        if (!actor.readsAll() || filter == Filter.MINE) {
+        if (!visibility.readsAll(actor) || filter == Filter.MINE) {
             sql.append(" AND (p.assigned_to_user_id = :me OR p.owner_id = :me)");
         }
         if (filter == Filter.UNREAD) {
@@ -227,7 +227,7 @@ public class WaInboxService {
                                     AND p.deleted_at IS NULL
                 WHERE c.organization_id = :orgId AND c.deleted_at IS NULL AND c.unread_count > 0
                 """);
-        if (!actor.readsAll()) {
+        if (!visibility.readsAll(actor)) {
             sql.append(" AND (p.assigned_to_user_id = :me OR p.owner_id = :me)");
         }
         return jdbc.queryForObject(sql.toString(),

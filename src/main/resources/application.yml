@@ -18,7 +18,9 @@ spring:
     username: ${DB_USER:postgres}
     password: ${DB_PASSWORD:postgres}
     hikari:
-      maximum-pool-size: 10
+      # Request threads are virtual (unbounded), so the pool is the real concurrency limit; the
+      # outbox, ingest and SSE work share it with ordinary requests.
+      maximum-pool-size: 15
       minimum-idle: 5
   cache:
     type: redis
@@ -146,6 +148,25 @@ whatsapp:
       zone: Africa/Casablanca
       start: 9
       end: 18
+  # Self-hosted Baileys bot (personal numbers linked as a device). Reached on the internal Docker
+  # network only; leaving base-url blank disables linking. The bot signs its webhook calls with
+  # webhook-secret, and the CRM presents api-key when calling the bot.
+  baileys:
+    base-url: ${WHATSAPP_BOT_BASE_URL:}
+    api-key: ${WHATSAPP_BOT_API_KEY:}
+    webhook-secret: ${BAILEYS_WEBHOOK_SECRET:}
+  outbox:
+    poll-interval-ms: ${WHATSAPP_OUTBOX_POLL_MS:2000}
+    max-attempts: 5
+    stale-sending-after: PT2M
+    # Defaults for a paced (personal) number; each organization can override them.
+    pacing:
+      reply-min-gap: PT3S
+      outreach-min-gap: PT10S
+      outreach-per-hour: 30
+      new-chats-per-day: 15
+  stream:
+    heartbeat-ms: 25000
 
 partner:
   purge:

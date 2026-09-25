@@ -3,7 +3,9 @@ package com.bento.crm.whatsapp.service;
 import com.bento.crm.common.exception.ResourceNotFoundException;
 import com.bento.crm.partner.model.Partner;
 import com.bento.crm.partner.repository.PartnerRepository;
+import com.bento.crm.whatsapp.model.WaAccount;
 import com.bento.crm.whatsapp.model.WaConversation;
+import com.bento.crm.whatsapp.repository.WaAccountRepository;
 import com.bento.crm.whatsapp.repository.WaConversationRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
@@ -25,6 +27,7 @@ public class WaVisibility {
 
     private final WaConversationRepository conversationRepository;
     private final PartnerRepository partnerRepository;
+    private final WaAccountRepository accountRepository;
 
     public WaConversation requireConversation(WaActor actor, UUID conversationId) {
         WaConversation conversation = conversationRepository
@@ -45,11 +48,21 @@ public class WaVisibility {
         return partner;
     }
 
+    /**
+     * Whether the actor sees every conversation: through WHATSAPP_READ_ALL, or because the
+     * organization chose visibility ALL for its number.
+     */
+    public boolean readsAll(WaActor actor) {
+        return actor.readsAll() || accountRepository.findByOrganizationId(actor.organizationId())
+                .map(a -> a.getVisibility() == WaAccount.Visibility.ALL)
+                .orElse(false);
+    }
+
     public boolean canSee(WaActor actor, WaConversation conversation) {
         if (!actor.organizationId().equals(conversation.getOrganizationId())) {
             return false;
         }
-        if (actor.readsAll()) {
+        if (readsAll(actor)) {
             return true;
         }
         if (conversation.getPartnerId() == null) {
@@ -61,7 +74,7 @@ public class WaVisibility {
     }
 
     public boolean canSee(WaActor actor, Partner partner) {
-        return actor.readsAll()
+        return readsAll(actor)
                 || actor.userId().equals(partner.getAssignedToUserId())
                 || actor.userId().equals(partner.getOwnerId());
     }

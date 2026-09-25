@@ -79,7 +79,7 @@ public class WaOutboxWorker {
 
         Instant now = Instant.now();
         for (WaMessage candidate : messageRepository.lockDueQueued(orgId, properties.getClaimBatch())) {
-            Instant eligibleAt = provider.paced() ? pacingPolicy.eligibleAt(orgId, candidate, now) : now;
+            Instant eligibleAt = provider.paced() ? pacingPolicy.eligibleAt(account, candidate, now) : now;
             if (eligibleAt.isAfter(now)) {
                 candidate.setNotBefore(eligibleAt);
                 continue;

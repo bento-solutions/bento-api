@@ -163,33 +163,35 @@ class WaOutboxTest extends IntegrationTestBase {
         // A Wednesday at 11:00 local: inside business hours.
         Instant wednesday = ZonedDateTime.of(2026, 9, 23, 11, 0, 0, 0, casablanca).toInstant();
         UUID conversationId = conversationFor(orgId, "+2126" + digits8());
+        com.bento.crm.whatsapp.model.WaAccount account = new com.bento.crm.whatsapp.model.WaAccount();
+        account.setOrganizationId(orgId);
 
         WaMessage reply = message(WaMessage.Lane.REPLY, false);
-        assertThat(pacingPolicy.eligibleAt(orgId, reply, wednesday)).isEqualTo(wednesday);
+        assertThat(pacingPolicy.eligibleAt(account, reply, wednesday)).isEqualTo(wednesday);
 
         insertSent(orgId, conversationId, wednesday.minusSeconds(1), WaMessage.Lane.REPLY, false);
-        assertThat(pacingPolicy.eligibleAt(orgId, reply, wednesday))
+        assertThat(pacingPolicy.eligibleAt(account, reply, wednesday))
                 .as("3s minimum gap after the last send").isEqualTo(wednesday.plusSeconds(2));
-        assertThat(pacingPolicy.eligibleAt(orgId, message(WaMessage.Lane.OUTREACH, false), wednesday))
+        assertThat(pacingPolicy.eligibleAt(account, message(WaMessage.Lane.OUTREACH, false), wednesday))
                 .as("10s gap for outreach").isEqualTo(wednesday.plusSeconds(9));
 
         Instant sunday = ZonedDateTime.of(2026, 9, 27, 11, 0, 0, 0, casablanca).toInstant();
-        assertThat(pacingPolicy.eligibleAt(orgId, message(WaMessage.Lane.OUTREACH, false), sunday))
+        assertThat(pacingPolicy.eligibleAt(account, message(WaMessage.Lane.OUTREACH, false), sunday))
                 .as("no outreach on Sunday").isEqualTo(ZonedDateTime.of(2026, 9, 28, 9, 0, 0, 0, casablanca).toInstant());
-        assertThat(pacingPolicy.eligibleAt(orgId, reply, sunday))
+        assertThat(pacingPolicy.eligibleAt(account, reply, sunday))
                 .as("replies ignore business hours").isEqualTo(sunday);
 
         for (int i = 0; i < 15; i++) {
             insertSent(orgId, conversationId, wednesday.minus(Duration.ofMinutes(90 + i)), WaMessage.Lane.OUTREACH, true);
         }
-        assertThat(pacingPolicy.eligibleAt(orgId, message(WaMessage.Lane.OUTREACH, true), wednesday))
+        assertThat(pacingPolicy.eligibleAt(account, message(WaMessage.Lane.OUTREACH, true), wednesday))
                 .as("15 new chats already opened today")
                 .isEqualTo(ZonedDateTime.of(2026, 9, 24, 9, 0, 0, 0, casablanca).toInstant());
 
         for (int i = 0; i < 30; i++) {
             insertSent(orgId, conversationId, wednesday.minus(Duration.ofMinutes(50 - i)), WaMessage.Lane.OUTREACH, false);
         }
-        assertThat(pacingPolicy.eligibleAt(orgId, message(WaMessage.Lane.OUTREACH, false), wednesday))
+        assertThat(pacingPolicy.eligibleAt(account, message(WaMessage.Lane.OUTREACH, false), wednesday))
                 .as("30 outreach messages in the last hour").isAfter(wednesday.plusSeconds(60));
     }
 

@@ -53,7 +53,10 @@ public class TenantFilterInterceptor extends OncePerRequestFilter {
             // The WhatsApp webhook carries no JWT and therefore no org claim; it
             // resolves its own tenant from metadata.phone_number_id instead.
             "/webhooks/whatsapp",
-            "/api/v1/webhooks/whatsapp"
+            "/api/v1/webhooks/whatsapp",
+            // The Baileys bot's webhook: HMAC-signed, resolves its tenant from the session id.
+            "/webhooks/baileys",
+            "/api/v1/webhooks/baileys"
     );
 
     private static final List<String> PUBLIC_PREFIXES = List.of(

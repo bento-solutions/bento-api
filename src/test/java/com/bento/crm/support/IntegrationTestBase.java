@@ -59,6 +59,8 @@ public abstract class IntegrationTestBase {
     public static final PostgreSQLContainer<?> postgres;
     public static final GenericContainer<?> redis;
     private static final Path fileStorage;
+    /** Stand-in for the Baileys bot, shared by the whole suite like the containers. */
+    protected static final FakeBot fakeBot = new FakeBot();
 
     static {
         // Match the production/dev image (docker-compose*.yml) so schema behaviour the tests
@@ -91,6 +93,9 @@ public abstract class IntegrationTestBase {
         registry.add("spring.data.redis.host", redis::getHost);
         registry.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
         registry.add("FILE_STORAGE_PATH", fileStorage::toString);
+        registry.add("whatsapp.baileys.base-url", fakeBot::baseUrl);
+        registry.add("whatsapp.baileys.api-key", () -> FakeBot.API_KEY);
+        registry.add("whatsapp.baileys.webhook-secret", () -> FakeBot.WEBHOOK_SECRET);
     }
 
     @Autowired

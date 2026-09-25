@@ -74,6 +74,9 @@ public class RateLimitFilter extends OncePerRequestFilter {
     @Override
     protected boolean shouldNotFilter(HttpServletRequest request) {
         String path = request.getRequestURI();
-        return path.contains("/actuator") || path.contains("/swagger-ui") || path.contains("/openapi");
+        // The bot's webhook is internal and signed; throttling it per IP would only delay the
+        // CRM catching up after an outage (the bot's spool retries anyway).
+        return path.contains("/actuator") || path.contains("/swagger-ui") || path.contains("/openapi")
+                || path.endsWith("/webhooks/baileys");
     }
 }
