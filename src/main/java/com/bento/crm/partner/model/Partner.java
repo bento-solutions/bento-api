@@ -118,7 +118,9 @@ public class Partner extends BaseTenantEntity {
     }
 
     public enum PartnerSource {
-        WEBSITE, TRADE_SHOW, LINKEDIN, CAMPAIGN, REFERRAL, COLD_CALL, INBOUND, OTHER
+        WEBSITE, TRADE_SHOW, LINKEDIN, CAMPAIGN, REFERRAL, COLD_CALL, INBOUND, OTHER,
+        /** Created from a WhatsApp conversation (inbox "create lead", or automatically for a new number). */
+        WHATSAPP
     }
 
     public enum Temperature {

@@ -11,11 +11,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 
-import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -277,10 +275,5 @@ class WaIngestServiceTest extends IntegrationTestBase {
 
     private static String randomPhone() {
         return "+2126" + (10000000 + ThreadLocalRandom.current().nextInt(89999999));
-    }
-
-    private UUID orgIdOf(String token) throws Exception {
-        String payload = new String(Base64.getUrlDecoder().decode(token.split("\\.")[1]), StandardCharsets.UTF_8);
-        return UUID.fromString(objectMapper.readTree(payload).get("org").asText());
     }
 }

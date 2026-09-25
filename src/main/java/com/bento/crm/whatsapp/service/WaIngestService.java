@@ -8,13 +8,16 @@ import com.bento.crm.notification.model.Notification;
 import com.bento.crm.notification.service.NotificationService;
 import com.bento.crm.partner.model.Partner;
 import com.bento.crm.partner.repository.PartnerRepository;
+import com.bento.crm.whatsapp.event.WaChangeEvent;
 import com.bento.crm.whatsapp.ingest.InboundMessage;
 import com.bento.crm.whatsapp.ingest.StatusUpdate;
 import com.bento.crm.whatsapp.model.WaConversation;
 import com.bento.crm.whatsapp.model.WaMessage;
+import com.bento.crm.whatsapp.repository.WaBlockedNumberRepository;
 import com.bento.crm.whatsapp.repository.WaMessageRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -55,12 +58,14 @@ public class WaIngestService {
             EnumSet.of(WaMessage.Status.QUEUED, WaMessage.Status.SENDING);
 
     private final WaMessageRepository messageRepository;
+    private final WaBlockedNumberRepository blockedRepository;
     private final CampaignRecipientRepository recipientRepository;
     private final CampaignRepository campaignRepository;
     private final PartnerRepository partnerRepository;
     private final WaConversationService conversationService;
     private final WaFollowupService followupService;
     private final NotificationService notificationService;
+    private final ApplicationEventPublisher events;
 
     public enum Outcome {
         STORED, DUPLICATE, IGNORED
@@ -80,6 +85,10 @@ public class WaIngestService {
         if (messageRepository.existsByOrgAndWamid(orgId, message.wamid())) {
             log.debug("[wa-ingest] duplicate {}, ignoring", message.wamid());
             return Outcome.DUPLICATE;
+        }
+        // An ignored number leaves no trace: nothing stored, no lead, no notification.
+        if (blockedRepository.isBlocked(orgId, message.phoneE164())) {
+            return Outcome.IGNORED;
         }
 
         Instant occurredAt = message.occurredAt() != null ? message.occurredAt() : Instant.now();
@@ -114,7 +123,8 @@ public class WaIngestService {
             stored.setStatus(WaMessage.Status.SENT);
             stored.setSentAt(occurredAt);
         }
-        messageRepository.save(stored);
+        stored = messageRepository.save(stored);
+        events.publishEvent(WaChangeEvent.messageCreated(orgId, conversation.getId(), stored.getId()));
 
         if (!fromContact) {
             conversationService.recordOutbound(conversation.getId(), occurredAt, message.body());
@@ -224,6 +234,9 @@ public class WaIngestService {
         }
 
         WaMessage message = messageRepository.findByOrgAndWamid(orgId, update.wamid()).orElse(null);
+        if (message != null) {
+            events.publishEvent(WaChangeEvent.messageUpdated(orgId, message.getConversationId(), message.getId()));
+        }
         if (message == null || message.getRecipientId() == null || !advanced) {
             return true;
         }

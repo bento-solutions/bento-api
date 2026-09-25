@@ -94,6 +94,57 @@ public class PartnerService {
         return saved;
     }
 
+    /**
+     * The lead for a WhatsApp number, created if the number has none. Keyed on
+     * {@code externalId = "whatsapp:<E.164>"}, so repeated calls (and concurrent inbound messages
+     * from the same new number, see the Baileys lead resolver) converge on one row; a soft-deleted
+     * match is restored rather than duplicated.
+     *
+     * <p>Takes the organization explicitly and never reads {@code TenantContext}: it is called
+     * from the inbox request and from the unauthenticated bot webhook alike.
+     *
+     * @param displayName the contact's WhatsApp profile name, used as the lead name when present
+     * @param assigneeId  who the new lead is assigned to; null leaves it unassigned
+     */
+    @Transactional
+    public Partner findOrCreateWhatsAppLead(UUID orgId, String phoneE164, String displayName, UUID assigneeId) {
+        String externalId = "whatsapp:" + phoneE164;
+        Optional<Partner> existing = partnerRepository.findByOrganizationIdAndExternalIdIncludingDeleted(orgId, externalId);
+        if (existing.isPresent()) {
+            Partner partner = existing.get();
+            if (partner.getDeletedAt() != null) {
+                partner.setDeletedAt(null);
+                return partnerRepository.save(partner);
+            }
+            return partner;
+        }
+
+        String name = displayName == null || displayName.isBlank() ? phoneE164 : displayName.strip();
+        Partner partner = Partner.builder()
+                .type(Partner.PartnerType.LEAD)
+                .name(name)
+                .phone(phoneE164)
+                .source(Partner.PartnerSource.WHATSAPP)
+                .stage(Partner.PartnerStage.NEW)
+                .assignedToUserId(assigneeId)
+                .productInterests(List.<Map<String, Object>>of())
+                .campaigns(List.<Map<String, Object>>of())
+                .externalId(externalId)
+                .build();
+        partner.setOrganizationId(orgId);
+
+        Partner saved = partnerRepository.saveAndFlush(partner);
+        notifyIfAssigned(orgId, null, saved);
+        eventPublisher.publishEvent(com.bento.crm.automation.event.EntityChangedEvent.builder()
+                .organizationId(orgId)
+                .trigger(com.bento.crm.automation.model.AutomationRule.Trigger.PARTNER_CREATED)
+                .entityType("PARTNER")
+                .entityId(saved.getId())
+                .payload(partnerToPayload(saved))
+                .build());
+        return saved;
+    }
+
     public Partner getPartner(UUID id) {
         UUID orgId = TenantContext.getCurrentOrganizationId();
         return partnerRepository.findByOrganizationIdAndId(orgId, id)

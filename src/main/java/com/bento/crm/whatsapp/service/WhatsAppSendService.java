@@ -93,7 +93,7 @@ public class WhatsAppSendService {
             message.setStatus(WaMessage.Status.SENT);
             message.setOccurredAt(now);
             message.setSentAt(now);
-            messageRepository.save(message);
+            message = messageRepository.save(message);
 
             // Delivery states only ever move forward: a contact who already replied
             // to the first message must not be reset to SENT by their relance.
@@ -114,7 +114,7 @@ public class WhatsAppSendService {
         message.setStatus(WaMessage.Status.FAILED);
         message.setErrorCode(result.errorCode());
         message.setErrorTitle(result.errorTitle());
-        messageRepository.save(message);
+        message = messageRepository.save(message);
 
         // A retryable failure leaves the recipient alone so the scheduler can try
         // again; only a permanent rejection marks them FAILED in the CRM.

@@ -50,6 +50,12 @@ public interface WaConversationRepository extends JpaRepository<WaConversation, 
             + "WHERE c.id = :id AND c.partnerId IS NULL")
     int linkPartnerIfUnset(@Param("id") UUID id, @Param("partnerId") UUID partnerId);
 
+    /** Links (or re-links, or with null unlinks) the conversation to a partner. */
+    @Modifying(flushAutomatically = true)
+    @Query("UPDATE WaConversation c SET c.partnerId = :partnerId, c.updatedAt = CURRENT_TIMESTAMP "
+            + "WHERE c.organizationId = :orgId AND c.id = :id")
+    int setPartner(@Param("orgId") UUID orgId, @Param("id") UUID id, @Param("partnerId") UUID partnerId);
+
     /** Records what WhatsApp calls the contact; null arguments leave the stored value alone. */
     @Modifying(flushAutomatically = true)
     @Query("""

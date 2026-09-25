@@ -10,6 +10,7 @@ import com.bento.crm.whatsapp.model.WaFollowup;
 import com.bento.crm.whatsapp.repository.WaAccountRepository;
 import com.bento.crm.whatsapp.repository.WaConversationRepository;
 import com.bento.crm.whatsapp.repository.WaFollowupRepository;
+import com.bento.crm.whatsapp.util.BusinessHours;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
@@ -18,11 +19,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.DayOfWeek;
 import java.time.Instant;
-import java.time.LocalTime;
 import java.time.ZoneId;
-import java.time.ZonedDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -192,27 +190,7 @@ public class WaFollowupWorker {
      *         {@code null} if sending now is fine
      */
     Instant nextBusinessWindow(Instant at) {
-        if (!businessHoursEnabled) {
-            return null;
-        }
-        ZoneId zone = ZoneId.of(businessZone);
-        ZonedDateTime local = at.atZone(zone);
-
-        boolean sunday = local.getDayOfWeek() == DayOfWeek.SUNDAY;
-        boolean tooEarly = local.getHour() < businessStartHour;
-        boolean tooLate = local.getHour() >= businessEndHour;
-
-        if (!sunday && !tooEarly && !tooLate) {
-            return null;
-        }
-
-        ZonedDateTime next = (tooEarly && !sunday)
-                ? local.with(LocalTime.of(businessStartHour, 0))
-                : local.plusDays(1).with(LocalTime.of(businessStartHour, 0));
-
-        while (next.getDayOfWeek() == DayOfWeek.SUNDAY) {
-            next = next.plusDays(1).with(LocalTime.of(businessStartHour, 0));
-        }
-        return next.toInstant();
+        return new BusinessHours(businessHoursEnabled, ZoneId.of(businessZone), businessStartHour, businessEndHour)
+                .nextWindow(at);
     }
 }

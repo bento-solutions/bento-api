@@ -36,6 +36,35 @@ public interface WhatsAppProvider {
     SendResult sendText(WaAccount account, String toPhoneE164, String body);
 
     /**
+     * Sends free-form text under an id the CRM chose. Providers that cannot accept a
+     * caller-chosen id ignore it and return their own (see {@link #assignsMessageIds()}).
+     *
+     * @param clientMessageId the wamid to send under; resending with the same id must not
+     *                        deliver twice
+     */
+    default SendResult sendText(WaAccount account, String toPhoneE164, String body, String clientMessageId) {
+        return sendText(account, toPhoneE164, body);
+    }
+
+    /**
+     * Whether sends must be spaced out and capped by the outbox. True for a personal number
+     * linked through Baileys, where WhatsApp bans numbers that behave like bulk senders; Meta's
+     * Cloud API does its own rate limiting.
+     */
+    default boolean paced() {
+        return false;
+    }
+
+    /**
+     * Whether the CRM assigns the wamid before sending. When it does, receipts that arrive before
+     * the send call returns can still be matched, and a send whose outcome is unknown (the JVM
+     * died mid-call) can be retried under the same id without delivering twice.
+     */
+    default boolean assignsMessageIds() {
+        return false;
+    }
+
+    /**
      * Outcome of a send attempt.
      *
      * @param wamid      Meta's message id, used as the idempotency key downstream

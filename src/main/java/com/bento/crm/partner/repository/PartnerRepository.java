@@ -55,6 +55,15 @@ public interface PartnerRepository extends JpaRepository<Partner, UUID>, JpaSpec
      * Resolves a partner regardless of its deleted state. Only the restore path uses this —
      * every read path must go through the filtered lookups above.
      */
+    /**
+     * External-id lookup that also sees soft-deleted rows. The unique index on
+     * (organization_id, external_id) covers deleted rows too, so a create must find and reuse a
+     * deleted match rather than collide with it.
+     */
+    @Query("SELECT p FROM Partner p WHERE p.organizationId = :orgId AND p.externalId = :externalId")
+    Optional<Partner> findByOrganizationIdAndExternalIdIncludingDeleted(@Param("orgId") UUID orgId,
+                                                                       @Param("externalId") String externalId);
+
     @Query("SELECT p FROM Partner p WHERE p.organizationId = :orgId AND p.id = :id")
     Optional<Partner> findByOrganizationIdAndIdIncludingDeleted(@Param("orgId") UUID orgId, @Param("id") UUID id);
 

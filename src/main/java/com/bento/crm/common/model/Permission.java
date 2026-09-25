@@ -97,6 +97,19 @@ public enum Permission {
     // Analytics
     ANALYTICS_READ("ANALYTICS_READ"),
 
+    // WhatsApp inbox. READ sees the conversations of partners assigned to or owned by the user;
+    // READ_ALL sees every conversation, including numbers not linked to any partner. DRAFT may
+    // only propose a message for a human to approve; SEND puts it straight in the queue. ADMIN
+    // links the number and configures pacing, lead creation and visibility.
+    WHATSAPP_READ("WHATSAPP_READ"),
+    WHATSAPP_READ_ALL("WHATSAPP_READ_ALL"),
+    WHATSAPP_SEND("WHATSAPP_SEND"),
+    WHATSAPP_DRAFT("WHATSAPP_DRAFT"),
+    WHATSAPP_ADMIN("WHATSAPP_ADMIN"),
+
+    // Personal API tokens (for AI agents and integrations).
+    API_TOKENS_MANAGE("API_TOKENS_MANAGE"),
+
     // Admin
     ADMIN_ACCESS("ADMIN_ACCESS");
 
@@ -121,6 +134,8 @@ public enum Permission {
                     GROUPS_READ, GROUPS_CREATE, GROUPS_WRITE, GROUPS_DELETE,
                     FILES_READ, FILES_WRITE,
                     ANALYTICS_READ,
+                    WHATSAPP_READ, WHATSAPP_READ_ALL, WHATSAPP_SEND, WHATSAPP_DRAFT, WHATSAPP_ADMIN,
+                    API_TOKENS_MANAGE,
                     ADMIN_ACCESS
             );
             case MANAGER -> Set.of(
@@ -138,7 +153,9 @@ public enum Permission {
                     USERS_READ, TEAMS_READ, TEAMS_WRITE,
                     GROUPS_READ, GROUPS_CREATE, GROUPS_WRITE,
                     FILES_READ, FILES_WRITE,
-                    ANALYTICS_READ
+                    ANALYTICS_READ,
+                    WHATSAPP_READ, WHATSAPP_READ_ALL, WHATSAPP_SEND, WHATSAPP_DRAFT,
+                    API_TOKENS_MANAGE
             );
             case SALESPERSON -> Set.of(
                     PARTNERS_READ, PARTNERS_CREATE, PARTNERS_WRITE,
@@ -148,7 +165,9 @@ public enum Permission {
                     TASKS_READ, TASKS_CREATE, TASKS_WRITE,
                     GROUPS_READ,
                     FILES_READ, FILES_WRITE,
-                    ANALYTICS_READ
+                    ANALYTICS_READ,
+                    WHATSAPP_READ, WHATSAPP_SEND, WHATSAPP_DRAFT,
+                    API_TOKENS_MANAGE
             );
             case SUPPORT -> Set.of(
                     PARTNERS_READ, PARTNERS_WRITE,
@@ -156,13 +175,16 @@ public enum Permission {
                     TASKS_READ, TASKS_CREATE, TASKS_WRITE,
                     GROUPS_READ,
                     FILES_READ, FILES_WRITE,
-                    ANALYTICS_READ
+                    ANALYTICS_READ,
+                    WHATSAPP_READ, WHATSAPP_SEND, WHATSAPP_DRAFT,
+                    API_TOKENS_MANAGE
             );
             case VIEWER -> Set.of(
                     PARTNERS_READ, DEALS_READ, DEAL_ACTIVITIES_READ, PROPOSALS_READ,
                     TICKETS_READ, TASKS_READ, GROUPS_READ,
                     FILES_READ,
-                    ANALYTICS_READ
+                    ANALYTICS_READ,
+                    WHATSAPP_READ
             );
         };
     }

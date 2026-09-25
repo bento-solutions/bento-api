@@ -1,11 +1,14 @@
 package com.bento.crm.support;
 
+import com.bento.crm.auth.service.JwtService;
+import com.bento.crm.common.model.UserRole;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.context.TestPropertySource;
@@ -15,8 +18,11 @@ import org.testcontainers.containers.PostgreSQLContainer;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Base64;
+import java.util.UUID;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 
@@ -93,11 +99,46 @@ public abstract class IntegrationTestBase {
     @Autowired
     protected ObjectMapper objectMapper;
 
+    @Autowired
+    private JwtService jwtService;
+
+    @Autowired
+    private JdbcTemplate testJdbc;
+
     protected int testSequence = 0;
 
     @BeforeEach
     void resetSequence() {
         testSequence++;
+    }
+
+    /** The organization id carried by an access token's {@code org} claim. */
+    protected UUID orgIdOf(String accessToken) throws Exception {
+        return UUID.fromString(claimsOf(accessToken).get("org").asText());
+    }
+
+    /** The user id carried by an access token's subject. */
+    protected UUID userIdOf(String accessToken) throws Exception {
+        return UUID.fromString(claimsOf(accessToken).get("sub").asText());
+    }
+
+    /**
+     * Adds a user with {@code role} to the organization and returns a real access token for them.
+     * Cheaper than the invitation flow (which needs a mocked mailer, and so a separate Spring
+     * context); the filters only verify the token, exactly as they do for a logged-in user.
+     */
+    protected String tokenForNewUser(UUID orgId, UserRole role) {
+        UUID userId = UUID.randomUUID();
+        testJdbc.update("INSERT INTO app_user (id, organization_id, email, password_hash, display_name, role) "
+                        + "VALUES (?, ?, ?, 'not-a-real-hash', ?, ?)",
+                userId, orgId, role.name().toLowerCase() + "-" + userId + "@example.com",
+                "Test " + role.name(), role.name());
+        return jwtService.generateAccessToken(userId, orgId, role);
+    }
+
+    private com.fasterxml.jackson.databind.JsonNode claimsOf(String accessToken) throws Exception {
+        String payload = new String(Base64.getUrlDecoder().decode(accessToken.split("\\.")[1]), StandardCharsets.UTF_8);
+        return objectMapper.readTree(payload);
     }
 
     /**
