@@ -8,7 +8,9 @@ import com.bento.crm.common.exception.ResourceNotFoundException;
 import com.bento.crm.whatsapp.model.WaAccount;
 import com.bento.crm.whatsapp.model.WaConversation;
 import com.bento.crm.whatsapp.repository.WaAccountRepository;
+import com.bento.crm.whatsapp.repository.WaBlockedNumberRepository;
 import com.bento.crm.whatsapp.service.WaConversationService;
+import com.bento.crm.whatsapp.service.WaOutboxService;
 import com.bento.crm.whatsapp.service.WaFollowupService;
 import com.bento.crm.whatsapp.service.WhatsAppSendService;
 import com.bento.crm.common.mail.EmailService;
@@ -47,6 +49,8 @@ public class CampaignLaunchService {
     private final TaskExecutor whatsAppTaskExecutor;
     private final EmailService emailService;
     private final PartnerRepository partnerRepository;
+    private final WaOutboxService outboxService;
+    private final WaBlockedNumberRepository blockedRepository;
 
     /**
      * Creates a WhatsApp campaign from the /marketing composer and enrols the
@@ -66,6 +70,7 @@ public class CampaignLaunchService {
         campaign.setFollowupEnabled(request.isFollowupEnabled());
         campaign.setFollowupDelayDays(request.getFollowupDelayDays() == null ? 3 : request.getFollowupDelayDays());
         campaign.setFollowupTemplateName(request.getFollowupTemplateName());
+        campaign.setFollowupBody(blankToNull(request.getFollowupBody()));
         campaign.setFollowupDelayMinutes(request.getFollowupDelayMinutes());
         campaign.setSentCount(0L);
 
@@ -107,6 +112,10 @@ public class CampaignLaunchService {
         if (campaign.getChannel() != Campaign.Channel.WHATSAPP) {
             throw new IllegalStateException("Only WhatsApp and Email campaigns can be launched through this endpoint");
         }
+        WaAccount linked = accountRepository.findByOrganizationId(orgId).orElse(null);
+        if (linked != null && linked.getProvider() == WaAccount.Provider.BAILEYS) {
+            return launchThroughOutbox(orgId, campaign, linked);
+        }
         if (campaign.getTemplateName() == null || campaign.getTemplateName().isBlank()) {
             throw new IllegalStateException("Campaign has no WhatsApp template selected");
         }
@@ -122,6 +131,61 @@ public class CampaignLaunchService {
         dispatchAfterCommit(() -> dispatchAll(orgId, campaignId));
 
         return saved;
+    }
+
+    /**
+     * A linked personal number: no templates, and no burst. Every reachable recipient's message
+     * is queued in the outbox (lowest priority, OUTREACH lane) in this transaction, and the paced
+     * worker sends them over hours or days as the number's limits allow; CampaignOutboxHooks
+     * tracks outcomes and ends SENDING when the queue drains.
+     */
+    private Campaign launchThroughOutbox(UUID orgId, Campaign campaign, WaAccount account) {
+        String text = campaign.getBodyPreview() == null ? "" : campaign.getBodyPreview().strip();
+        if (text.isEmpty()) {
+            throw new IllegalStateException("Write the message text for this campaign");
+        }
+        if (!account.isSessionOpen()) {
+            throw new IllegalStateException("The WhatsApp number is not connected; link it again in Settings → WhatsApp");
+        }
+        Instant now = Instant.now();
+        int queued = 0;
+        for (CampaignRecipient recipient : recipientRepository.findAllByCampaign(orgId, campaign.getId())) {
+            if (recipient.getStatus() != CampaignRecipient.Status.PENDING || recipient.getPhoneE164() == null) {
+                continue;
+            }
+            if (blockedRepository.isBlocked(orgId, recipient.getPhoneE164())) {
+                recipient.setStatus(CampaignRecipient.Status.SKIPPED);
+                recipient.setErrorCode("IGNORED_NUMBER");
+                recipient.setErrorTitle("This number is in the ignored list");
+                recipientRepository.save(recipient);
+                continue;
+            }
+            WaConversation conversation = conversationService.getOrCreate(
+                    orgId, recipient.getPhoneE164(), recipient.getPartnerId());
+            if (conversation.isOptedOut()) {
+                recipient.setStatus(CampaignRecipient.Status.OPTED_OUT);
+                recipient.setErrorCode("OPTED_OUT");
+                recipient.setErrorTitle("Contact sent STOP and cannot receive marketing messages");
+                recipient.setFailedAt(now);
+                recipientRepository.save(recipient);
+                continue;
+            }
+            recipient.setConversationId(conversation.getId());
+            recipientRepository.save(recipient);
+            outboxService.enqueueCampaign(orgId, campaign, recipient, conversation, text, 0);
+            queued++;
+        }
+        if (queued == 0) {
+            throw new IllegalStateException("No recipient of this campaign can be messaged");
+        }
+        campaign.setStatus(Campaign.Status.SENDING);
+        campaign.setLaunchedAt(now);
+        log.info("[campaign] {} queued {} message(s) in the outbox", campaign.getId(), queued);
+        return campaignRepository.save(campaign);
+    }
+
+    private static String blankToNull(String s) {
+        return s == null || s.isBlank() ? null : s.strip();
     }
 
     /**

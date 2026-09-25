@@ -21,8 +21,10 @@ public class WhatsAppCampaignRequest {
     @NotBlank
     private String title;
 
-    /** Name of the approved template, as it appears in Meta Business Manager. */
-    @NotBlank
+    /**
+     * Name of the approved template, as it appears in Meta Business Manager. Required for Meta
+     * (checked at launch); a linked personal number sends {@link #bodyPreview} as plain text.
+     */
     private String templateName;
 
     private String templateLang;
@@ -30,7 +32,10 @@ public class WhatsAppCampaignRequest {
     /** Positional values for the template's {{1}}, {{2}}, … placeholders. */
     private List<String> templateParams;
 
-    /** Rendered text shown in the CRM timeline; not sent to Meta. */
+    /**
+     * Meta: rendered text shown in the CRM timeline, not sent. Linked personal number: the
+     * message itself.
+     */
     private String bodyPreview;
 
     @NotEmpty
@@ -42,6 +47,9 @@ public class WhatsAppCampaignRequest {
     private Integer followupDelayDays;
 
     private String followupTemplateName;
+
+    /** Relance text for a linked personal number. */
+    private String followupBody;
 
     /**
      * Test-only override that schedules the relance in minutes instead of days.

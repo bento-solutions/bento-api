@@ -104,6 +104,15 @@ public interface WaMessageRepository extends JpaRepository<WaMessage, UUID> {
     @Query("SELECT COUNT(m) FROM WaMessage m WHERE m.apiTokenId = :tokenId AND m.createdAt >= :since")
     long countByApiTokenSince(@Param("tokenId") UUID tokenId, @Param("since") Instant since);
 
+    /** Campaign messages still waiting in (or being sent by) the outbox. */
+    @Query("""
+            SELECT COUNT(m) FROM WaMessage m
+            WHERE m.campaignId = :campaignId
+              AND m.status IN (com.bento.crm.whatsapp.model.WaMessage.Status.QUEUED,
+                               com.bento.crm.whatsapp.model.WaMessage.Status.SENDING)
+            """)
+    long countPendingForCampaign(@Param("campaignId") UUID campaignId);
+
     /** Organizations with at least one message ready to send. */
     @Query(value = """
             SELECT DISTINCT organization_id FROM wa_message

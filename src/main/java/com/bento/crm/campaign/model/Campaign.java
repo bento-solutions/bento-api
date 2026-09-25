@@ -86,6 +86,10 @@ public class Campaign extends BaseTenantEntity {
     @Column(name = "followup_template_name")
     private String followupTemplateName;
 
+    /** Relance text for a linked personal number, which sends plain text rather than templates. */
+    @Column(name = "followup_body", columnDefinition = "text")
+    private String followupBody;
+
     /**
      * Test-only override. When set, relances are scheduled this many minutes out
      * instead of {@link #followupDelayDays}, turning a 3-day test cycle into a

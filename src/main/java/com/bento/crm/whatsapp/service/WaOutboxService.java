@@ -133,6 +133,43 @@ public class WaOutboxService {
     }
 
     /**
+     * Queues one campaign message (initial send or relance) for a paced account. Lowest priority,
+     * so a person's or an agent's reply to a waiting contact always goes first; OUTREACH lane
+     * (business hours, hourly and new-chat caps) unless the contact wrote in the last 24 hours.
+     * The recipient stays PENDING until {@link com.bento.crm.campaign.service.CampaignOutboxHooks}
+     * hears the send's outcome.
+     */
+    @Transactional
+    public WaMessage enqueueCampaign(UUID orgId, com.bento.crm.campaign.model.Campaign campaign,
+                                     com.bento.crm.campaign.model.CampaignRecipient recipient,
+                                     WaConversation conversation, String text, int sequenceStep) {
+        Instant now = Instant.now();
+        boolean windowOpen = conversation.getLastInboundAt() != null
+                && conversation.getLastInboundAt().isAfter(now.minus(WaConversationService.SERVICE_WINDOW));
+        WaMessage message = new WaMessage();
+        message.setOrganizationId(orgId);
+        message.setConversationId(conversation.getId());
+        message.setCampaignId(campaign.getId());
+        message.setRecipientId(recipient.getId());
+        message.setSequenceStep(sequenceStep);
+        message.setDirection(WaMessage.Direction.OUT);
+        message.setMessageType("text");
+        message.setBody(text);
+        message.setSource(WaMessage.Source.CAMPAIGN);
+        message.setPriority(PRIORITY_CAMPAIGN);
+        message.setLane(windowOpen ? WaMessage.Lane.REPLY : WaMessage.Lane.OUTREACH);
+        message.setNewChat(!messageRepository.hasOutbound(orgId, conversation.getId()));
+        message.setStatus(WaMessage.Status.QUEUED);
+        message.setSentByUserId(campaign.getCreatedBy());
+        message.setOccurredAt(now);
+        message.setNotBefore(now);
+        message = messageRepository.save(message);
+        scheduler.kickAfterCommit(orgId);
+        events.publishEvent(WaChangeEvent.messageCreated(orgId, conversation.getId(), message.getId()));
+        return message;
+    }
+
+    /**
      * Puts an agent's draft in the queue, optionally with the approver's edits. Only a person can
      * approve: an API token that could approve its own drafts would make draft mode meaningless.
      */

@@ -239,6 +239,101 @@ class BaileysIntegrationTest extends IntegrationTestBase {
         assertThat(fakeBot.sends().getLast().body().path("to").asText()).isEqualTo(phone);
     }
 
+    // --- campaigns on a linked number ----------------------------------------------------------
+
+    @Autowired
+    private com.bento.crm.whatsapp.config.WaOutboxProperties outboxProperties;
+
+    @Autowired
+    private com.bento.crm.whatsapp.service.WaFollowupWorker followupWorker;
+
+    @Test
+    void campaignSendsItsTextThroughTheOutbox_skipsIgnoredAndOptedOut_andRelancesWithItsOwnText() throws Exception {
+        Account account = baileysAccount("OFF");
+        openSession(account);
+        jdbc.update("UPDATE wa_account SET outreach_min_gap_seconds = 0, reply_min_gap_seconds = 0 WHERE id = ?", account.id);
+        String reachable = phone();
+        String ignored = phone();
+        String optedOut = phone();
+        jdbc.update("INSERT INTO wa_blocked_number (organization_id, phone_e164) VALUES (?, ?)", account.orgId, ignored);
+        webhook(events(account.id, messageEvent("W" + UUID.randomUUID(), "IN", "live", optedOut, "X", "STOP")));
+        List<String> partnerIds = new ArrayList<>();
+        for (String p : List.of(reachable, ignored, optedOut)) {
+            partnerIds.add("\"" + JsonPath.read(mockMvc.perform(post("/partners")
+                            .header("Authorization", "Bearer " + account.token).contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"type\": \"LEAD\", \"name\": \"C\", \"phone\": \"%s\"}".formatted(p)))
+                    .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "$.id") + "\"");
+        }
+
+        boolean businessHours = outboxProperties.isBusinessHoursEnabled();
+        org.springframework.test.util.ReflectionTestUtils.setField(outboxProperties, "businessHoursEnabled", false);
+        var worker = org.springframework.test.util.AopTestUtils.getTargetObject(followupWorker);
+        org.springframework.test.util.ReflectionTestUtils.setField(worker, "businessHoursEnabled", false);
+        try {
+            String campaignId = JsonPath.read(mockMvc.perform(post("/campaigns/whatsapp")
+                            .header("Authorization", "Bearer " + account.token).contentType(MediaType.APPLICATION_JSON)
+                            .content("""
+                                    {"title": "Rentrée", "bodyPreview": "Offre de rentrée : -20%% cette semaine.",
+                                     "followupBody": "Petit rappel pour notre offre de rentrée.",
+                                     "followupEnabled": true, "partnerIds": [%s], "launchNow": true}
+                                    """.formatted(String.join(",", partnerIds))))
+                    .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString(), "$.id");
+            UUID campaign = UUID.fromString(campaignId);
+
+            Map<String, String> byPhone = awaitRecipients(campaign, s -> s.containsValue("SENT"));
+            assertThat(byPhone).containsEntry(reachable, "SENT").containsEntry(ignored, "SKIPPED").containsEntry(optedOut, "OPTED_OUT");
+            assertThat(fakeBot.sends().stream().filter(s -> s.body().path("to").asText().equals(reachable)).toList())
+                    .singleElement()
+                    .satisfies(s -> assertThat(s.body().path("text").asText()).isEqualTo("Offre de rentrée : -20% cette semaine."));
+            assertThat(fakeBot.sends().stream().noneMatch(s -> s.body().path("to").asText().equals(ignored)
+                    || s.body().path("to").asText().equals(optedOut))).isTrue();
+            assertThat(jdbc.queryForMap("SELECT source, lane, priority FROM wa_message WHERE campaign_id = ? AND sequence_step = 0", campaign))
+                    .containsEntry("source", "CAMPAIGN").containsEntry("lane", "OUTREACH").containsEntry("priority", 10);
+            awaitCampaignStatus(campaign, "ACTIVE");
+
+            jdbc.update("UPDATE wa_followup SET due_at = now() - interval '1 minute' WHERE campaign_id = ?", campaign);
+            for (UUID id : followupWorker.claimBatch()) {
+                followupWorker.processOne(id);
+            }
+            for (int i = 0; i < 60; i++) {
+                Integer count = jdbc.queryForObject("SELECT followup_count FROM campaign_recipient WHERE campaign_id = ? AND phone_e164 = ?",
+                        Integer.class, campaign, reachable);
+                if (count != null && count == 1) break;
+                Thread.sleep(100);
+            }
+            assertThat(fakeBot.sends().getLast().body().path("text").asText()).isEqualTo("Petit rappel pour notre offre de rentrée.");
+            assertThat(jdbc.queryForObject("SELECT followup_count FROM campaign_recipient WHERE campaign_id = ? AND phone_e164 = ?",
+                    Integer.class, campaign, reachable)).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT status FROM campaign WHERE id = ?", String.class, campaign)).isEqualTo("COMPLETED");
+        } finally {
+            org.springframework.test.util.ReflectionTestUtils.setField(outboxProperties, "businessHoursEnabled", businessHours);
+            org.springframework.test.util.ReflectionTestUtils.setField(worker, "businessHoursEnabled", true);
+        }
+    }
+
+    private Map<String, String> awaitRecipients(UUID campaignId, java.util.function.Predicate<Map<String, String>> done)
+            throws InterruptedException {
+        Map<String, String> byPhone = Map.of();
+        for (int i = 0; i < 80; i++) {
+            byPhone = new java.util.HashMap<>();
+            for (Map<String, Object> row : jdbc.queryForList("SELECT phone_e164, status FROM campaign_recipient WHERE campaign_id = ?", campaignId)) {
+                byPhone.put((String) row.get("phone_e164"), (String) row.get("status"));
+            }
+            if (done.test(byPhone)) break;
+            Thread.sleep(100);
+        }
+        return byPhone;
+    }
+
+    private void awaitCampaignStatus(UUID campaignId, String expected) throws InterruptedException {
+        String status = null;
+        for (int i = 0; i < 50 && !expected.equals(status); i++) {
+            status = jdbc.queryForObject("SELECT status FROM campaign WHERE id = ?", String.class, campaignId);
+            if (!expected.equals(status)) Thread.sleep(100);
+        }
+        assertThat(status).isEqualTo(expected);
+    }
+
     // --- helpers -------------------------------------------------------------------------------
 
     private record Account(UUID id, UUID orgId, UUID adminId, String token) {

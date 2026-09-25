@@ -1,5 +1,6 @@
 package com.bento.crm.whatsapp.service;
 
+import com.bento.crm.campaign.service.CampaignOutboxHooks;
 import com.bento.crm.whatsapp.config.WaOutboxProperties;
 import com.bento.crm.whatsapp.event.WaChangeEvent;
 import com.bento.crm.whatsapp.model.WaAccount;
@@ -48,6 +49,7 @@ public class WaOutboxWorker {
     private final WaConversationService conversationService;
     private final WaOutboxProperties properties;
     private final ApplicationEventPublisher events;
+    private final CampaignOutboxHooks campaignHooks;
 
     /** Everything the send needs, captured while the message was locked. */
     public record Claim(UUID messageId, UUID organizationId, UUID conversationId, WaAccount account,
@@ -108,10 +110,15 @@ public class WaOutboxWorker {
     @Transactional
     public void complete(Claim claim, WhatsAppProvider.SendResult result) {
         Instant now = Instant.now();
+        WaMessage message = messageRepository.findById(claim.messageId()).orElse(null);
+        boolean campaign = message != null && message.getCampaignId() != null;
         if (result.success()) {
             String wamid = result.wamid() != null ? result.wamid() : claim.wamid();
             messageRepository.completeSent(claim.messageId(), wamid, now);
             conversationService.recordOutbound(claim.conversationId(), now, claim.body());
+            if (campaign) {
+                campaignHooks.onSent(message, now);
+            }
         } else if (result.retryable() && claim.attempts() < properties.getMaxAttempts()) {
             messageRepository.requeue(claim.messageId(), now.plus(backoff(claim.attempts())),
                     result.errorCode(), truncate(result.errorTitle()));
@@ -121,6 +128,9 @@ public class WaOutboxWorker {
             messageRepository.fail(claim.messageId(), result.errorCode(), truncate(result.errorTitle()));
             log.warn("[wa-outbox] send of {} failed permanently: {} {}",
                     claim.messageId(), result.errorCode(), result.errorTitle());
+            if (campaign) {
+                campaignHooks.onFailed(message, result.errorCode(), truncate(result.errorTitle()), now);
+            }
         }
         events.publishEvent(WaChangeEvent.messageUpdated(claim.organizationId(), claim.conversationId(), claim.messageId()));
     }

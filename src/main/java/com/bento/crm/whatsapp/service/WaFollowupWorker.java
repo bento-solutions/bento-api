@@ -7,6 +7,7 @@ import com.bento.crm.campaign.repository.CampaignRepository;
 import com.bento.crm.whatsapp.model.WaAccount;
 import com.bento.crm.whatsapp.model.WaConversation;
 import com.bento.crm.whatsapp.model.WaFollowup;
+import com.bento.crm.whatsapp.model.WaMessage;
 import com.bento.crm.whatsapp.repository.WaAccountRepository;
 import com.bento.crm.whatsapp.repository.WaConversationRepository;
 import com.bento.crm.whatsapp.repository.WaFollowupRepository;
@@ -45,6 +46,7 @@ public class WaFollowupWorker {
     private final WaAccountRepository accountRepository;
     private final WhatsAppSendService sendService;
     private final WaFollowupService followupService;
+    private final WaOutboxService outboxService;
 
     @Value("${whatsapp.followup.batch-size:50}")
     private int batchSize;
@@ -132,6 +134,23 @@ public class WaFollowupWorker {
         WaAccount account = accountRepository.findByOrganizationId(orgId).orElse(null);
         if (account == null) {
             finish(followup, WaFollowup.State.FAILED, "Organization has no WhatsApp number connected");
+            return;
+        }
+
+        if (account.getProvider() == WaAccount.Provider.BAILEYS) {
+            // A linked personal number: the relance is plain text through the paced outbox, like
+            // the initial send; CampaignOutboxHooks counts it on the recipient once it goes out.
+            String text = campaign.getFollowupBody() != null && !campaign.getFollowupBody().isBlank()
+                    ? campaign.getFollowupBody()
+                    : null;
+            if (text == null) {
+                finish(followup, WaFollowup.State.SKIPPED, "Campaign has no relance text");
+                return;
+            }
+            WaMessage queued = outboxService.enqueueCampaign(orgId, campaign, recipient, conversation, text,
+                    followup.getSequenceStep());
+            followup.setSentMessageId(queued.getId());
+            finish(followup, WaFollowup.State.SENT, null);
             return;
         }
 
