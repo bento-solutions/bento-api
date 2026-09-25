@@ -84,6 +84,10 @@ services:
       # Must point at the frontend, which serves the /invite/accept route -- not at this API.
       INVITATION_ACCEPT_URL: ${INVITATION_ACCEPT_URL:-https://crmbento.com/invite/accept}
       INVITATION_EXPIRY_DAYS: ${INVITATION_EXPIRY_DAYS:-7}
+      # WhatsApp bot (Baileys) on the internal network. Blank keys disable linking.
+      WHATSAPP_BOT_BASE_URL: ${WHATSAPP_BOT_BASE_URL:-http://whatsapp-bot:3000}
+      WHATSAPP_BOT_API_KEY: ${WHATSAPP_BOT_API_KEY:-}
+      BAILEYS_WEBHOOK_SECRET: ${BAILEYS_WEBHOOK_SECRET:-}
     volumes:
       - ./uploads:/data/uploads
     healthcheck:
@@ -104,9 +108,43 @@ services:
       - "traefik.http.routers.crm-backend.tls=true"
       - "traefik.http.routers.crm-backend.tls.certresolver=letsencrypt"
       - "traefik.http.services.crm-backend.loadbalancer.server.port=8080"
+      # The bot calls /webhooks/baileys directly on the internal network; nothing from the
+      # internet may reach it. This longer (so higher-priority) rule catches the path at the
+      # edge and an allow-list of loopback only answers 403 to everyone.
+      - "traefik.http.routers.crm-backend-bot-hook.rule=Host(`api.crmbento.com`) && PathPrefix(`/api/v1/webhooks/baileys`)"
+      - "traefik.http.routers.crm-backend-bot-hook.entrypoints=websecure"
+      - "traefik.http.routers.crm-backend-bot-hook.tls=true"
+      - "traefik.http.routers.crm-backend-bot-hook.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.crm-backend-bot-hook.service=crm-backend"
+      - "traefik.http.routers.crm-backend-bot-hook.middlewares=crm-backend-bot-hook-deny"
+      - "traefik.http.middlewares.crm-backend-bot-hook-deny.ipallowlist.sourcerange=127.0.0.1/32"
       - "traefik.http.services.crm-backend.loadbalancer.healthcheck.path=/api/v1/actuator/health"
       - "traefik.http.services.crm-backend.loadbalancer.healthcheck.interval=15s"
       - "traefik.http.services.crm-backend.loadbalancer.healthcheck.timeout=5s"
+
+  whatsapp-bot:
+    # Only started by deploy-bot.sh (`--profile whatsapp`): the plain `up -d` in deploy.sh never
+    # touches it, so backend deploys do not restart the linked WhatsApp sessions.
+    profiles: ["whatsapp"]
+    image: ghcr.io/bento-solutions/bento-whatsapp-bot:${WHATSAPP_BOT_IMAGE_TAG:-latest}
+    container_name: crm-whatsapp-bot
+    restart: unless-stopped
+    environment:
+      # Checked by the bot at startup (it refuses to run without them).
+      API_KEY: ${WHATSAPP_BOT_API_KEY:-}
+      WEBHOOK_SECRET: ${BAILEYS_WEBHOOK_SECRET:-}
+      WEBHOOK_URL: http://app:8080/api/v1/webhooks/baileys
+      LOG_LEVEL: ${WHATSAPP_BOT_LOG_LEVEL:-info}
+    volumes:
+      # Signal session keys and the event spool. Owned by uid 1000, mode 700, never copied off
+      # the box. Each environment has its own directory: two bots on one session get it replaced.
+      - ${WHATSAPP_BOT_DATA_DIR:-/srv/bento/data/whatsapp-bot}:/data
+    mem_limit: 1536m
+    # Time to close every socket cleanly (no half-written credential file) and flush the spool.
+    stop_grace_period: 30s
+    # Internal network only: never on the proxy network, never published.
+    networks:
+      - crm-network
 
   pgadmin:
     image: dpage/pgadmin4:latest

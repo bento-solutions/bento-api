@@ -90,3 +90,76 @@ jobs:
         run: |
           ssh "${{ secrets.DEPLOY_SSH_HOST }}" \
             "GHCR_LOGIN_USER='${{ github.actor }}' GHCR_LOGIN_TOKEN='${{ secrets.GITHUB_TOKEN }}' DEPLOY_COMPOSE_FILE='${{ needs.build.outputs.compose_file }}' ${{ needs.build.outputs.app_dir }}/deploy.sh ${{ needs.build.outputs.tag }}"
+
+  # --- WhatsApp bot ---------------------------------------------------------------------------
+  # Built and deployed only when whatsapp-bot/ changed, with its own image and tag, after the
+  # backend deploy has fast-forwarded the server checkout (which brings deploy-bot.sh along).
+  # Backend deploys never restart the bot, so linked WhatsApp sessions survive them.
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      bot: ${{ steps.filter.outputs.bot }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            bot:
+              - 'whatsapp-bot/**'
+
+  bot:
+    needs: [changes, build, deploy]
+    if: needs.changes.outputs.bot == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    env:
+      BOT_IMAGE: ghcr.io/${{ github.repository_owner }}/bento-whatsapp-bot
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: resolve
+        run: |
+          SHA="${GITHUB_SHA::12}"
+          if [ "$GITHUB_REF" = "refs/heads/main" ]; then
+            { echo "tag=bot-$SHA"; echo "moving=latest"; } >> "$GITHUB_OUTPUT"
+          else
+            { echo "tag=dev-bot-$SHA"; echo "moving=dev"; } >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: whatsapp-bot
+          push: true
+          tags: |
+            ${{ env.BOT_IMAGE }}:${{ steps.resolve.outputs.tag }}
+            ${{ env.BOT_IMAGE }}:${{ steps.resolve.outputs.moving }}
+          cache-from: type=gha,scope=bot
+          cache-to: type=gha,mode=max,scope=bot
+
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Pin host key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy bot to host
+        run: |
+          ssh "${{ secrets.DEPLOY_SSH_HOST }}" \
+            "GHCR_LOGIN_USER='${{ github.actor }}' GHCR_LOGIN_TOKEN='${{ secrets.GITHUB_TOKEN }}' DEPLOY_COMPOSE_FILE='${{ needs.build.outputs.compose_file }}' ${{ needs.build.outputs.app_dir }}/deploy-bot.sh ${{ steps.resolve.outputs.tag }}"
