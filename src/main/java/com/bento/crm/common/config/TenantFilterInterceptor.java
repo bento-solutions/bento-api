@@ -91,6 +91,12 @@ public class TenantFilterInterceptor extends OncePerRequestFilter {
             String bearer = authHeader != null && authHeader.startsWith("Bearer ") ? authHeader.substring(7) : null;
             String queryToken = request.getParameter("token");
             UUID organizationId;
+            if ("/mcp".equals(pathWithinApplication(request)) && !ApiTokenPrincipal.looksLikeToken(bearer)) {
+                // The MCP endpoint is for agents only: a signed-in session's JWT is not accepted.
+                response.setHeader("WWW-Authenticate", "Bearer realm=\"bento\"");
+                reject(response, HttpServletResponse.SC_UNAUTHORIZED, "The MCP endpoint needs a Bento API token");
+                return;
+            }
             if (ApiTokenPrincipal.looksLikeToken(queryToken)) {
                 // A personal API token in a URL ends up in proxy logs and browser history.
                 reject(response, HttpServletResponse.SC_UNAUTHORIZED, "API tokens are only accepted in the Authorization header");
