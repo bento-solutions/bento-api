@@ -18,6 +18,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.task.TaskExecutor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.Instant;
 import java.util.List;
@@ -98,7 +100,7 @@ public class CampaignLaunchService {
             campaign.setStatus(Campaign.Status.SENDING);
             campaign.setLaunchedAt(Instant.now());
             Campaign saved = campaignRepository.save(campaign);
-            whatsAppTaskExecutor.execute(() -> dispatchAllEmail(orgId, campaignId));
+            dispatchAfterCommit(() -> dispatchAllEmail(orgId, campaignId));
             return saved;
         }
 
@@ -117,9 +119,37 @@ public class CampaignLaunchService {
 
         // orgId is passed explicitly: TenantContext is a ThreadLocal bound to the
         // request thread and does not survive the hand-off.
-        whatsAppTaskExecutor.execute(() -> dispatchAll(orgId, campaignId));
+        dispatchAfterCommit(() -> dispatchAll(orgId, campaignId));
 
         return saved;
+    }
+
+    /**
+     * Hands dispatch to the background executor once the launch transaction has committed.
+     * Started any earlier, the worker can read the campaign before its SENDING update is
+     * visible and then overwrite it with a stale {@code @Version}, which fails the final
+     * status update and leaves the campaign stuck in SENDING.
+     */
+    private void dispatchAfterCommit(Runnable dispatch) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            whatsAppTaskExecutor.execute(dispatch);
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                whatsAppTaskExecutor.execute(dispatch);
+            }
+        });
+    }
+
+    /** Records the dispatch result on a freshly read campaign rather than the one loaded before sending. */
+    private void finishDispatch(UUID orgId, UUID campaignId, long sent, Campaign.Status status) {
+        campaignRepository.findByOrganizationIdAndId(orgId, campaignId).ifPresent(campaign -> {
+            campaign.setSentCount(sent);
+            campaign.setStatus(status);
+            campaignRepository.save(campaign);
+        });
     }
 
     /**
@@ -167,9 +197,7 @@ public class CampaignLaunchService {
                 }
             }
 
-            campaign.setSentCount(sent);
-            campaign.setStatus(Campaign.Status.COMPLETED);
-            campaignRepository.save(campaign);
+            finishDispatch(orgId, campaignId, sent, Campaign.Status.COMPLETED);
 
             log.info("[email] campaign {} dispatched: {}/{} sent", campaignId, sent, recipients.size());
         } catch (Exception e) {
@@ -201,13 +229,11 @@ public class CampaignLaunchService {
                 }
             }
 
-            campaign.setSentCount(sent);
             // The campaign stays ACTIVE while relances are still queued; only once
             // nothing is pending is it genuinely finished.
-            campaign.setStatus(Boolean.TRUE.equals(campaign.getFollowupEnabled())
+            finishDispatch(orgId, campaignId, sent, Boolean.TRUE.equals(campaign.getFollowupEnabled())
                     ? Campaign.Status.ACTIVE
                     : Campaign.Status.COMPLETED);
-            campaignRepository.save(campaign);
 
             log.info("[wa] campaign {} dispatched: {}/{} sent", campaignId, sent, recipients.size());
 

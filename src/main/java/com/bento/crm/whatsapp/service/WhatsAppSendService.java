@@ -42,13 +42,22 @@ public class WhatsAppSendService {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Outcome sendTemplate(WaAccount account,
                                 Campaign campaign,
-                                CampaignRecipient recipient,
+                                CampaignRecipient callerRecipient,
                                 WaConversation conversation,
                                 String templateName,
                                 int sequenceStep) {
 
         UUID orgId = account.getOrganizationId();
         Instant now = Instant.now();
+
+        // The caller's instance belongs to another persistence context: campaign dispatch holds
+        // it detached, and a relance holds it in the worker's own REQUIRES_NEW transaction.
+        // Updating that instance here would save it against a stale @Version (and, for a
+        // relance, leave it dirty in the worker's context). Work on this transaction's copy.
+        CampaignRecipient recipient = recipientRepository.findById(callerRecipient.getId()).orElse(null);
+        if (recipient == null) {
+            return new Outcome(false, null, "RECIPIENT_REMOVED", false);
+        }
 
         if (conversation.isOptedOut()) {
             markTerminal(recipient, CampaignRecipient.Status.OPTED_OUT, now,
