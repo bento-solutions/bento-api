@@ -29,6 +29,9 @@ public interface PartnerRepository extends JpaRepository<Partner, UUID>, JpaSpec
     Optional<Partner> findByOrganizationIdAndExternalId(@Param("orgId") UUID orgId,
                                                         @Param("externalId") String externalId);
 
+    /** Used by BrandService to refuse deleting a brand still attributed to leads. */
+    boolean existsByOrganizationIdAndBrandIdAndDeletedAtIsNull(UUID organizationId, UUID brandId);
+
     @Query("SELECT p FROM Partner p WHERE p.organizationId = :orgId AND p.deletedAt IS NULL ORDER BY p.createdAt DESC")
     Page<Partner> findByOrganizationId(@Param("orgId") UUID orgId, Pageable pageable);
 
@@ -73,4 +76,21 @@ public interface PartnerRepository extends JpaRepository<Partner, UUID>, JpaSpec
     /** Org-wide on purpose: the purge job runs outside any tenant request context. */
     @Query("SELECT p FROM Partner p WHERE p.deletedAt IS NOT NULL AND p.deletedAt < :cutoff")
     List<Partner> findPurgeable(@Param("cutoff") java.time.Instant cutoff);
+
+    /**
+     * Ids of partners whose {@code product_interests} array contains an entry for the given
+     * product name. Resolved separately from {@link com.bento.crm.partner.repository.PartnerSpecification}
+     * (plain JPA Criteria has no portable way to unnest a jsonb array) and then folded back in as an
+     * {@code id IN (...)} restriction so the combined filter still runs as a single paged query.
+     */
+    @Query(value = """
+            SELECT p.id FROM partner p
+            WHERE p.organization_id = :orgId
+              AND p.deleted_at IS NULL
+              AND EXISTS (
+                  SELECT 1 FROM jsonb_array_elements(coalesce(p.product_interests, '[]'::jsonb)) elem
+                  WHERE elem ->> 'product' = :product
+              )
+            """, nativeQuery = true)
+    List<UUID> findIdsByInterestedProduct(@Param("orgId") UUID orgId, @Param("product") String product);
 }

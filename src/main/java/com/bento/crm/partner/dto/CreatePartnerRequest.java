@@ -45,6 +45,13 @@ public class CreatePartnerRequest {
 
     private String stage;
 
+    /** Product line this lead was prospected for; defaults to the organization's default brand when omitted. */
+    @JsonProperty("brand_id")
+    private String brandId;
+
+    @JsonProperty("business_type_id")
+    private String businessTypeId;
+
     @JsonProperty("assigned_to_user_id")
     private String assignedToUserId;
 

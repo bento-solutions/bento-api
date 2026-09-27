@@ -1,5 +1,7 @@
 package com.bento.crm.partner.dto;
 
+import com.bento.crm.brand.model.Brand;
+import com.bento.crm.businesstype.model.BusinessType;
 import com.bento.crm.partner.model.Partner;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
@@ -60,6 +62,21 @@ public class PartnerResponse {
 
     private Partner.PartnerStage stage;
 
+    @JsonProperty("brand_id")
+    private UUID brandId;
+
+    @JsonProperty("brand_name")
+    private String brandName;
+
+    @JsonProperty("brand_color")
+    private String brandColor;
+
+    @JsonProperty("business_type_id")
+    private UUID businessTypeId;
+
+    @JsonProperty("business_type_name")
+    private String businessTypeName;
+
     @JsonProperty("assigned_to_user_id")
     private UUID assignedToUserId;
 
@@ -105,6 +122,10 @@ public class PartnerResponse {
     private Instant deletedAt;
 
     public static PartnerResponse fromEntity(Partner partner) {
+        return fromEntity(partner, null, null);
+    }
+
+    public static PartnerResponse fromEntity(Partner partner, Brand brand, BusinessType businessType) {
         return PartnerResponse.builder()
                 .id(partner.getId())
                 .organizationId(partner.getOrganizationId())
@@ -122,6 +143,11 @@ public class PartnerResponse {
                 .priority(partner.getPriority())
                 .qualification(partner.getQualification())
                 .stage(partner.getStage())
+                .brandId(partner.getBrandId())
+                .brandName(brand != null ? brand.getName() : null)
+                .brandColor(brand != null ? brand.getColorHex() : null)
+                .businessTypeId(partner.getBusinessTypeId())
+                .businessTypeName(businessType != null ? businessType.getName() : null)
                 .assignedToUserId(partner.getAssignedToUserId())
                 .ownerId(partner.getOwnerId())
                 .convertedFromPartnerId(partner.getConvertedFromPartnerId())

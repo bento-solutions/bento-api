@@ -61,6 +61,18 @@ public class Partner extends BaseTenantEntity {
     @Column(nullable = false)
     private PartnerStage stage;
 
+    /**
+     * Product line this lead was prospected for (BentoCars, BentoTravel, CRMbento...). Attribution
+     * set at scraping/creation time; distinct from {@link #productInterests}, which is what the
+     * lead later declares wanting and can differ from the brand it was contacted about.
+     */
+    @Column(columnDefinition = "uuid")
+    private UUID brandId;
+
+    /** Structured line-of-business referential (agence de location, agence de voyage...). */
+    @Column(columnDefinition = "uuid")
+    private UUID businessTypeId;
+
     @Column(columnDefinition = "uuid")
     private UUID assignedToUserId;
 

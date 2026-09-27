@@ -1,5 +1,7 @@
 package com.bento.crm.partner.controller;
 
+import com.bento.crm.brand.model.Brand;
+import com.bento.crm.businesstype.model.BusinessType;
 import com.bento.crm.common.dto.PageResponse;
 import com.bento.crm.partner.dto.BatchDeleteRequest;
 import com.bento.crm.partner.dto.CreatePartnerRequest;
@@ -17,6 +19,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -33,7 +36,18 @@ public class PartnerController {
     @Operation(summary = "Create partner", description = "Create new partner (lead/prospect/customer/vendor)")
     public ResponseEntity<PartnerResponse> createPartner(@Valid @RequestBody CreatePartnerRequest request) {
         Partner partner = partnerService.createPartner(request);
-        return ResponseEntity.status(HttpStatus.CREATED).body(PartnerResponse.fromEntity(partner));
+        return ResponseEntity.status(HttpStatus.CREATED).body(enrich(partner));
+    }
+
+    @PostMapping("/batch-import")
+    @PreAuthorize("hasAuthority('PARTNERS_CREATE')")
+    @Operation(summary = "Batch import partners", description = "Create a scraped/imported lot of leads sharing one brand and business type")
+    public ResponseEntity<Map<String, Object>> batchImport(
+            @Valid @RequestBody com.bento.crm.partner.dto.BatchImportPartnersRequest request) {
+        List<Partner> created = partnerService.batchImport(request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(Map.of(
+                "created", created.size(),
+                "ids", created.stream().map(Partner::getId).toList()));
     }
 
     @GetMapping("/{id}")
@@ -41,21 +55,24 @@ public class PartnerController {
     @Operation(summary = "Get partner", description = "Retrieve partner details")
     public ResponseEntity<PartnerResponse> getPartner(@PathVariable UUID id) {
         Partner partner = partnerService.getPartner(id);
-        return ResponseEntity.ok(PartnerResponse.fromEntity(partner));
+        return ResponseEntity.ok(enrich(partner));
     }
 
     @GetMapping
     @PreAuthorize("hasAuthority('PARTNERS_READ')")
-    @Operation(summary = "List partners", description = "List all partners with optional search and multi-criteria filters")
+    @Operation(summary = "List partners", description = "List all partners with optional search and multi-criteria filters, including brand/business type/interested product")
     public ResponseEntity<PageResponse<PartnerResponse>> listPartners(
             @RequestParam(required = false) String q,
             @RequestParam(required = false) Partner.PartnerType type,
             @RequestParam(required = false) Partner.PartnerStage stage,
             @RequestParam(required = false) UUID assignedToUserId,
+            @RequestParam(required = false) UUID brandId,
+            @RequestParam(required = false) UUID businessTypeId,
+            @RequestParam(required = false) String interestedProduct,
             Pageable pageable) {
-        Page<PartnerResponse> page = partnerService.listPartners(q, type, stage, assignedToUserId, pageable)
-                .map(PartnerResponse::fromEntity);
-        return ResponseEntity.ok(PageResponse.fromPage(page));
+        Page<Partner> page = partnerService.listPartners(
+                q, type, stage, assignedToUserId, brandId, businessTypeId, interestedProduct, pageable);
+        return ResponseEntity.ok(PageResponse.fromPage(enrich(page)));
     }
 
     @GetMapping("/type/{type}")
@@ -81,7 +98,7 @@ public class PartnerController {
     @Operation(summary = "Update partner", description = "Update partner information")
     public ResponseEntity<PartnerResponse> updatePartner(@PathVariable UUID id, @Valid @RequestBody CreatePartnerRequest request) {
         Partner partner = partnerService.updatePartner(id, request);
-        return ResponseEntity.ok(PartnerResponse.fromEntity(partner));
+        return ResponseEntity.ok(enrich(partner));
     }
 
     @DeleteMapping("/{id}")
@@ -114,5 +131,21 @@ public class PartnerController {
     public ResponseEntity<PageResponse<PartnerResponse>> listDeleted(Pageable pageable) {
         Page<PartnerResponse> page = partnerService.listDeleted(pageable).map(PartnerResponse::fromEntity);
         return ResponseEntity.ok(PageResponse.fromPage(page));
+    }
+
+    private PartnerResponse enrich(Partner partner) {
+        Map<UUID, Brand> brands = partnerService.loadBrandsByIds(java.util.Collections.singletonList(partner.getBrandId()));
+        Map<UUID, BusinessType> businessTypes =
+                partnerService.loadBusinessTypesByIds(java.util.Collections.singletonList(partner.getBusinessTypeId()));
+        return PartnerResponse.fromEntity(partner, brands.get(partner.getBrandId()), businessTypes.get(partner.getBusinessTypeId()));
+    }
+
+    private Page<PartnerResponse> enrich(Page<Partner> page) {
+        List<UUID> brandIds = page.getContent().stream().map(Partner::getBrandId).toList();
+        List<UUID> businessTypeIds = page.getContent().stream().map(Partner::getBusinessTypeId).toList();
+        Map<UUID, Brand> brands = partnerService.loadBrandsByIds(brandIds);
+        Map<UUID, BusinessType> businessTypes = partnerService.loadBusinessTypesByIds(businessTypeIds);
+        return page.map(partner -> PartnerResponse.fromEntity(
+                partner, brands.get(partner.getBrandId()), businessTypes.get(partner.getBusinessTypeId())));
     }
 }

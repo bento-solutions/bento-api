@@ -1,5 +1,8 @@
 package com.bento.crm.partner.service;
 
+import com.bento.crm.brand.model.Brand;
+import com.bento.crm.brand.repository.BrandRepository;
+import com.bento.crm.businesstype.repository.BusinessTypeRepository;
 import com.bento.crm.common.context.TenantContext;
 import com.bento.crm.common.exception.ResourceNotFoundException;
 import com.bento.crm.notification.event.AssignmentNotificationFactory;
@@ -28,6 +31,8 @@ import java.util.stream.Collectors;
 public class PartnerService {
 
     private final PartnerRepository partnerRepository;
+    private final BrandRepository brandRepository;
+    private final BusinessTypeRepository businessTypeRepository;
     private final ApplicationEventPublisher eventPublisher;
 
     @Transactional
@@ -67,6 +72,8 @@ public class PartnerService {
                 .qualification(parseEnum(Partner.Qualification.class, request.getQualification(), "qualification", false))
                 .stage(parseEnum(Partner.PartnerStage.class,
                         request.getStage() != null ? request.getStage() : "NEW", "stage", true))
+                .brandId(resolveBrandId(request.getBrandId(), orgId))
+                .businessTypeId(resolveBusinessTypeId(request.getBusinessTypeId(), orgId))
                 .assignedToUserId(request.getAssignedToUserId() != null ? UUID.fromString(request.getAssignedToUserId()) : null)
                 .ownerId(request.getOwnerId() != null ? UUID.fromString(request.getOwnerId()) : null)
                 .estimatedDealValue(request.getEstimatedDealValue())
@@ -126,6 +133,7 @@ public class PartnerService {
                 .phone(phoneE164)
                 .source(Partner.PartnerSource.WHATSAPP)
                 .stage(Partner.PartnerStage.NEW)
+                .brandId(resolveBrandId(null, orgId))
                 .assignedToUserId(assigneeId)
                 .productInterests(List.<Map<String, Object>>of())
                 .campaigns(List.<Map<String, Object>>of())
@@ -156,11 +164,30 @@ public class PartnerService {
     }
 
     public Page<Partner> listPartners(String q, Partner.PartnerType type, Partner.PartnerStage stage, UUID assignedToUserId, Pageable pageable) {
+        return listPartners(q, type, stage, assignedToUserId, null, null, null, pageable);
+    }
+
+    public Page<Partner> listPartners(
+            String q,
+            Partner.PartnerType type,
+            Partner.PartnerStage stage,
+            UUID assignedToUserId,
+            UUID brandId,
+            UUID businessTypeId,
+            String interestedProduct,
+            Pageable pageable) {
         UUID orgId = TenantContext.getCurrentOrganizationId();
-        if ((q == null || q.isBlank()) && type == null && stage == null && assignedToUserId == null) {
+        List<UUID> restrictToIds = null;
+        if (interestedProduct != null && !interestedProduct.isBlank()) {
+            restrictToIds = partnerRepository.findIdsByInterestedProduct(orgId, interestedProduct);
+        }
+        if ((q == null || q.isBlank()) && type == null && stage == null && assignedToUserId == null
+                && brandId == null && businessTypeId == null && restrictToIds == null) {
             return partnerRepository.findByOrganizationId(orgId, pageable);
         }
-        return partnerRepository.findAll(PartnerSpecification.filter(orgId, q, type, stage, assignedToUserId), pageable);
+        return partnerRepository.findAll(
+                PartnerSpecification.filter(orgId, q, type, stage, assignedToUserId, brandId, businessTypeId, restrictToIds),
+                pageable);
     }
 
     public Page<Partner> listPartnersByType(Partner.PartnerType type, Pageable pageable) {
@@ -192,6 +219,12 @@ public class PartnerService {
         partner.setQualification(parseEnum(Partner.Qualification.class, request.getQualification(), "qualification", false));
         if (request.getStage() != null) {
             partner.setStage(parseEnum(Partner.PartnerStage.class, request.getStage(), "stage", true));
+        }
+        if (request.getBrandId() != null && !request.getBrandId().isBlank()) {
+            partner.setBrandId(resolveBrandId(request.getBrandId(), partner.getOrganizationId()));
+        }
+        if (request.getBusinessTypeId() != null && !request.getBusinessTypeId().isBlank()) {
+            partner.setBusinessTypeId(resolveBusinessTypeId(request.getBusinessTypeId(), partner.getOrganizationId()));
         }
         partner.setAssignedToUserId(request.getAssignedToUserId() != null ? UUID.fromString(request.getAssignedToUserId()) : null);
         partner.setOwnerId(request.getOwnerId() != null ? UUID.fromString(request.getOwnerId()) : null);
@@ -262,6 +295,25 @@ public class PartnerService {
         partnerRepository.save(partner);
     }
 
+    /**
+     * Creates a scraped/imported lot of leads, applying the lot's brand/business type to any
+     * entry that does not already specify its own.
+     */
+    @Transactional
+    public List<Partner> batchImport(com.bento.crm.partner.dto.BatchImportPartnersRequest request) {
+        List<Partner> created = new java.util.ArrayList<>();
+        for (CreatePartnerRequest partnerRequest : request.getPartners()) {
+            if (blankToNull(partnerRequest.getBrandId()) == null) {
+                partnerRequest.setBrandId(request.getBrandId());
+            }
+            if (blankToNull(partnerRequest.getBusinessTypeId()) == null) {
+                partnerRequest.setBusinessTypeId(request.getBusinessTypeId());
+            }
+            created.add(createPartner(partnerRequest));
+        }
+        return created;
+    }
+
     @Transactional
     public int batchDelete(List<UUID> ids) {
         Instant now = Instant.now();
@@ -287,6 +339,46 @@ public class PartnerService {
     public Page<Partner> listDeleted(Pageable pageable) {
         UUID orgId = TenantContext.getCurrentOrganizationId();
         return partnerRepository.findDeletedByOrganizationId(orgId, pageable);
+    }
+
+    /** Falls back to the organization's default brand when the request omits one. */
+    private UUID resolveBrandId(String rawBrandId, UUID orgId) {
+        if (rawBrandId != null && !rawBrandId.isBlank()) {
+            UUID brandId = UUID.fromString(rawBrandId);
+            brandRepository.findByOrganizationIdAndId(orgId, brandId)
+                    .orElseThrow(() -> new IllegalArgumentException("Field 'brand_id' has invalid value '" + rawBrandId + "'"));
+            return brandId;
+        }
+        return brandRepository.findDefaultByOrganizationId(orgId).map(Brand::getId).orElse(null);
+    }
+
+    private UUID resolveBusinessTypeId(String rawBusinessTypeId, UUID orgId) {
+        if (rawBusinessTypeId == null || rawBusinessTypeId.isBlank()) {
+            return null;
+        }
+        UUID businessTypeId = UUID.fromString(rawBusinessTypeId);
+        businessTypeRepository.findByOrganizationIdAndId(orgId, businessTypeId)
+                .orElseThrow(() -> new IllegalArgumentException("Field 'business_type_id' has invalid value '" + rawBusinessTypeId + "'"));
+        return businessTypeId;
+    }
+
+    /** Batch-loads the brands/business types referenced by a page of partners, for {@code PartnerResponse} enrichment. */
+    public java.util.Map<UUID, Brand> loadBrandsByIds(java.util.Collection<UUID> ids) {
+        List<UUID> distinct = ids.stream().filter(java.util.Objects::nonNull).distinct().toList();
+        if (distinct.isEmpty()) {
+            return java.util.Map.of();
+        }
+        return brandRepository.findAllById(distinct).stream()
+                .collect(Collectors.toMap(Brand::getId, java.util.function.Function.identity()));
+    }
+
+    public java.util.Map<UUID, com.bento.crm.businesstype.model.BusinessType> loadBusinessTypesByIds(java.util.Collection<UUID> ids) {
+        List<UUID> distinct = ids.stream().filter(java.util.Objects::nonNull).distinct().toList();
+        if (distinct.isEmpty()) {
+            return java.util.Map.of();
+        }
+        return businessTypeRepository.findAllById(distinct).stream()
+                .collect(Collectors.toMap(com.bento.crm.businesstype.model.BusinessType::getId, java.util.function.Function.identity()));
     }
 
     private static String blankToNull(String value) {

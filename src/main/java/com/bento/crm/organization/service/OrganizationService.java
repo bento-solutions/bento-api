@@ -1,5 +1,9 @@
 package com.bento.crm.organization.service;
 
+import com.bento.crm.brand.model.Brand;
+import com.bento.crm.brand.repository.BrandRepository;
+import com.bento.crm.businesstype.model.BusinessType;
+import com.bento.crm.businesstype.repository.BusinessTypeRepository;
 import com.bento.crm.common.context.TenantContext;
 import com.bento.crm.common.exception.ResourceNotFoundException;
 import com.bento.crm.common.model.UserRole;
@@ -18,6 +22,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.List;
 import java.util.UUID;
 
 @Service
@@ -29,6 +34,8 @@ public class OrganizationService {
     private final AppUserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final FileStorageService fileStorageService;
+    private final BrandRepository brandRepository;
+    private final BusinessTypeRepository businessTypeRepository;
 
     @Transactional
     public Organization createOrganization(CreateOrganizationRequest request) {
@@ -65,10 +72,37 @@ public class OrganizationService {
         adminUser.setOrganizationId(organization.getId());
 
         userRepository.save(adminUser);
+        seedDefaultBrandsAndBusinessTypes(organization.getId());
         TenantContext.clear();
 
         log.info("Organization created: {} with admin user: {}", organization.getId(), adminEmail);
         return organization;
+    }
+
+    /**
+     * Every organization starts with the Brand/Business type referentials the Partners module
+     * needs so a lead can be attributed from day one; without this a fresh organization would have
+     * no default brand to fall back to when a lead is created without one.
+     */
+    private void seedDefaultBrandsAndBusinessTypes(UUID organizationId) {
+        List<Brand> brands = List.of(
+                Brand.builder().name("BentoCars").code("CARS").colorHex("#2563EB").isDefault(true).isActive(true).build(),
+                Brand.builder().name("BentoTravel").code("TRAVEL").colorHex("#059669").isDefault(false).isActive(true).build(),
+                Brand.builder().name("CRMbento").code("CRM").colorHex("#7C3AED").isDefault(false).isActive(true).build()
+        );
+        brands.forEach(brand -> {
+            brand.setOrganizationId(organizationId);
+            brandRepository.save(brand);
+        });
+
+        List<String> businessTypeNames = List.of(
+                "Agence de location", "Agence de voyage", "Concessionnaire moto", "Import/export", "Centre de formation"
+        );
+        businessTypeNames.forEach(name -> {
+            BusinessType businessType = BusinessType.builder().name(name).isActive(true).build();
+            businessType.setOrganizationId(organizationId);
+            businessTypeRepository.save(businessType);
+        });
     }
 
     public Organization getCurrentOrganization() {
