@@ -3,6 +3,7 @@ package com.bento.crm.task.service;
 import com.bento.crm.common.context.TenantContext;
 import com.bento.crm.common.exception.ResourceNotFoundException;
 import com.bento.crm.common.model.RelatedEntityType;
+import com.bento.crm.common.repository.AssignmentSpecifications;
 import com.bento.crm.common.repository.EntityLinkSpecifications;
 import com.bento.crm.notification.event.AssignmentNotificationFactory;
 import com.bento.crm.task.dto.CreateTaskRequest;
@@ -56,16 +57,21 @@ public class TaskService {
 
     /**
      * Lists the tasks attached to a given record, e.g. everything raised for one customer.
-     * Both filter arguments are optional; with neither set this is equivalent to
+     * All filter arguments are optional; with none set this is equivalent to
      * {@link #listTasks(Pageable)}.
+     *
+     * @param assignedToUserId a user id, {@value AssignmentSpecifications#UNASSIGNED} for tasks
+     *                         with no assignee, or {@code null} to not filter on assignee
      */
-    public Page<Task> listTasks(RelatedEntityType relatedEntityType, UUID relatedEntityId, Pageable pageable) {
-        if (relatedEntityType == null && relatedEntityId == null) {
+    public Page<Task> listTasks(RelatedEntityType relatedEntityType, UUID relatedEntityId,
+                                 String assignedToUserId, Pageable pageable) {
+        if (relatedEntityType == null && relatedEntityId == null && assignedToUserId == null) {
             return listTasks(pageable);
         }
         UUID orgId = TenantContext.getCurrentOrganizationId();
         Specification<Task> spec = EntityLinkSpecifications.<Task>inOrganization(orgId)
-                .and(EntityLinkSpecifications.relatedTo(relatedEntityType, relatedEntityId));
+                .and(EntityLinkSpecifications.relatedTo(relatedEntityType, relatedEntityId))
+                .and(AssignmentSpecifications.assignedTo(assignedToUserId));
         return taskRepository.findAll(spec, pageable);
     }
 

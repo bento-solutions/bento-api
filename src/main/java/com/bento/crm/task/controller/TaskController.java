@@ -50,14 +50,16 @@ public class TaskController {
     @PreAuthorize("hasAuthority('TASKS_READ')")
     @Operation(summary = "List tasks",
             description = "List tasks in the organization, optionally narrowed to those linked to a "
-                    + "given record (e.g. every task raised for one customer or deal).")
+                    + "given record (e.g. every task raised for one customer or deal) and/or to a given assignee.")
     public ResponseEntity<PageResponse<TaskResponse>> listTasks(
             @Parameter(description = "Only tasks linked to this kind of record")
             @RequestParam(required = false) RelatedEntityType relatedEntityType,
             @Parameter(description = "Only tasks linked to this record id")
             @RequestParam(required = false) UUID relatedEntityId,
+            @Parameter(description = "Only tasks assigned to this user id, or 'none' for unassigned tasks")
+            @RequestParam(required = false) String assignedToUserId,
             Pageable pageable) {
-        Page<Task> page = taskService.listTasks(relatedEntityType, relatedEntityId, pageable);
+        Page<Task> page = taskService.listTasks(relatedEntityType, relatedEntityId, assignedToUserId, pageable);
         Page<TaskResponse> dtoPage = page.map(TaskResponse::fromEntity);
         return ResponseEntity.ok(PageResponse.fromPage(dtoPage));
     }

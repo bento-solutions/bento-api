@@ -56,14 +56,16 @@ public class TicketController {
     @PreAuthorize("hasAuthority('TICKETS_READ')")
     @Operation(summary = "List tickets",
             description = "List tickets in the organization, optionally narrowed to those linked to a "
-                    + "given record (e.g. every ticket opened against one customer or deal).")
+                    + "given record (e.g. every ticket opened against one customer or deal) and/or to a given assignee.")
     public ResponseEntity<PageResponse<TicketResponse>> listTickets(
             @Parameter(description = "Only tickets linked to this kind of record")
             @RequestParam(required = false) RelatedEntityType relatedEntityType,
             @Parameter(description = "Only tickets linked to this record id")
             @RequestParam(required = false) UUID relatedEntityId,
+            @Parameter(description = "Only tickets assigned to this user id, or 'none' for unassigned tickets")
+            @RequestParam(required = false) String assignedToUserId,
             Pageable pageable) {
-        Page<Ticket> page = ticketService.listTickets(relatedEntityType, relatedEntityId, pageable);
+        Page<Ticket> page = ticketService.listTickets(relatedEntityType, relatedEntityId, assignedToUserId, pageable);
         List<UUID> ids = page.getContent().stream().map(Ticket::getId).toList();
         Map<UUID, TaskProgress> progress = ticketService.taskProgressFor(ids);
         Page<TicketResponse> dtoPage = page.map(t ->

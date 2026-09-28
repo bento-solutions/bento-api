@@ -198,4 +198,65 @@ class RelatedRecordsTest extends IntegrationTestBase {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.content.length()").value(2));
     }
+
+    @Test
+    void listsCanBeFilteredByAssignee() throws Exception {
+        String token = signUpAndLogin();
+        String userId = currentUserId(token);
+
+        mockMvc.perform(post("/tasks")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"title": "Assigned task", "status": "TODO", "assignedByUserId": "%1$s",
+                                 "assignedToUserId": "%1$s"}
+                                """.formatted(userId)))
+                .andExpect(status().isCreated());
+        createTask(token, userId, """
+                {"title": "Unassigned task", "status": "TODO", "assignedByUserId": "%s"}
+                """);
+
+        mockMvc.perform(post("/tickets")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"title": "Assigned ticket", "status": "OPEN", "assignedToUserId": "%s"}
+                                """.formatted(userId)))
+                .andExpect(status().isCreated());
+        mockMvc.perform(post("/tickets")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"title": "Unassigned ticket", "status": "OPEN"}
+                                """))
+                .andExpect(status().isCreated());
+
+        mockMvc.perform(get("/tasks")
+                        .header("Authorization", "Bearer " + token)
+                        .param("assignedToUserId", userId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(1))
+                .andExpect(jsonPath("$.content[0].title").value("Assigned task"));
+
+        mockMvc.perform(get("/tasks")
+                        .header("Authorization", "Bearer " + token)
+                        .param("assignedToUserId", "none"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(1))
+                .andExpect(jsonPath("$.content[0].title").value("Unassigned task"));
+
+        mockMvc.perform(get("/tickets")
+                        .header("Authorization", "Bearer " + token)
+                        .param("assignedToUserId", userId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(1))
+                .andExpect(jsonPath("$.content[0].title").value("Assigned ticket"));
+
+        mockMvc.perform(get("/tickets")
+                        .header("Authorization", "Bearer " + token)
+                        .param("assignedToUserId", "none"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.content.length()").value(1))
+                .andExpect(jsonPath("$.content[0].title").value("Unassigned ticket"));
+    }
 }

@@ -4,6 +4,7 @@ import com.bento.crm.common.context.TenantContext;
 import com.bento.crm.common.exception.ResourceNotFoundException;
 import com.bento.crm.common.model.EntityLink;
 import com.bento.crm.common.model.RelatedEntityType;
+import com.bento.crm.common.repository.AssignmentSpecifications;
 import com.bento.crm.common.repository.EntityLinkSpecifications;
 import com.bento.crm.notification.event.AssignmentNotificationFactory;
 import com.bento.crm.task.dto.CreateTaskRequest;
@@ -69,16 +70,21 @@ public class TicketService {
 
     /**
      * Lists the tickets attached to a given record, e.g. everything opened against one customer.
-     * Both filter arguments are optional; with neither set this is equivalent to
+     * All filter arguments are optional; with none set this is equivalent to
      * {@link #listTickets(Pageable)}.
+     *
+     * @param assignedToUserId a user id, {@value AssignmentSpecifications#UNASSIGNED} for tickets
+     *                         with no assignee, or {@code null} to not filter on assignee
      */
-    public Page<Ticket> listTickets(RelatedEntityType relatedEntityType, UUID relatedEntityId, Pageable pageable) {
-        if (relatedEntityType == null && relatedEntityId == null) {
+    public Page<Ticket> listTickets(RelatedEntityType relatedEntityType, UUID relatedEntityId,
+                                     String assignedToUserId, Pageable pageable) {
+        if (relatedEntityType == null && relatedEntityId == null && assignedToUserId == null) {
             return listTickets(pageable);
         }
         UUID orgId = TenantContext.getCurrentOrganizationId();
         Specification<Ticket> spec = EntityLinkSpecifications.<Ticket>inOrganization(orgId)
-                .and(EntityLinkSpecifications.relatedTo(relatedEntityType, relatedEntityId));
+                .and(EntityLinkSpecifications.relatedTo(relatedEntityType, relatedEntityId))
+                .and(AssignmentSpecifications.assignedTo(assignedToUserId));
         return ticketRepository.findAll(spec, pageable);
     }
 
@@ -94,7 +100,7 @@ public class TicketService {
     /** The tasks raised for one ticket. 404s on an unknown ticket rather than returning an empty page. */
     public Page<Task> listTasks(UUID ticketId, Pageable pageable) {
         Ticket ticket = getTicket(ticketId);
-        return taskService.listTasks(RelatedEntityType.TICKET, ticket.getId(), pageable);
+        return taskService.listTasks(RelatedEntityType.TICKET, ticket.getId(), null, pageable);
     }
 
     /**
