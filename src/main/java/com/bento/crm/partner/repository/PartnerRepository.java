@@ -29,6 +29,25 @@ public interface PartnerRepository extends JpaRepository<Partner, UUID>, JpaSpec
     Optional<Partner> findByOrganizationIdAndExternalId(@Param("orgId") UUID orgId,
                                                         @Param("externalId") String externalId);
 
+    long countByOrganizationIdAndTypeAndDeletedAtIsNull(UUID organizationId, Partner.PartnerType type);
+
+    /**
+     * Partner counts per calendar month (UTC) from {@code since} on, as {@code [yyyy-MM, count]}
+     * rows. Months with no partner are simply absent — the caller zero-fills.
+     */
+    @Query(value = """
+            SELECT to_char(p.created_at AT TIME ZONE 'UTC', 'YYYY-MM') AS month, count(*) AS total
+            FROM partner p
+            WHERE p.organization_id = :orgId
+              AND p.type = :type
+              AND p.deleted_at IS NULL
+              AND p.created_at >= :since
+            GROUP BY 1
+            """, nativeQuery = true)
+    List<Object[]> countCreatedPerMonth(@Param("orgId") UUID orgId,
+                                        @Param("type") String type,
+                                        @Param("since") java.time.Instant since);
+
     /** Used by BrandService to refuse deleting a brand still attributed to leads. */
     boolean existsByOrganizationIdAndBrandIdAndDeletedAtIsNull(UUID organizationId, UUID brandId);
 

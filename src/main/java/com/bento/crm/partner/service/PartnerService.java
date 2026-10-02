@@ -7,6 +7,7 @@ import com.bento.crm.common.context.TenantContext;
 import com.bento.crm.common.exception.ResourceNotFoundException;
 import com.bento.crm.notification.event.AssignmentNotificationFactory;
 import com.bento.crm.partner.dto.CreatePartnerRequest;
+import com.bento.crm.partner.dto.LeadKpiResponse;
 import com.bento.crm.partner.model.Partner;
 import com.bento.crm.partner.repository.PartnerRepository;
 import com.bento.crm.partner.repository.PartnerSpecification;
@@ -19,6 +20,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.time.YearMonth;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -193,6 +197,34 @@ public class PartnerService {
     public Page<Partner> listPartnersByType(Partner.PartnerType type, Pageable pageable) {
         UUID orgId = TenantContext.getCurrentOrganizationId();
         return partnerRepository.findByOrganizationIdAndType(orgId, type, pageable);
+    }
+
+    /** Months of history in {@link LeadKpiResponse#getMonthlySeries()}, matching the other dashboard sparklines. */
+    private static final int LEAD_KPI_MONTHS = 12;
+
+    @Transactional(readOnly = true)
+    public LeadKpiResponse getLeadKpi() {
+        UUID orgId = TenantContext.getCurrentOrganizationId();
+        YearMonth current = YearMonth.now(ZoneOffset.UTC);
+        YearMonth first = current.minusMonths(LEAD_KPI_MONTHS - 1L);
+
+        Map<String, Long> perMonth = partnerRepository
+                .countCreatedPerMonth(orgId, Partner.PartnerType.LEAD.name(),
+                        first.atDay(1).atStartOfDay().toInstant(ZoneOffset.UTC))
+                .stream()
+                .collect(Collectors.toMap(row -> (String) row[0], row -> ((Number) row[1]).longValue()));
+
+        List<Long> series = new ArrayList<>(LEAD_KPI_MONTHS);
+        for (YearMonth m = first; !m.isAfter(current); m = m.plusMonths(1)) {
+            series.add(perMonth.getOrDefault(m.toString(), 0L));
+        }
+
+        return LeadKpiResponse.builder()
+                .total(partnerRepository.countByOrganizationIdAndTypeAndDeletedAtIsNull(orgId, Partner.PartnerType.LEAD))
+                .newThisMonth(series.get(LEAD_KPI_MONTHS - 1))
+                .previousMonth(series.get(LEAD_KPI_MONTHS - 2))
+                .monthlySeries(series)
+                .build();
     }
 
     public Page<Partner> listPartnersByStage(Partner.PartnerStage stage, Pageable pageable) {

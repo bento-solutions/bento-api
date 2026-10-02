@@ -5,6 +5,7 @@ import com.bento.crm.businesstype.model.BusinessType;
 import com.bento.crm.common.dto.PageResponse;
 import com.bento.crm.partner.dto.BatchDeleteRequest;
 import com.bento.crm.partner.dto.CreatePartnerRequest;
+import com.bento.crm.partner.dto.LeadKpiResponse;
 import com.bento.crm.partner.dto.PartnerResponse;
 import com.bento.crm.partner.model.Partner;
 import com.bento.crm.partner.service.PartnerService;
@@ -84,6 +85,13 @@ public class PartnerController {
         return ResponseEntity.ok(PageResponse.fromPage(page));
     }
 
+    @GetMapping("/stats/leads")
+    @PreAuthorize("hasAuthority('PARTNERS_READ')")
+    @Operation(summary = "Lead KPI", description = "Lead totals and a 12-month creation series for the dashboard's New Leads tile")
+    public ResponseEntity<LeadKpiResponse> leadKpi() {
+        return ResponseEntity.ok(partnerService.getLeadKpi());
+    }
+
     @GetMapping("/stage/{stage}")
     @PreAuthorize("hasAuthority('PARTNERS_READ')")
     @Operation(summary = "List partners by stage", description = "List partners filtered by stage")
@@ -137,7 +145,12 @@ public class PartnerController {
         Map<UUID, Brand> brands = partnerService.loadBrandsByIds(java.util.Collections.singletonList(partner.getBrandId()));
         Map<UUID, BusinessType> businessTypes =
                 partnerService.loadBusinessTypesByIds(java.util.Collections.singletonList(partner.getBusinessTypeId()));
-        return PartnerResponse.fromEntity(partner, brands.get(partner.getBrandId()), businessTypes.get(partner.getBusinessTypeId()));
+        return PartnerResponse.fromEntity(partner, lookup(brands, partner.getBrandId()), lookup(businessTypes, partner.getBusinessTypeId()));
+    }
+
+    /** Immutable maps from the service reject a null key, and brand/business type are optional on a partner. */
+    private static <T> T lookup(Map<UUID, T> byId, UUID id) {
+        return id == null ? null : byId.get(id);
     }
 
     private Page<PartnerResponse> enrich(Page<Partner> page) {
@@ -146,6 +159,6 @@ public class PartnerController {
         Map<UUID, Brand> brands = partnerService.loadBrandsByIds(brandIds);
         Map<UUID, BusinessType> businessTypes = partnerService.loadBusinessTypesByIds(businessTypeIds);
         return page.map(partner -> PartnerResponse.fromEntity(
-                partner, brands.get(partner.getBrandId()), businessTypes.get(partner.getBusinessTypeId())));
+                partner, lookup(brands, partner.getBrandId()), lookup(businessTypes, partner.getBusinessTypeId())));
     }
 }

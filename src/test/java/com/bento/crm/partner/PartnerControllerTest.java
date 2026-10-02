@@ -103,6 +103,25 @@ class PartnerControllerTest extends IntegrationTestBase {
     }
 
     @Test
+    void leadKpi_countsOnlyLeadsAndBucketsThemByMonth() throws Exception {
+        String token = signUpAndLogin();
+        createPartner(token, "LEAD", "Kpi Lead One");
+        createPartner(token, "LEAD", "Kpi Lead Two");
+        createPartner(token, "VENDOR", "Kpi Vendor");
+
+        // Fresh leads land in the current (last) bucket; vendors never count.
+        mockMvc.perform(get("/partners/stats/leads")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.total").value(2))
+                .andExpect(jsonPath("$.new_this_month").value(2))
+                .andExpect(jsonPath("$.previous_month").value(0))
+                .andExpect(jsonPath("$.monthly_series.length()").value(12))
+                .andExpect(jsonPath("$.monthly_series[11]").value(2))
+                .andExpect(jsonPath("$.monthly_series[0]").value(0));
+    }
+
+    @Test
     void update_persistsChangesAndReturnsSnakeCase() throws Exception {
         String token = signUpAndLogin();
         String id = createPartner(token, "LEAD", "Update Test Lead");
