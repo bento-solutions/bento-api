@@ -6,6 +6,7 @@ import com.bento.crm.common.model.UserRole;
 import com.bento.crm.identity.dto.CreateUserRequest;
 import com.bento.crm.identity.dto.UpdateOwnProfileRequest;
 import com.bento.crm.identity.dto.UpdateUserRequest;
+import com.bento.crm.identity.dto.UserDirectoryEntryDto;
 import com.bento.crm.identity.dto.UserResponseDto;
 import com.bento.crm.identity.mapper.UserMapper;
 import com.bento.crm.identity.model.AppUser;
@@ -17,6 +18,7 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
 import java.util.UUID;
 
 @Service
@@ -103,6 +105,21 @@ public class UserService {
         UUID orgId = TenantContext.getCurrentOrganizationId();
         return userRepository.findByOrganizationId(orgId, pageable)
                 .map(userMapper::toResponseDto);
+    }
+
+    /** Every member of the organization (deactivated ones too, so a former owner still resolves to a name). */
+    public List<UserDirectoryEntryDto> listDirectory() {
+        UUID orgId = TenantContext.getCurrentOrganizationId();
+        return userRepository.findByOrganizationId(orgId).stream()
+                .map(u -> UserDirectoryEntryDto.builder()
+                        .id(u.getId())
+                        .displayName(u.getDisplayName())
+                        .initials(userMapper.deriveInitials(u))
+                        .avatarColor(u.getAvatarColor())
+                        .teamId(u.getTeamId())
+                        .isActive(u.getIsActive())
+                        .build())
+                .toList();
     }
 
     @Transactional

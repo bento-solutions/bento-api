@@ -4,6 +4,7 @@ import com.bento.crm.common.dto.PageResponse;
 import com.bento.crm.identity.dto.CreateUserRequest;
 import com.bento.crm.identity.dto.UpdateOwnProfileRequest;
 import com.bento.crm.identity.dto.UpdateUserRequest;
+import com.bento.crm.identity.dto.UserDirectoryEntryDto;
 import com.bento.crm.identity.dto.UserResponseDto;
 import com.bento.crm.identity.service.UserService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -18,6 +19,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.List;
 import java.util.UUID;
 
 @RestController
@@ -50,6 +52,12 @@ public class UserController {
     public ResponseEntity<PageResponse<UserResponseDto>> listUsers(Pageable pageable) {
         Page<UserResponseDto> page = userService.listUsers(pageable);
         return ResponseEntity.ok(PageResponse.fromPage(page));
+    }
+
+    @GetMapping("/directory")
+    @Operation(summary = "User directory", description = "Names and avatars of every member of the organization, readable by any signed-in user (no USERS_READ needed) so lead owners and assignees can be shown and filtered on")
+    public ResponseEntity<List<UserDirectoryEntryDto>> directory() {
+        return ResponseEntity.ok(userService.listDirectory());
     }
 
     @PatchMapping("/{id}")
