@@ -88,6 +88,8 @@ services:
       WHATSAPP_BOT_BASE_URL: ${WHATSAPP_BOT_BASE_URL:-http://whatsapp-bot:3000}
       WHATSAPP_BOT_API_KEY: ${WHATSAPP_BOT_API_KEY:-}
       BAILEYS_WEBHOOK_SECRET: ${BAILEYS_WEBHOOK_SECRET:-}
+      # Host printed in the AI-agent guide at /swagger.
+      PUBLIC_API_URL: ${PUBLIC_API_URL:-https://api.crmbento.com}
     volumes:
       - ./uploads:/data/uploads
     healthcheck:
@@ -118,6 +120,18 @@ services:
       - "traefik.http.routers.crm-backend-bot-hook.service=crm-backend"
       - "traefik.http.routers.crm-backend-bot-hook.middlewares=crm-backend-bot-hook-deny"
       - "traefik.http.middlewares.crm-backend-bot-hook-deny.ipallowlist.sourcerange=127.0.0.1/32"
+      # api.crmbento.com/swagger is the friendly address of the Swagger UI, which lives under the
+      # context path (/api/v1/swagger). A redirect rather than a rewrite keeps the UI's relative
+      # asset URLs working. The longer rule wins over the plain Host() router above.
+      - "traefik.http.routers.crm-backend-swagger.rule=Host(`api.crmbento.com`) && (Path(`/swagger`) || Path(`/swagger/`))"
+      - "traefik.http.routers.crm-backend-swagger.entrypoints=websecure"
+      - "traefik.http.routers.crm-backend-swagger.tls=true"
+      - "traefik.http.routers.crm-backend-swagger.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.crm-backend-swagger.service=crm-backend"
+      - "traefik.http.routers.crm-backend-swagger.middlewares=crm-backend-swagger-redirect"
+      - "traefik.http.middlewares.crm-backend-swagger-redirect.redirectregex.regex=^(https?://[^/]+)/swagger/?$$"
+      - "traefik.http.middlewares.crm-backend-swagger-redirect.redirectregex.replacement=$${1}/api/v1/swagger"
+      - "traefik.http.middlewares.crm-backend-swagger-redirect.redirectregex.permanent=false"
       - "traefik.http.services.crm-backend.loadbalancer.healthcheck.path=/api/v1/actuator/health"
       - "traefik.http.services.crm-backend.loadbalancer.healthcheck.interval=15s"
       - "traefik.http.services.crm-backend.loadbalancer.healthcheck.timeout=5s"

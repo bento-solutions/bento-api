@@ -133,12 +133,21 @@ logging:
       max-file-size: 10MB
       max-history: 10
 
+# Swagger UI at /api/v1/swagger (api.crmbento.com/swagger redirects there, see docker-compose.yml).
+# Two API descriptions, see OpenApiConfig: "agents" (what an AI agent's token may call, with a
+# plain-language guide; opened first) and "full-api". Specs: /api/v1/openapi/{group}.
 springdoc:
   api-docs:
     path: /openapi
   swagger-ui:
-    path: /swagger-ui.html
+    path: /swagger
     enabled: true
+    urls-primary-name: AI agents (start here)
+    persist-authorization: true
+    display-request-duration: true
+    doc-expansion: list
+    tags-sorter: alpha
+    default-models-expand-depth: 0
 
 whatsapp:
   meta:
@@ -204,6 +213,8 @@ partner:
     cron: ${PARTNER_PURGE_CRON:0 0 3 * * *}
 
 app:
+  # Host shown in the AI-agent guide's copy-paste examples (OpenApiConfig).
+  public-api-url: ${PUBLIC_API_URL:https://api.crmbento.com}
   mail:
     # Must be a real mailbox on the sending domain -- Hostinger's relay rejects a From address
     # it does not host, and a mismatched From fails DMARC alignment at the recipient.

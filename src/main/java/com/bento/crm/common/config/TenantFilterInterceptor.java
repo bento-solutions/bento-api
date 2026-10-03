@@ -67,6 +67,8 @@ public class TenantFilterInterceptor extends OncePerRequestFilter {
             "/api/v1/files/public",
             "/actuator",
             "/api/v1/actuator",
+            "/swagger",
+            "/api/v1/swagger",
             "/swagger-ui",
             "/api/v1/swagger-ui",
             "/openapi",

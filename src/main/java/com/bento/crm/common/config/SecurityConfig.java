@@ -76,6 +76,8 @@ public class SecurityConfig {
                                 AntPathRequestMatcher.antMatcher("/actuator/**"),
                                 AntPathRequestMatcher.antMatcher("/api/v1/actuator/**"),
                                 // Swagger UI and OpenAPI documentation
+                                AntPathRequestMatcher.antMatcher("/swagger"),
+                                AntPathRequestMatcher.antMatcher("/api/v1/swagger"),
                                 AntPathRequestMatcher.antMatcher("/swagger-ui/**"),
                                 AntPathRequestMatcher.antMatcher("/api/v1/swagger-ui/**"),
                                 AntPathRequestMatcher.antMatcher("/swagger-ui.html"),

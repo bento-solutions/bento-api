@@ -10,6 +10,7 @@ import com.bento.crm.partner.dto.PartnerResponse;
 import com.bento.crm.partner.model.Partner;
 import com.bento.crm.partner.service.PartnerService;
 import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -53,23 +54,28 @@ public class PartnerController {
 
     @GetMapping("/{id}")
     @PreAuthorize("hasAuthority('PARTNERS_READ')")
-    @Operation(summary = "Get partner", description = "Retrieve partner details")
-    public ResponseEntity<PartnerResponse> getPartner(@PathVariable UUID id) {
+    @Operation(summary = "Get partner", description = "Full details of one lead, prospect, customer or vendor: "
+            + "contact info, stage, score, brand, notes… Field names are snake_case (`company_name`, `assigned_to_user_id`…).")
+    public ResponseEntity<PartnerResponse> getPartner(@Parameter(description = "Partner id, from the partner list") @PathVariable UUID id) {
         Partner partner = partnerService.getPartner(id);
         return ResponseEntity.ok(enrich(partner));
     }
 
     @GetMapping
     @PreAuthorize("hasAuthority('PARTNERS_READ')")
-    @Operation(summary = "List partners", description = "List all partners with optional search and multi-criteria filters, including brand/business type/interested product")
+    @Operation(summary = "List partners", description = "Search leads, prospects, customers and vendors. "
+            + "Combine any filters. Results are paged: use `page` (starting at 0) and `size`, and read "
+            + "`total_pages` / `total_elements` in the answer to know when you have everything. "
+            + "The `id` of a result is what the WhatsApp endpoints call `partnerId`.")
     public ResponseEntity<PageResponse<PartnerResponse>> listPartners(
+            @Parameter(description = "Search text: matches name, company, email, phone or city", example = "Atlas")
             @RequestParam(required = false) String q,
-            @RequestParam(required = false) Partner.PartnerType type,
-            @RequestParam(required = false) Partner.PartnerStage stage,
-            @RequestParam(required = false) UUID assignedToUserId,
-            @RequestParam(required = false) UUID brandId,
-            @RequestParam(required = false) UUID businessTypeId,
-            @RequestParam(required = false) String interestedProduct,
+            @Parameter(description = "LEAD, PROSPECT, CUSTOMER or VENDOR") @RequestParam(required = false) Partner.PartnerType type,
+            @Parameter(description = "Pipeline stage, e.g. NEW, CONTACTED, QUALIFIED, PROPOSAL_SENT, CUSTOMER, LOST") @RequestParam(required = false) Partner.PartnerStage stage,
+            @Parameter(description = "Only records assigned to this user id") @RequestParam(required = false) UUID assignedToUserId,
+            @Parameter(description = "Only records of this brand (marque) id") @RequestParam(required = false) UUID brandId,
+            @Parameter(description = "Only records of this business type id") @RequestParam(required = false) UUID businessTypeId,
+            @Parameter(description = "Only records interested in this product (text)") @RequestParam(required = false) String interestedProduct,
             Pageable pageable) {
         Page<Partner> page = partnerService.listPartners(
                 q, type, stage, assignedToUserId, brandId, businessTypeId, interestedProduct, pageable);

@@ -60,7 +60,9 @@ public class ApiTokenController {
 
     /** For an agent: which token it is using and what it may do. */
     @GetMapping("/me")
-    @Operation(summary = "Introspect the API token making this request")
+    @Operation(summary = "Check which token you are using and what it may do",
+            description = "A good first call for an agent: confirms the token works and returns its name, scopes "
+                    + "(what it is allowed to do) and expiry date. Only works with an API token, not a signed-in session.")
     public Map<String, Object> me(HttpServletRequest request) {
         if (!(request.getAttribute(ApiTokenPrincipal.REQUEST_ATTRIBUTE) instanceof ApiTokenPrincipal p)) {
             throw new ResourceNotFoundException("This request is not authenticated with an API token");
