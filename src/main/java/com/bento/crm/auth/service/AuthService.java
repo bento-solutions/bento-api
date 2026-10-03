@@ -56,6 +56,10 @@ public class AuthService {
     @Value("${JWT_REFRESH_TOKEN_EXPIRY:2592000000}")
     private long refreshTokenExpiryMs;
 
+    /** See {@link #refresh}: how long a just-rotated refresh token may still be exchanged. */
+    @Value("${JWT_REFRESH_REUSE_GRACE_MS:30000}")
+    private long refreshReuseGraceMs;
+
     /**
      * Authenticates by email and password.
      *
@@ -170,20 +174,30 @@ public class AuthService {
      * that raced itself, and in both cases every token for that user is revoked — the safe
      * reading is that the token leaked, and forcing a fresh login is cheap next to the
      * alternative.
+     *
+     * <p>Except within a short grace period after rotation. A client can lose the response that
+     * carried its new token — a page reloaded while the refresh was in flight, or two browser
+     * tabs sharing one stored token that both refreshed when their access token expired — and
+     * then present the old one again moments later. Treating that as theft signed users out
+     * every few refreshes, so a token rotated less than {@code JWT_REFRESH_REUSE_GRACE_MS} ago
+     * is exchanged once more for a fresh pair instead.
+     *
+     * <p>The revocations happen right before the exception, so it must not roll them back.
      */
-    @Transactional
+    @Transactional(noRollbackFor = AuthenticationFailedException.class)
     public LoginResponse refresh(String refreshTokenValue) {
         String tokenHash = hashToken(refreshTokenValue);
+        Instant now = Instant.now();
 
         RefreshToken stored = refreshTokenRepository.findByTokenHash(tokenHash)
                 .orElseThrow(() -> new AuthenticationFailedException("Invalid or expired refresh token"));
 
-        if (stored.getRevokedAt() != null) {
+        if (stored.getRevokedAt() != null && !rotatedWithinGrace(stored, now)) {
             log.warn("Refresh token reuse detected for user {} — revoking all sessions", stored.getUserId());
-            refreshTokenRepository.revokeAllForUser(stored.getUserId(), Instant.now());
+            refreshTokenRepository.revokeAllForUser(stored.getUserId(), now);
             throw new AuthenticationFailedException("Invalid or expired refresh token");
         }
-        if (stored.getExpiresAt().isBefore(Instant.now())) {
+        if (stored.getExpiresAt().isBefore(now)) {
             throw new AuthenticationFailedException("Invalid or expired refresh token");
         }
 
@@ -193,12 +207,26 @@ public class AuthService {
         // A deactivated user still holds a refresh token valid for up to 30 days. Without this
         // check, deactivating an account does not actually end its access.
         if (!Boolean.TRUE.equals(user.getIsActive())) {
-            refreshTokenRepository.revokeAllForUser(user.getId(), Instant.now());
+            refreshTokenRepository.revokeAllForUser(user.getId(), now);
             throw new AuthenticationFailedException("User account is inactive");
         }
 
-        refreshTokenRepository.revokeToken(stored.getId(), Instant.now());
+        if (stored.getRevokedAt() == null) {
+            refreshTokenRepository.revokeToken(stored.getId(), now);
+        } else {
+            log.info("Refresh token for user {} presented again {} ms after rotation — treated as a client race",
+                    user.getId(), Duration.between(stored.getRevokedAt(), now).toMillis());
+        }
         return mintTokens(user, stored.getId());
+    }
+
+    /**
+     * Whether a revoked token was revoked by rotation (it has a successor; a logout or a
+     * deactivation leaves none) recently enough to count as a client race rather than a replay.
+     */
+    private boolean rotatedWithinGrace(RefreshToken stored, Instant now) {
+        return stored.getRevokedAt().isAfter(now.minusMillis(refreshReuseGraceMs))
+                && refreshTokenRepository.existsByReplacedByTokenId(stored.getId());
     }
 
     @Transactional

@@ -30,9 +30,30 @@ public class RateLimitConfig {
                 }
             });
 
-    /** General per-IP limit for everything that is not login, signup or invitation. */
+    /** General per-IP limit for anonymous requests that are not login, signup or invitation. */
     public Bucket resolveBucket(String ipAddress) {
         return bucketFor("general:" + ipAddress, 100, Duration.ofMinutes(1));
+    }
+
+    /**
+     * Signed-in traffic is limited per user, not per IP. One load of the CRM fires about twenty
+     * API calls, so the 100-per-IP budget ran out after four or five page loads -- sooner for
+     * colleagues behind one office IP -- and the app came up half-loaded: no profile ("?"),
+     * failed task updates, even a forced logout when the token refresh was refused. Refilled
+     * gradually rather than once a minute, so a burst costs a short wait, not a dead minute.
+     */
+    public Bucket resolveUserBucket(String userId) {
+        return cache.computeIfAbsent("user:" + userId, k -> Bucket.builder()
+                .addLimit(Bandwidth.classic(300, Refill.greedy(300, Duration.ofMinutes(1))))
+                .build());
+    }
+
+    /**
+     * Token refresh gets its own per-IP budget so a burst of ordinary calls can never starve it:
+     * a refused refresh leaves the client with an expired session.
+     */
+    public Bucket resolveRefreshBucket(String ipAddress) {
+        return bucketFor("refresh:" + ipAddress, 30, Duration.ofMinutes(1));
     }
 
     public Bucket resolveAuthBucket(String ipAddress) {

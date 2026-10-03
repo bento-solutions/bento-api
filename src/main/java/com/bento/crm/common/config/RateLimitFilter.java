@@ -1,7 +1,9 @@
 package com.bento.crm.common.config;
 
+import com.bento.crm.auth.service.JwtService;
 import io.github.bucket4j.Bucket;
 import io.github.bucket4j.ConsumptionProbe;
+import io.jsonwebtoken.Claims;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -23,6 +25,7 @@ import java.util.concurrent.TimeUnit;
 public class RateLimitFilter extends OncePerRequestFilter {
 
     private final RateLimitConfig rateLimitConfig;
+    private final JwtService jwtService;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
@@ -39,7 +42,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
         // neither exhausts the limit of everyone behind the same IP nor escapes it by rotating IPs.
         Bucket bucket = authHeader != null && authHeader.startsWith("Bearer bento_pat_") && authHeader.length() > 32
                 ? rateLimitConfig.resolveBucket("pat:" + authHeader.substring(7, 25))
-                : selectBucket(path, request.getMethod(), clientIp);
+                : selectBucket(request, path, request.getMethod(), clientIp);
         ConsumptionProbe probe = bucket.tryConsumeAndReturnRemaining(1);
 
         if (probe.isConsumed()) {
@@ -53,9 +56,11 @@ public class RateLimitFilter extends OncePerRequestFilter {
         }
     }
 
-    private Bucket selectBucket(String path, String method, String clientIp) {
+    private Bucket selectBucket(HttpServletRequest request, String path, String method, String clientIp) {
         if (path.contains("/auth/login")) {
             return rateLimitConfig.resolveAuthBucket(clientIp);
+        } else if (path.endsWith("/auth/refresh")) {
+            return rateLimitConfig.resolveRefreshBucket(clientIp);
         } else if (path.endsWith("/organizations") && "POST".equalsIgnoreCase(method)) {
             return rateLimitConfig.resolveSignupBucket(clientIp);
         } else if (path.contains("/public/invitations")) {
@@ -63,9 +68,26 @@ public class RateLimitFilter extends OncePerRequestFilter {
             // general limit -- but not as tightly as signup, which a legitimate invitee would
             // trip just by reloading the acceptance page.
             return rateLimitConfig.resolveInvitationBucket(clientIp);
-        } else {
-            return rateLimitConfig.resolveBucket(clientIp);
         }
+        String userId = authenticatedUserId(request);
+        return userId != null ? rateLimitConfig.resolveUserBucket(userId) : rateLimitConfig.resolveBucket(clientIp);
+    }
+
+    /**
+     * The user behind a valid access token (header, or the {@code token} query parameter the SSE
+     * streams use), or null. Only a token that verifies earns a per-user bucket, so a forged or
+     * expired one stays on the anonymous per-IP limit.
+     */
+    private String authenticatedUserId(HttpServletRequest request) {
+        String authHeader = request.getHeader("Authorization");
+        String token = authHeader != null && authHeader.startsWith("Bearer ")
+                ? authHeader.substring(7)
+                : request.getParameter("token");
+        if (token == null || token.isBlank()) {
+            return null;
+        }
+        Claims claims = jwtService.tryParseAccessToken(token);
+        return claims != null ? claims.getSubject() : null;
     }
 
     private String getClientIp(HttpServletRequest request) {

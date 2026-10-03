@@ -35,6 +35,9 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, UUID
     @Query("SELECT rt FROM RefreshToken rt WHERE rt.tokenHash = :tokenHash")
     Optional<RefreshToken> findByTokenHash(@Param("tokenHash") String tokenHash);
 
+    /** True once the token has been rotated: its successor records it as the token it replaced. */
+    boolean existsByReplacedByTokenId(UUID replacedByTokenId);
+
     /** Housekeeping for {@link com.bento.crm.identity.service.RefreshTokenPurgeScheduler}. */
     @Modifying
     @Query("DELETE FROM RefreshToken rt WHERE rt.expiresAt < :cutoff")
