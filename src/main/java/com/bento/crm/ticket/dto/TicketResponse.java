@@ -25,6 +25,7 @@ public class TicketResponse {
     private String title;
     private String description;
     private String type;
+    private UUID categoryId;
     private UUID partnerId;
     private RelatedEntityType relatedEntityType;
     private UUID relatedEntityId;
@@ -53,6 +54,7 @@ public class TicketResponse {
                 .title(ticket.getTitle())
                 .description(ticket.getDescription())
                 .type(ticket.getType())
+                .categoryId(ticket.getCategoryId())
                 .partnerId(ticket.getPartnerId())
                 .relatedEntityType(link.getRelatedEntityType())
                 .relatedEntityId(link.getRelatedEntityId())

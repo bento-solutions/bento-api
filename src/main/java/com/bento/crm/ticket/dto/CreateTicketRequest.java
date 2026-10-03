@@ -26,6 +26,9 @@ public class CreateTicketRequest implements RelatableRequest {
     @Size(max = 50)
     private String type;
 
+    /** Optional category; the ticket's tasks follow it. */
+    private UUID categoryId;
+
     /**
      * Legacy shorthand for a partner link, kept so existing clients keep working: when no
      * explicit {@code relatedEntityType}/{@code relatedEntityId} is sent this is read as a

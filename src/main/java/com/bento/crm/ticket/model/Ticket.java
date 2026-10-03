@@ -45,6 +45,10 @@ public class Ticket extends BaseTenantEntity {
     @Builder.Default
     private EntityLink relatedEntity = EntityLink.empty();
 
+    /** Optional category (which product/project this concerns); its tasks inherit it. */
+    @Column(columnDefinition = "uuid")
+    private UUID categoryId;
+
     @Column(columnDefinition = "uuid")
     private UUID assignedToUserId;
 

@@ -7,6 +7,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -55,4 +56,24 @@ public interface TaskRepository extends JpaRepository<Task, UUID>, JpaSpecificat
 
     @Query("SELECT t FROM Task t WHERE t.deletedAt IS NOT NULL AND t.deletedAt < :cutoff")
     List<Task> findPurgeable(@Param("cutoff") Instant cutoff);
+
+    /** Live tasks per category: rows of {categoryId, count}. */
+    @Query("SELECT t.categoryId, COUNT(t) FROM Task t WHERE t.organizationId = :orgId AND t.deletedAt IS NULL AND t.categoryId IS NOT NULL GROUP BY t.categoryId")
+    List<Object[]> countByCategory(@Param("orgId") UUID orgId);
+
+    /** Takes a deleted category off every task (including trashed ones, so a restore can't bring it back). */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("UPDATE Task t SET t.categoryId = NULL WHERE t.organizationId = :orgId AND t.categoryId = :categoryId")
+    void clearCategory(@Param("orgId") UUID orgId, @Param("categoryId") UUID categoryId);
+
+    /** Gives every task raised for a ticket the ticket's category (or none) — tasks mirror their ticket. */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("""
+            UPDATE Task t SET t.categoryId = :categoryId
+            WHERE t.organizationId = :orgId
+              AND t.relatedEntity.relatedEntityType = :type
+              AND t.relatedEntity.relatedEntityId = :ticketId
+            """)
+    void setCategoryForRelated(@Param("orgId") UUID orgId, @Param("type") RelatedEntityType type,
+                               @Param("ticketId") UUID ticketId, @Param("categoryId") UUID categoryId);
 }

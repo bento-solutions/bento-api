@@ -25,6 +25,13 @@ public class Task extends BaseTenantEntity {
     @Column(columnDefinition = "text")
     private String description;
 
+    /**
+     * Optional category. A task raised for a ticket always carries the ticket's category (the
+     * service enforces it); only tasks outside any ticket choose their own.
+     */
+    @Column(columnDefinition = "uuid")
+    private UUID categoryId;
+
     @Column(columnDefinition = "uuid")
     private UUID assignedTeamId;
 

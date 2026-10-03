@@ -1,7 +1,9 @@
 package com.bento.crm.task.service;
 
+import com.bento.crm.category.service.CategoryService;
 import com.bento.crm.common.context.TenantContext;
 import com.bento.crm.common.exception.ResourceNotFoundException;
+import com.bento.crm.common.model.EntityLink;
 import com.bento.crm.common.model.RelatedEntityType;
 import com.bento.crm.common.repository.AssignmentSpecifications;
 import com.bento.crm.common.repository.EntityLinkSpecifications;
@@ -10,6 +12,8 @@ import com.bento.crm.task.dto.CreateTaskRequest;
 import com.bento.crm.task.dto.TaskProgress;
 import com.bento.crm.task.model.Task;
 import com.bento.crm.task.repository.TaskRepository;
+import com.bento.crm.ticket.model.Ticket;
+import com.bento.crm.ticket.repository.TicketRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
@@ -31,6 +35,8 @@ import java.util.stream.Collectors;
 public class TaskService {
 
     private final TaskRepository taskRepository;
+    private final TicketRepository ticketRepository;
+    private final CategoryService categoryService;
     private final ApplicationEventPublisher eventPublisher;
 
     @Transactional
@@ -131,7 +137,30 @@ public class TaskService {
         task.setStatus(request.getStatus());
         task.setPriority(request.getPriority());
         task.setDueDate(request.getDueDate());
-        task.setRelatedEntity(request.toEntityLink());
+        EntityLink link = request.toEntityLink();
+        task.setRelatedEntity(link);
+        task.setCategoryId(resolveCategoryId(link, request.getCategoryId()));
+    }
+
+    /**
+     * A task on a ticket mirrors the ticket's category — whatever the request says — so a ticket
+     * is categorised once and all its work follows. Only a task outside any ticket picks its own.
+     */
+    private UUID resolveCategoryId(EntityLink link, UUID requested) {
+        UUID ticketId = link.idOf(RelatedEntityType.TICKET);
+        if (ticketId != null) {
+            return ticketRepository.findByOrganizationIdAndId(TenantContext.getCurrentOrganizationId(), ticketId)
+                    .map(Ticket::getCategoryId)
+                    .orElse(null);
+        }
+        return categoryService.requireId(requested);
+    }
+
+    /** Re-categorises every task raised for a ticket after the ticket's own category changed. */
+    @Transactional
+    public void applyCategoryToTicketTasks(UUID ticketId, UUID categoryId) {
+        taskRepository.setCategoryForRelated(TenantContext.getCurrentOrganizationId(),
+                RelatedEntityType.TICKET, ticketId, categoryId);
     }
 
     @Transactional

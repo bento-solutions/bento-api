@@ -1,5 +1,6 @@
 package com.bento.crm.ticket.service;
 
+import com.bento.crm.category.service.CategoryService;
 import com.bento.crm.common.context.TenantContext;
 import com.bento.crm.common.exception.ResourceNotFoundException;
 import com.bento.crm.common.model.EntityLink;
@@ -36,6 +37,7 @@ public class TicketService {
 
     private final TicketRepository ticketRepository;
     private final TaskService taskService;
+    private final CategoryService categoryService;
     private final ApplicationEventPublisher eventPublisher;
     private final com.bento.crm.ticket.repository.TicketCommentRepository ticketCommentRepository;
 
@@ -144,8 +146,12 @@ public class TicketService {
     public Ticket updateTicket(UUID id, CreateTicketRequest request) {
         Ticket ticket = getTicket(id);
         UUID previousAssignee = ticket.getAssignedToUserId();
+        UUID previousCategory = ticket.getCategoryId();
         applyRequest(ticket, request);
         Ticket saved = ticketRepository.save(ticket);
+        if (!Objects.equals(previousCategory, saved.getCategoryId())) {
+            taskService.applyCategoryToTicketTasks(saved.getId(), saved.getCategoryId());
+        }
         notifyIfAssigned(saved.getOrganizationId(), previousAssignee, saved);
         eventPublisher.publishEvent(com.bento.crm.automation.event.EntityChangedEvent.builder()
                 .organizationId(saved.getOrganizationId())
@@ -164,6 +170,7 @@ public class TicketService {
         map.put("status", t.getStatus() != null ? t.getStatus().name() : null);
         map.put("priority", t.getPriority() != null ? t.getPriority().name() : null);
         map.put("type", t.getType());
+        map.put("categoryId", t.getCategoryId());
         map.put("partnerId", t.getPartnerId());
         map.put("assignedToUserId", t.getAssignedToUserId());
         return map;
@@ -193,6 +200,7 @@ public class TicketService {
         ticket.setTitle(request.getTitle());
         ticket.setDescription(request.getDescription());
         ticket.setType(request.getType());
+        ticket.setCategoryId(categoryService.requireId(request.getCategoryId()));
         ticket.setRelatedEntity(resolveLink(request));
         ticket.setPartnerId(ticket.getRelatedEntity().idOf(RelatedEntityType.PARTNER));
         ticket.setAssignedToUserId(request.getAssignedToUserId());

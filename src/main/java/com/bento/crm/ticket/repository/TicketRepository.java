@@ -5,6 +5,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -31,4 +32,13 @@ public interface TicketRepository extends JpaRepository<Ticket, UUID>, JpaSpecif
 
     @Query("SELECT t FROM Ticket t WHERE t.deletedAt IS NOT NULL AND t.deletedAt < :cutoff")
     List<Ticket> findPurgeable(@Param("cutoff") Instant cutoff);
+
+    /** Live tickets per category: rows of {categoryId, count}. */
+    @Query("SELECT t.categoryId, COUNT(t) FROM Ticket t WHERE t.organizationId = :orgId AND t.deletedAt IS NULL AND t.categoryId IS NOT NULL GROUP BY t.categoryId")
+    List<Object[]> countByCategory(@Param("orgId") UUID orgId);
+
+    /** Takes a deleted category off every ticket (including trashed ones, so a restore can't bring it back). */
+    @Modifying(clearAutomatically = true, flushAutomatically = true)
+    @Query("UPDATE Ticket t SET t.categoryId = NULL WHERE t.organizationId = :orgId AND t.categoryId = :categoryId")
+    void clearCategory(@Param("orgId") UUID orgId, @Param("categoryId") UUID categoryId);
 }

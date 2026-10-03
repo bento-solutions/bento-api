@@ -22,6 +22,11 @@ public class CreateTaskRequest implements RelatableRequest {
 
     private String description;
 
+    /**
+     * Optional category. Ignored for a task on a ticket, which always takes the ticket's category.
+     */
+    private UUID categoryId;
+
     private UUID assignedTeamId;
 
     private UUID assignedToUserId;

@@ -23,6 +23,7 @@ public class TaskResponse {
     private UUID organizationId;
     private String title;
     private String description;
+    private UUID categoryId;
     private UUID assignedTeamId;
     private UUID assignedToUserId;
     private UUID assignedByUserId;
@@ -43,6 +44,7 @@ public class TaskResponse {
                 .organizationId(task.getOrganizationId())
                 .title(task.getTitle())
                 .description(task.getDescription())
+                .categoryId(task.getCategoryId())
                 .assignedTeamId(task.getAssignedTeamId())
                 .assignedToUserId(task.getAssignedToUserId())
                 .assignedByUserId(task.getAssignedByUserId())
