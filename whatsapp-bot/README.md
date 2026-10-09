@@ -20,6 +20,15 @@ network; the bot reports everything back through a signed webhook.
 | `WEBHOOK_URL` | e.g. `http://app:8080/api/v1/webhooks/baileys` |
 | `WEBHOOK_SECRET` | HMAC key for `X-Bento-Signature` (≥ 32 chars) |
 | `DATA_DIR` | `/data`: `sessions/<id>/` (Signal keys, mode 700) and `bot.sqlite` |
+| `MIRROR_WEBHOOK_URL` | Optional second receiver, e.g. OrthoFlow's `http://<backend>:8080/api/v1/webhooks/whatsapp` |
+| `MIRROR_WEBHOOK_SECRET` | HMAC key for the mirror (≥ 32 chars); the receiver's own webhook secret |
+| `MIRROR_SESSION_IDS` | Comma-separated sessions whose events are copied to the mirror |
+
+**Mirror.** A session can also be reported to a second receiver: OrthoFlow sends from one of the
+CRM's numbers and needs that number's replies. Its events are copied into `mirror.sqlite` and
+delivered and acknowledged separately, so an outage of either receiver never delays or loses the
+other's events. The CRM still receives everything, as before; the receiver decides what to keep
+(OrthoFlow keeps only people who came through its landing page).
 
 `/data/sessions/<id>/` holds long-lived private keys: it never leaves the volume and is never
 committed. Tests: `npm test`.

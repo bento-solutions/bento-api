@@ -34,10 +34,21 @@ export function loadConfig(env = process.env) {
         sentRetentionDays: int(env.SENT_RETENTION_DAYS, 7),
         lidHoldHours: int(env.LID_HOLD_HOURS, 24),
         webhookBatchSize: int(env.WEBHOOK_BATCH_SIZE, 50),
+        // Optional second receiver of the events of some sessions (OrthoFlow, which sends from one
+        // of the CRM's numbers). It gets its own copy and acknowledges it on its own, so neither
+        // receiver's outage holds back the other. Off unless MIRROR_WEBHOOK_URL is set.
+        mirrorWebhookUrl: env.MIRROR_WEBHOOK_URL || '',
+        mirrorWebhookSecret: env.MIRROR_WEBHOOK_SECRET || '',
+        mirrorSessionIds: (env.MIRROR_SESSION_IDS || '').split(',').map(s => s.trim()).filter(Boolean),
     };
     const problems = [];
     if (config.apiKey.length < 32) problems.push('API_KEY must be at least 32 characters (openssl rand -hex 32)');
     if (config.webhookSecret.length < 32) problems.push('WEBHOOK_SECRET must be at least 32 characters');
     if (!/^https?:\/\//.test(config.webhookUrl)) problems.push('WEBHOOK_URL must be an http(s) URL');
+    if (config.mirrorWebhookUrl) {
+        if (!/^https?:\/\//.test(config.mirrorWebhookUrl)) problems.push('MIRROR_WEBHOOK_URL must be an http(s) URL');
+        if (config.mirrorWebhookSecret.length < 32) problems.push('MIRROR_WEBHOOK_SECRET must be at least 32 characters');
+        if (config.mirrorSessionIds.length === 0) problems.push('MIRROR_SESSION_IDS must name the sessions to mirror');
+    }
     return { config, problems };
 }
