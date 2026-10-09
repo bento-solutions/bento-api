@@ -149,6 +149,11 @@ services:
       WEBHOOK_SECRET: ${BAILEYS_WEBHOOK_SECRET:-}
       WEBHOOK_URL: http://app:8080/api/v1/webhooks/baileys
       LOG_LEVEL: ${WHATSAPP_BOT_LOG_LEVEL:-info}
+      # Optional second receiver of some sessions' events (OrthoFlow, which sends from one of
+      # these numbers). All three empty = off; the CRM's own webhook is unaffected either way.
+      MIRROR_WEBHOOK_URL: ${MIRROR_WEBHOOK_URL:-}
+      MIRROR_WEBHOOK_SECRET: ${MIRROR_WEBHOOK_SECRET:-}
+      MIRROR_SESSION_IDS: ${MIRROR_SESSION_IDS:-}
     volumes:
       # Signal session keys and the event spool. Owned by uid 1000, mode 700, never copied off
       # the box. Each environment has its own directory: two bots on one session get it replaced.
