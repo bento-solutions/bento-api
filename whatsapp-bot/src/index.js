@@ -7,6 +7,7 @@ import { WebhookDeliverer } from './webhook.js';
 import { RateGuard } from './rate-guard.js';
 import { SessionManager } from './session-manager.js';
 import { createApp } from './http.js';
+import { startMirror } from './mirror.js';
 
 const { config, problems } = loadConfig();
 const logger = pino({ level: config.logLevel });
@@ -20,6 +21,12 @@ const spool = new Spool(path.join(config.dataDir, 'bot.sqlite'));
 const deliverer = new WebhookDeliverer({
     url: config.webhookUrl, secret: config.webhookSecret, spool, logger, batchSize: config.webhookBatchSize,
 });
+const mirror = config.mirrorWebhookUrl ? startMirror({
+    spool, file: path.join(config.dataDir, 'mirror.sqlite'), url: config.mirrorWebhookUrl,
+    secret: config.mirrorWebhookSecret, sessionIds: config.mirrorSessionIds,
+    logger: logger.child({ webhook: 'mirror' }), batchSize: config.webhookBatchSize,
+}) : null;
+if (mirror) logger.info({ sessions: config.mirrorSessionIds }, 'mirroring these sessions to a second webhook');
 const guard = new RateGuard({ perMinute: config.guardPerMinute, perHour: config.guardPerHour });
 const manager = new SessionManager({ config, spool, guard, logger });
 
@@ -34,10 +41,11 @@ const housekeeping = setInterval(() => {
 }, 5 * 60_000);
 housekeeping.unref();
 
-const server = createApp({ config, manager, spool, deliverer }).listen(config.port, config.host, () => {
+const server = createApp({ config, manager, spool, deliverer, mirror: mirror?.deliverer }).listen(config.port, config.host, () => {
     logger.info({ host: config.host, port: config.port }, 'bot API listening');
 });
 deliverer.start();
+mirror?.deliverer.start();
 await manager.resumeAll();
 
 let shuttingDown = false;
@@ -51,6 +59,11 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
         await manager.stopAll();
         await deliverer.deliverOnce().catch(() => undefined);
         deliverer.stop();
+        if (mirror) {
+            await mirror.deliverer.deliverOnce().catch(() => undefined);
+            mirror.deliverer.stop();
+            mirror.spool.close();
+        }
         spool.close();
         process.exit(0);
     });

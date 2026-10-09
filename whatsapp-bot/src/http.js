@@ -15,14 +15,14 @@ export function bearerMatches(header, apiKey) {
  * The bot's API. It is only reachable on the internal Docker network (never through Traefik) and
  * every route but /healthz requires the shared API key.
  */
-export function createApp({ config, manager, spool, deliverer }) {
+export function createApp({ config, manager, spool, deliverer, mirror = null }) {
     const app = express();
     app.use(express.json({ limit: '64kb' }));
 
     app.get('/healthz', (req, res) => {
         res.json({ ok: true, sessions: manager.list().length, spool: spool.stats(), webhook: {
             lastSuccessAt: deliverer.lastSuccessAt, lastError: deliverer.lastError,
-        } });
+        }, ...(mirror ? { mirror: { lastSuccessAt: mirror.lastSuccessAt, lastError: mirror.lastError } } : {}) });
     });
 
     app.use((req, res, next) => {

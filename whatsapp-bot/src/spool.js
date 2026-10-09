@@ -102,7 +102,9 @@ export class Spool {
     }
 
     enqueue(sessionId, type, data, now = Date.now()) {
-        return Number(this.q.insertEvent.run(sessionId, type, JSON.stringify(data), now, now).lastInsertRowid);
+        const id = Number(this.q.insertEvent.run(sessionId, type, JSON.stringify(data), now, now).lastInsertRowid);
+        this.onEnqueue?.(sessionId, type, data, now);
+        return id;
     }
 
     /** Monotonic per-session sequence, persisted so it keeps increasing across restarts. */
