@@ -39,6 +39,9 @@ public class InvoiceResponse {
     private BigDecimal tax;
     private BigDecimal total;
     private List<Map<String, Object>> lines;
+    private UUID recurringInvoiceId;
+    private Integer reminderCount;
+    private Instant lastReminderAt;
     private UUID createdBy;
     private UUID updatedBy;
     // These were previously converted with LocalDateTime.from(Instant), which throws
@@ -69,6 +72,9 @@ public class InvoiceResponse {
                 .tax(invoice.getTax())
                 .total(invoice.getTotal())
                 .lines(invoice.getLines())
+                .recurringInvoiceId(invoice.getRecurringInvoiceId())
+                .reminderCount(invoice.getReminderCount())
+                .lastReminderAt(invoice.getLastReminderAt())
                 .createdBy(invoice.getCreatedBy())
                 .updatedBy(invoice.getUpdatedBy())
                 .createdAt(invoice.getCreatedAt())

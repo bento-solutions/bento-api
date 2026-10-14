@@ -5,6 +5,7 @@ import jakarta.mail.internet.MimeMessage;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.MimeMessageHelper;
@@ -56,21 +57,39 @@ public class EmailService {
      */
     @Async
     public void sendRawHtml(String to, String subject, String bodyHtml) {
+        deliver(to, subject, bodyHtml, null);
+    }
+
+    /** Renders a template and sends it with one file attached, such as an invoice PDF. */
+    @Async
+    public void sendHtmlWithAttachment(String to, String subject, String templateName, Map<String, String> variables,
+                                       Attachment attachment) {
+        deliver(to, subject, render(templateName, variables), attachment);
+    }
+
+    public record Attachment(String filename, byte[] content, String contentType) {
+    }
+
+    private void deliver(String to, String subject, String bodyHtml, Attachment attachment) {
         JavaMailSender sender = mailSender.getIfAvailable();
         if (!properties.isEnabled() || sender == null) {
-            log.warn("Mail disabled or sender not available -- skipping '{}' to {}. Body:\n{}", subject, to, bodyHtml);
+            log.warn("Mail disabled or sender not available -- skipping '{}' to {}{}. Body:\n{}", subject, to,
+                    attachment != null ? " (with " + attachment.filename() + ")" : "", bodyHtml);
             return;
         }
 
         try {
             MimeMessage message = sender.createMimeMessage();
-            MimeMessageHelper helper = new MimeMessageHelper(message, false, StandardCharsets.UTF_8.name());
+            MimeMessageHelper helper = new MimeMessageHelper(message, attachment != null, StandardCharsets.UTF_8.name());
             helper.setTo(to);
             helper.setSubject(subject);
             helper.setText(bodyHtml, true);
             helper.setFrom(new InternetAddress(properties.getFrom(), properties.getFromName(), StandardCharsets.UTF_8.name()));
             if (properties.getReplyTo() != null && !properties.getReplyTo().isBlank()) {
                 helper.setReplyTo(properties.getReplyTo());
+            }
+            if (attachment != null) {
+                helper.addAttachment(attachment.filename(), new ByteArrayResource(attachment.content()), attachment.contentType());
             }
             sender.send(message);
             log.info("Successfully sent email '{}' to {}", subject, to);

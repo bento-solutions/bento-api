@@ -4,6 +4,7 @@ import com.bento.crm.automation.repository.AutomationRuleRepository;
 import com.bento.crm.campaign.repository.CampaignRepository;
 import com.bento.crm.deal.repository.DealRepository;
 import com.bento.crm.invoice.repository.InvoiceRepository;
+import com.bento.crm.invoice.repository.RecurringInvoiceRepository;
 import com.bento.crm.partner.repository.PartnerRepository;
 import com.bento.crm.payment.repository.PaymentRepository;
 import com.bento.crm.proposal.repository.ProposalRepository;
@@ -41,6 +42,7 @@ public class EntityPurgeScheduler {
     private final AutomationRuleRepository automationRuleRepository;
     private final PaymentRepository paymentRepository;
     private final ProductRepository productRepository;
+    private final RecurringInvoiceRepository recurringInvoiceRepository;
 
     @Value("${crm.purge.retention-days:30}")
     private int retentionDays;
@@ -114,6 +116,12 @@ public class EntityPurgeScheduler {
         if (!products.isEmpty()) {
             productRepository.deleteAll(products);
             log.info("[purge] hard-deleted {} product(s)", products.size());
+        }
+
+        var recurringInvoices = recurringInvoiceRepository.findPurgeable(cutoff);
+        if (!recurringInvoices.isEmpty()) {
+            recurringInvoiceRepository.deleteAll(recurringInvoices);
+            log.info("[purge] hard-deleted {} recurring invoice(s)", recurringInvoices.size());
         }
     }
 }

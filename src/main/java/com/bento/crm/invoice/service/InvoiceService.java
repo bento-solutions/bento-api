@@ -7,10 +7,6 @@ import com.bento.crm.invoice.dto.CreateInvoiceRequest;
 import com.bento.crm.invoice.model.Invoice;
 import com.bento.crm.invoice.repository.InvoiceRepository;
 import com.bento.crm.invoice.repository.InvoiceSpecification;
-import com.bento.crm.common.mail.EmailService;
-import com.bento.crm.organization.model.Organization;
-import com.bento.crm.organization.repository.OrganizationRepository;
-import com.bento.crm.partner.repository.PartnerRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -21,7 +17,6 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Instant;
 import java.time.LocalDate;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -33,17 +28,21 @@ public class InvoiceService {
 
     private final InvoiceRepository invoiceRepository;
     private final BusinessNumberService businessNumberService;
-    private final EmailService emailService;
-    private final PartnerRepository partnerRepository;
-    private final OrganizationRepository organizationRepository;
+    private final InvoiceMailer invoiceMailer;
 
     /** Moroccan standard VAT, applied when the client sends lines but no tax breakdown. */
     static final BigDecimal DEFAULT_VAT_RATE = new BigDecimal("0.20");
 
     @Transactional
     public Invoice createInvoice(CreateInvoiceRequest request) {
+        return createInvoice(TenantContext.getCurrentOrganizationId(), request);
+    }
+
+    /** Creates an invoice for an explicit organization, for callers outside a request. */
+    @Transactional
+    public Invoice createInvoice(UUID organizationId, CreateInvoiceRequest request) {
         Invoice invoice = new Invoice();
-        invoice.setOrganizationId(TenantContext.getCurrentOrganizationId());
+        invoice.setOrganizationId(organizationId);
         applyRequest(invoice, request);
         return invoiceRepository.save(invoice);
     }
@@ -255,10 +254,6 @@ public class InvoiceService {
             return 0;
         }
 
-        String orgName = organizationRepository.findById(orgId)
-                .map(Organization::getName)
-                .orElse("Bento CRM");
-
         boolean isEmail = channel != null && channel.equalsIgnoreCase("email");
 
         for (UUID id : invoiceIds) {
@@ -270,21 +265,8 @@ public class InvoiceService {
                     invoiceRepository.save(inv);
                 }
 
-                if (isEmail && inv.getPartnerId() != null) {
-                    partnerRepository.findByOrganizationIdAndId(orgId, inv.getPartnerId()).ifPresent(partner -> {
-                        String email = partner.getEmail();
-                        if (email != null && !email.isBlank() && email.contains("@")) {
-                            Map<String, String> variables = new HashMap<>();
-                            variables.put("organizationName", orgName);
-                            variables.put("invoiceNumber", inv.getInvoiceNumber() != null ? inv.getInvoiceNumber() : inv.getId().toString());
-                            variables.put("clientName", partner.getName() != null ? partner.getName() : "Client");
-                            variables.put("messageText", message != null && !message.isBlank() ? message : "Nous vous rappelons amicalement de régler votre facture arrivée à échéance.");
-                            variables.put("dueDate", inv.getDueDate() != null ? inv.getDueDate().toString() : "Échue");
-                            variables.put("remainingAmount", inv.getTotal() != null ? inv.getTotal().setScale(2, RoundingMode.HALF_UP).toString() : "0.00");
-
-                            emailService.sendHtml(email, "Rappel d'échéance : Facture n° " + (inv.getInvoiceNumber() != null ? inv.getInvoiceNumber() : ""), "reminder-email", variables);
-                        }
-                    });
+                if (isEmail) {
+                    invoiceMailer.sendReminder(inv, message);
                 }
                 count++;
             }

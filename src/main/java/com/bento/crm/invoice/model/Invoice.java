@@ -79,6 +79,17 @@ public class Invoice extends BaseTenantEntity {
     @Builder.Default
     private List<Map<String, Object>> lines = new ArrayList<>();
 
+    /** The template this invoice was generated from, when it came from one. */
+    @Column(columnDefinition = "uuid")
+    private UUID recurringInvoiceId;
+
+    /** Automatic reminders sent so far. */
+    @Column(nullable = false)
+    @Builder.Default
+    private Integer reminderCount = 0;
+
+    private Instant lastReminderAt;
+
     public enum InvoiceType {
         CUSTOMER, VENDOR
     }
