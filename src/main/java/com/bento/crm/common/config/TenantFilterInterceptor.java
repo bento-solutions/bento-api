@@ -71,6 +71,9 @@ public class TenantFilterInterceptor extends OncePerRequestFilter {
             // Pay-by-Link pages: the link token resolves the tenant and the invoice.
             "/public/pay/",
             "/api/v1/public/pay/",
+            // Shared drive files: the link token resolves the file.
+            "/public/files/",
+            "/api/v1/public/files/",
             "/actuator",
             "/api/v1/actuator",
             "/swagger",

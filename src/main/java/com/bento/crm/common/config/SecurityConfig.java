@@ -72,6 +72,9 @@ public class SecurityConfig {
                                 // Pay-by-Link pages (the link token is the credential)
                                 AntPathRequestMatcher.antMatcher("/public/pay/**"),
                                 AntPathRequestMatcher.antMatcher("/api/v1/public/pay/**"),
+                                // Shared drive files (the expiring link token is the credential)
+                                AntPathRequestMatcher.antMatcher("/public/files/**"),
+                                AntPathRequestMatcher.antMatcher("/api/v1/public/files/**"),
                                 // Public file viewing (e.g. logos)
                                 AntPathRequestMatcher.antMatcher("/files/public/**"),
                                 AntPathRequestMatcher.antMatcher("/api/v1/files/public/**"),

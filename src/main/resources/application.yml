@@ -215,6 +215,20 @@ partner:
 app:
   # Host shown in the AI-agent guide's copy-paste examples (OpenApiConfig).
   public-api-url: ${PUBLIC_API_URL:https://api.crmbento.com}
+  # The deployed frontend, for links people open (shared files).
+  frontend-url: ${FRONTEND_URL:${PAYMENTS_PUBLIC_URL:http://localhost:3000}}
+  storage:
+    # local: the server's disk (FILE_STORAGE_PATH). s3: an S3-compatible bucket (AWS, OVH,
+    # Scaleway, MinIO). Files already stored stay readable after switching.
+    type: ${STORAGE_TYPE:local}
+    s3:
+      endpoint: ${S3_ENDPOINT:}
+      region: ${S3_REGION:eu-west-3}
+      bucket: ${S3_BUCKET:}
+      access-key: ${S3_ACCESS_KEY:}
+      secret-key: ${S3_SECRET_KEY:}
+      path-style: ${S3_PATH_STYLE:true}
+      encrypt: ${S3_ENCRYPT:true}
   mail:
     # Must be a real mailbox on the sending domain -- Hostinger's relay rejects a From address
     # it does not host, and a mismatched From fails DMARC alignment at the recipient.

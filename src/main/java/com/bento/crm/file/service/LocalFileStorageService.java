@@ -4,65 +4,60 @@ import com.bento.crm.common.context.TenantContext;
 import com.bento.crm.common.exception.ResourceNotFoundException;
 import com.bento.crm.file.model.StoredFile;
 import com.bento.crm.file.repository.StoredFileRepository;
+import com.bento.crm.file.storage.BlobStores;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
-import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.file.Files;
-import java.nio.file.NoSuchFileException;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.nio.file.StandardCopyOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
 
+/**
+ * File metadata in {@code stored_file}, bytes in whichever {@link BlobStores} backend is
+ * configured (the server's disk by default, or an S3-compatible bucket).
+ */
 @Service
 @RequiredArgsConstructor
 @Slf4j
 public class LocalFileStorageService implements FileStorageService {
 
-    @Value("${FILE_STORAGE_PATH:/data/uploads}")
-    private String storagePath;
-
     private final StoredFileRepository fileRepository;
+    private final BlobStores blobStores;
 
-    private static final long MAX_FILE_SIZE = 15 * 1024 * 1024; // 15 MB
+    static final long MAX_FILE_SIZE = 15 * 1024 * 1024; // 15 MB
     private static final int MAX_FILE_NAME_LENGTH = 255;
-    private static final String[] ALLOWED_TYPES = {"image/", "application/pdf", "text/plain", "application/vnd.ms-excel", "application/vnd.openxmlformats"};
+    private static final String[] ALLOWED_TYPES = {"image/", "application/pdf", "text/plain", "text/csv", "application/vnd.ms-excel", "application/vnd.openxmlformats"};
 
     @Override
     public StoredFile store(MultipartFile file, String ownerEntityType, UUID ownerEntityId) {
-        validateFile(file);
-
-        UUID orgId = TenantContext.getCurrentOrganizationId();
-        UUID fileId = UUID.randomUUID();
-
-        // The on-disk location is derived exclusively from the storage root, the tenant id and a
-        // server-generated UUID. Nothing the client controls (the declared owner type, the
-        // original filename) ever touches the path, so "../" or an absolute path in either field
-        // cannot escape the tenant's directory. The original name is kept only as display
-        // metadata, sanitized so it cannot smuggle control characters into later responses.
-        Path storageRoot = Paths.get(storagePath).toAbsolutePath().normalize();
-        Path tenantDir = storageRoot.resolve(orgId.toString()).normalize();
-        Path target = tenantDir.resolve(fileId.toString()).normalize();
-        if (!target.startsWith(storageRoot)) {
-            // Unreachable given the inputs above; kept as a hard invariant so a future change to
-            // the path scheme cannot silently reintroduce traversal.
-            throw new IllegalStateException("Resolved storage path escaped the storage root");
+        if (file == null || file.isEmpty()) {
+            throw new IllegalArgumentException("File is empty");
         }
+        try {
+            return storeBytes(TenantContext.getCurrentOrganizationId(), file.getBytes(), file.getOriginalFilename(),
+                    file.getContentType(), ownerEntityType, ownerEntityId, StoredFile.Source.UPLOAD, null);
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to read uploaded file", e);
+        }
+    }
 
-        String safeName = sanitizeFileName(file.getOriginalFilename());
-
-        try (InputStream in = file.getInputStream()) {
-            Files.createDirectories(tenantDir);
-            Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
+    @Override
+    public StoredFile storeBytes(UUID orgId, byte[] content, String fileName, String contentType,
+                                 String ownerEntityType, UUID ownerEntityId, StoredFile.Source source, UUID folderId) {
+        validate(content, contentType);
+        UUID fileId = UUID.randomUUID();
+        String location;
+        try (InputStream in = new ByteArrayInputStream(content)) {
+            location = blobStores.put(orgId, fileId, in, content.length, contentType);
         } catch (IOException e) {
             throw new RuntimeException("Failed to store file", e);
         }
@@ -70,14 +65,18 @@ public class LocalFileStorageService implements FileStorageService {
         StoredFile storedFile = StoredFile.builder()
                 .ownerEntityId(ownerEntityId)
                 .ownerEntityType(ownerEntityType)
-                .fileName(safeName)
-                .contentType(file.getContentType())
-                .sizeBytes(file.getSize())
-                .storagePath(target.toString())
+                // The original name is kept only as display metadata, sanitized so it cannot
+                // smuggle control characters into later responses. It never builds a path.
+                .fileName(sanitizeFileName(fileName))
+                .contentType(contentType)
+                .sizeBytes((long) content.length)
+                .storagePath(location)
                 .uploadedAt(Instant.now())
+                .source(source == null ? StoredFile.Source.UPLOAD : source)
+                .folderId(folderId)
+                .sha256(sha256(content))
                 .build();
         storedFile.setOrganizationId(orgId);
-
         return fileRepository.save(storedFile);
     }
 
@@ -96,17 +95,25 @@ public class LocalFileStorageService implements FileStorageService {
 
     @Override
     public Resource load(UUID fileId) {
-        StoredFile storedFile = getMetadata(fileId);
+        return open(getMetadata(fileId));
+    }
 
-        // The stored path was written by store() above, but verify containment again before
-        // handing bytes back: a legacy row (or a tampered DB) must not be able to read files
-        // outside the storage root.
-        Path storageRoot = Paths.get(storagePath).toAbsolutePath().normalize();
-        Path path = Paths.get(storedFile.getStoragePath()).toAbsolutePath().normalize();
-        if (!path.startsWith(storageRoot) || !Files.exists(path)) {
+    @Override
+    public Resource open(StoredFile file) {
+        Resource resource = blobStores.open(file.getStoragePath());
+        if (resource == null) {
             throw new ResourceNotFoundException("File not found in storage");
         }
-        return new FileSystemResource(path);
+        return resource;
+    }
+
+    @Override
+    public byte[] readAll(StoredFile file) {
+        try (InputStream in = open(file).getInputStream()) {
+            return in.readAllBytes();
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to read file", e);
+        }
     }
 
     @Override
@@ -117,14 +124,7 @@ public class LocalFileStorageService implements FileStorageService {
 
     @Override
     public Resource loadPublic(UUID fileId) {
-        StoredFile storedFile = getPublicMetadata(fileId);
-
-        Path storageRoot = Paths.get(storagePath).toAbsolutePath().normalize();
-        Path path = Paths.get(storedFile.getStoragePath()).toAbsolutePath().normalize();
-        if (!path.startsWith(storageRoot) || !Files.exists(path)) {
-            throw new ResourceNotFoundException("File not found in storage");
-        }
-        return new FileSystemResource(path);
+        return open(getPublicMetadata(fileId));
     }
 
     @Override
@@ -132,37 +132,44 @@ public class LocalFileStorageService implements FileStorageService {
         UUID orgId = TenantContext.getCurrentOrganizationId();
         StoredFile storedFile = fileRepository.findByOrganizationIdAndId(orgId, fileId)
                 .orElseThrow(() -> new ResourceNotFoundException("File not found"));
-
         try {
-            Files.deleteIfExists(Paths.get(storedFile.getStoragePath()));
-        } catch (NoSuchFileException e) {
-            // Blob already gone -- fall through and still drop the row.
+            blobStores.delete(storedFile.getStoragePath());
         } catch (IOException e) {
-            // Surface as a 500 rather than returning 204 while the blob is orphaned on disk.
+            // Surface as a 500 rather than returning 204 while the blob is orphaned.
             throw new RuntimeException("Failed to delete file blob", e);
         }
         fileRepository.delete(storedFile);
     }
 
-    private void validateFile(MultipartFile file) {
-        if (file == null || file.isEmpty()) {
+    private static void validate(byte[] content, String contentType) {
+        if (content == null || content.length == 0) {
             throw new IllegalArgumentException("File is empty");
         }
-
-        if (file.getSize() > MAX_FILE_SIZE) {
+        if (content.length > MAX_FILE_SIZE) {
             throw new IllegalArgumentException("File exceeds maximum size of 15 MB");
         }
+        if (!isAllowedType(contentType)) {
+            throw new IllegalArgumentException("File type not allowed");
+        }
+    }
 
-        String contentType = file.getContentType();
-        boolean allowed = false;
+    public static boolean isAllowedType(String contentType) {
+        if (contentType == null) {
+            return false;
+        }
         for (String type : ALLOWED_TYPES) {
-            if (contentType != null && contentType.startsWith(type)) {
-                allowed = true;
-                break;
+            if (contentType.startsWith(type)) {
+                return true;
             }
         }
-        if (!allowed) {
-            throw new IllegalArgumentException("File type not allowed");
+        return false;
+    }
+
+    static String sha256(byte[] content) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(content));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
         }
     }
 
