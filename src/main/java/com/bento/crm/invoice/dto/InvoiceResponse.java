@@ -43,6 +43,8 @@ public class InvoiceResponse {
     private Integer reminderCount;
     private Instant lastReminderAt;
     private LocalDate scheduledPaymentDate;
+    /** Sum of recorded payments against this invoice; set by the controller, not the entity. */
+    private BigDecimal amountPaid;
     private UUID createdBy;
     private UUID updatedBy;
     // These were previously converted with LocalDateTime.from(Instant), which throws

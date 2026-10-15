@@ -44,6 +44,10 @@ class SupplierBillsAndAgingTest extends IntegrationTestBase {
     }
 
     private String purchaseOrder(String token, String vendorId) throws Exception {
+        return purchaseOrder(token, vendorId, "CONFIRMED");
+    }
+
+    private String purchaseOrder(String token, String vendorId, String status) throws Exception {
         String customer = partner(token, "CUSTOMER", "Riad Bleu");
         String deal = objectMapper.readTree(mockMvc.perform(post("/deals")
                         .header("Authorization", "Bearer " + token)
@@ -55,9 +59,9 @@ class SupplierBillsAndAgingTest extends IntegrationTestBase {
                         .header("Authorization", "Bearer " + token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"dealId": "%s", "vendorPartnerId": "%s", "status": "CONFIRMED",
+                                {"dealId": "%s", "vendorPartnerId": "%s", "status": "%s",
                                  "lines": [{"product": "Écrans", "qty": 4, "cost": 1000}]}
-                                """.formatted(deal, vendorId)))
+                                """.formatted(deal, vendorId, status)))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
         return objectMapper.readTree(response).get("id").asText();
@@ -82,6 +86,16 @@ class SupplierBillsAndAgingTest extends IntegrationTestBase {
         String vendor = partner(token, "VENDOR", "Maroc Hardware");
         String po = purchaseOrder(token, vendor);
         LocalDate today = LocalDate.now();
+
+        // The PO's own total (4 x 1000 + 20% VAT) is what the bill will carry.
+        mockMvc.perform(get("/purchase-orders/" + po).header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.subtotal").value(4000.0))
+                .andExpect(jsonPath("$.total").value(4800.0));
+
+        String draft = purchaseOrder(token, vendor, "DRAFT");
+        mockMvc.perform(post("/invoices/from-purchase-order/" + draft)
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().is4xxClientError());
 
         String response = mockMvc.perform(post("/invoices/from-purchase-order/" + po)
                         .header("Authorization", "Bearer " + token)
@@ -153,6 +167,12 @@ class SupplierBillsAndAgingTest extends IntegrationTestBase {
                 .andExpect(jsonPath("$.partners[0].name").value("Alpha"))
                 .andExpect(jsonPath("$.partners[0].total").value(3000.0))
                 .andExpect(jsonPath("$.partners[1].oldestDaysLate").value(100));
+
+        mockMvc.perform(get("/invoices/" + partlyPaid).header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.status").value("PARTIALLY_PAID"))
+                .andExpect(jsonPath("$.amountPaid").value(500.0));
+        mockMvc.perform(get("/invoices?type=CUSTOMER").header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.content[?(@.id == '" + partlyPaid + "')].amountPaid").value(500.0));
 
         mockMvc.perform(get("/invoices/aging?type=VENDOR").header("Authorization", "Bearer " + token))
                 .andExpect(jsonPath("$.late").value(999.0))

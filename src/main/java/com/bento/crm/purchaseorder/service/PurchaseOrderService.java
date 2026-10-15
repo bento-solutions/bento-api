@@ -107,6 +107,10 @@ public class PurchaseOrderService {
             if (unitPrice == null) {
                 unitPrice = toDecimal(line.get("unit_price"));
             }
+            if (unitPrice == null) {
+                // Lines saved by the app carry the purchase cost as `cost`.
+                unitPrice = toDecimal(line.get("cost"));
+            }
             if (qty == null || unitPrice == null) {
                 continue;
             }

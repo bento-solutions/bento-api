@@ -99,7 +99,9 @@ public class InvoiceController {
     @Operation(summary = "Get invoice by ID", description = "Retrieve invoice details")
     public ResponseEntity<InvoiceResponse> getInvoice(@PathVariable UUID id) {
         Invoice invoice = invoiceService.getInvoice(id);
-        return ResponseEntity.ok(InvoiceResponse.fromEntity(invoice));
+        InvoiceResponse dto = InvoiceResponse.fromEntity(invoice);
+        dto.setAmountPaid(agingService.paidByInvoice(invoice.getOrganizationId()).getOrDefault(invoice.getId(), java.math.BigDecimal.ZERO));
+        return ResponseEntity.ok(dto);
     }
 
     @GetMapping
@@ -114,7 +116,13 @@ public class InvoiceController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate,
             Pageable pageable) {
         Page<Invoice> page = invoiceService.listInvoices(q, type, status, partnerId, fromDate, toDate, pageable);
-        Page<InvoiceResponse> dtoPage = page.map(InvoiceResponse::fromEntity);
+        java.util.Map<UUID, java.math.BigDecimal> paid =
+                agingService.paidByInvoice(com.bento.crm.common.context.TenantContext.getCurrentOrganizationId());
+        Page<InvoiceResponse> dtoPage = page.map(invoice -> {
+            InvoiceResponse dto = InvoiceResponse.fromEntity(invoice);
+            dto.setAmountPaid(paid.getOrDefault(invoice.getId(), java.math.BigDecimal.ZERO));
+            return dto;
+        });
         return ResponseEntity.ok(PageResponse.fromPage(dtoPage));
     }
 

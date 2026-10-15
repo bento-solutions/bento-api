@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.UUID;
 
@@ -47,6 +48,20 @@ public class ProductService {
         return productRepository.save(p);
     }
 
+    /**
+     * VAT is stored as a fraction (0.20), but people type percentages (20). Values above 1 are
+     * read as a percentage; anything outside 0-100 % is rejected with a readable message.
+     */
+    static BigDecimal normalizeTaxRate(BigDecimal rate) {
+        BigDecimal fraction = rate.compareTo(BigDecimal.ONE) > 0
+                ? rate.divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP)
+                : rate.setScale(4, RoundingMode.HALF_UP);
+        if (fraction.signum() < 0 || fraction.compareTo(BigDecimal.ONE) > 0) {
+            throw new IllegalArgumentException("VAT rate must be between 0 and 100 %");
+        }
+        return fraction;
+    }
+
     private void applyRequest(Product p, CreateProductRequest request) {
         p.setSku(request.getSku());
         p.setName(request.getName());
@@ -55,7 +70,7 @@ public class ProductService {
         p.setUnitPrice(request.getUnitPrice());
         p.setCostPrice(request.getCostPrice() != null ? request.getCostPrice() : BigDecimal.ZERO);
         if (request.getTaxRate() != null) {
-            p.setTaxRate(request.getTaxRate());
+            p.setTaxRate(normalizeTaxRate(request.getTaxRate()));
         }
         if (request.getIsActive() != null) {
             p.setIsActive(request.getIsActive());

@@ -38,15 +38,22 @@ public class AgingService {
     private final PartnerRepository partnerRepository;
     private final BillingCalendar billingCalendar;
 
+    /** What has been paid against each invoice of the organization, from recorded payments. */
+    @Transactional(readOnly = true)
+    public Map<UUID, BigDecimal> paidByInvoice(UUID orgId) {
+        Map<UUID, BigDecimal> paid = new HashMap<>();
+        for (Object[] row : paymentRepository.sumPaidByInvoice(orgId)) {
+            paid.put((UUID) row[0], (BigDecimal) row[1]);
+        }
+        return paid;
+    }
+
     @Transactional(readOnly = true)
     public AgingReport report(Invoice.InvoiceType type) {
         UUID orgId = TenantContext.getCurrentOrganizationId();
         LocalDate today = billingCalendar.today(orgId);
 
-        Map<UUID, BigDecimal> paidByInvoice = new HashMap<>();
-        for (Object[] row : paymentRepository.sumPaidByInvoice(orgId)) {
-            paidByInvoice.put((UUID) row[0], (BigDecimal) row[1]);
-        }
+        Map<UUID, BigDecimal> paidByInvoice = paidByInvoice(orgId);
 
         BigDecimal invoiced = BigDecimal.ZERO;
         BigDecimal paid = BigDecimal.ZERO;

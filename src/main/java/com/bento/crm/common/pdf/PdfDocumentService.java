@@ -92,8 +92,8 @@ public class PdfDocumentService {
 
             String invNum = invoice.getInvoiceNumber() != null ? invoice.getInvoiceNumber() : invoice.getId().toString().substring(0, 8);
             addRight(rightCell, "N° " + invNum, FONT_SUBTITLE);
-            addRight(rightCell, "Date : " + (invoice.getInvoiceDate() != null ? invoice.getInvoiceDate() : (invoice.getCreatedAt() != null ? invoice.getCreatedAt().toString().substring(0, 10) : "-")), FONT_BODY);
-            addRight(rightCell, "Échéance : " + (invoice.getDueDate() != null ? invoice.getDueDate() : "-"), FONT_BODY_BOLD);
+            addRight(rightCell, "Date : " + (invoice.getInvoiceDate() != null ? formatDate(invoice.getInvoiceDate()) : (invoice.getCreatedAt() != null ? formatDate(invoice.getCreatedAt().atZone(java.time.ZoneId.of("Africa/Casablanca")).toLocalDate()) : "-")), FONT_BODY);
+            addRight(rightCell, "Échéance : " + formatDate(invoice.getDueDate()), FONT_BODY_BOLD);
             headerTable.addCell(rightCell);
             document.add(headerTable);
 
@@ -345,7 +345,7 @@ public class PdfDocumentService {
             numP.setAlignment(Element.ALIGN_RIGHT);
             rightCell.addElement(numP);
 
-            Paragraph dateP = new Paragraph("Date : " + (po.getOrderDate() != null ? po.getOrderDate() : "-"), FONT_BODY);
+            Paragraph dateP = new Paragraph("Date : " + formatDate(po.getOrderDate()), FONT_BODY);
             dateP.setAlignment(Element.ALIGN_RIGHT);
             rightCell.addElement(dateP);
 
@@ -552,9 +552,17 @@ public class PdfDocumentService {
 
     private String formatNumber(BigDecimal val) {
         if (val == null) return "0,00";
-        NumberFormat nf = NumberFormat.getNumberInstance(Locale.FRANCE);
-        nf.setMinimumFractionDigits(2);
-        nf.setMaximumFractionDigits(2);
+        // French grouping uses a narrow no-break space the PDF base fonts cannot draw, which turned
+        // 9 500,00 into 9500,00; a plain no-break space renders and keeps the amount on one line.
+        java.text.DecimalFormatSymbols symbols = java.text.DecimalFormatSymbols.getInstance(Locale.FRANCE);
+        symbols.setGroupingSeparator('\u00A0');
+        java.text.DecimalFormat nf = new java.text.DecimalFormat("#,##0.00", symbols);
         return nf.format(val);
+    }
+
+    private static final java.time.format.DateTimeFormatter DATE_FR = java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy");
+
+    private static String formatDate(java.time.LocalDate date) {
+        return date != null ? date.format(DATE_FR) : "-";
     }
 }

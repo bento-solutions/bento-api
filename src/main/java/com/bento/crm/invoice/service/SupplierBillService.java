@@ -82,6 +82,9 @@ public class SupplierBillService {
         UUID orgId = TenantContext.getCurrentOrganizationId();
         PurchaseOrder po = purchaseOrderRepository.findByOrganizationIdAndId(orgId, purchaseOrderId)
                 .orElseThrow(() -> new ResourceNotFoundException("Purchase order not found"));
+        if (po.getStatus() == PurchaseOrder.Status.DRAFT) {
+            throw new IllegalStateException("Send the purchase order to the supplier before booking its bill");
+        }
         if (!invoiceRepository.findBillsForPurchaseOrder(orgId, po.getId()).isEmpty()) {
             throw new IllegalStateException("This purchase order already has a supplier bill");
         }
