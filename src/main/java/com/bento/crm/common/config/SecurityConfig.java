@@ -69,6 +69,9 @@ public class SecurityConfig {
                                 // Public invitations
                                 AntPathRequestMatcher.antMatcher("/public/invitations/**"),
                                 AntPathRequestMatcher.antMatcher("/api/v1/public/invitations/**"),
+                                // Pay-by-Link pages (the link token is the credential)
+                                AntPathRequestMatcher.antMatcher("/public/pay/**"),
+                                AntPathRequestMatcher.antMatcher("/api/v1/public/pay/**"),
                                 // Public file viewing (e.g. logos)
                                 AntPathRequestMatcher.antMatcher("/files/public/**"),
                                 AntPathRequestMatcher.antMatcher("/api/v1/files/public/**"),

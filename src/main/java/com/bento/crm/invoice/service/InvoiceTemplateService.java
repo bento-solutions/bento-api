@@ -85,6 +85,23 @@ public class InvoiceTemplateService {
         return branding(templateFor(orgId), brand.orElse(null));
     }
 
+    /** Logo and accent colour for the public pay page: the same choice the PDF makes. */
+    public PublicLook publicLookFor(Invoice invoice, Partner partner) {
+        UUID orgId = invoice.getOrganizationId();
+        Brand brand = Optional.ofNullable(partner).map(Partner::getBrandId)
+                .flatMap(id -> brandRepository.findByOrganizationIdAndId(orgId, id))
+                .or(() -> brandRepository.findDefaultByOrganizationId(orgId))
+                .orElse(null);
+        InvoiceTemplate t = templateFor(orgId);
+        UUID logoId = brand != null && brand.getInvoiceLogoFileId() != null ? brand.getInvoiceLogoFileId() : t.getLogoFileId();
+        String colour = brand != null && brand.getColorHex() != null ? brand.getColorHex() : t.getAccentColor();
+        String name = t.getLegalName() != null && !t.getLegalName().isBlank() ? t.getLegalName()
+                : brand != null ? brand.getName() : null;
+        return new PublicLook(name, logoId, colour);
+    }
+
+    public record PublicLook(String displayName, UUID logoFileId, String accentColor) {}
+
     /** The branding a given brand (or the organization alone, when null) prints with. */
     public InvoiceBranding brandingFor(UUID brandId) {
         UUID orgId = TenantContext.getCurrentOrganizationId();

@@ -37,6 +37,7 @@ public class InvoiceMailer {
     private final OrganizationRepository organizationRepository;
     private final PaymentRepository paymentRepository;
     private final InvoiceTemplateService invoiceTemplateService;
+    private final com.bento.crm.payment.service.PaymentLinkService paymentLinkService;
 
     /**
      * Emails the invoice with its PDF attached.
@@ -61,6 +62,7 @@ public class InvoiceMailer {
         variables.put("totalAmount", money(invoice.getTotal()));
 
         variables.replaceAll((k, v) -> HtmlUtils.htmlEscape(v));
+        variables.put("payButton", payButton(invoice));
 
         byte[] pdf = pdfDocumentService.generateInvoicePdf(invoice, partner, org,
                 invoiceTemplateService.brandingFor(invoice, partner));
@@ -95,9 +97,23 @@ public class InvoiceMailer {
         variables.put("remainingAmount", money(remaining(invoice)));
 
         variables.replaceAll((k, v) -> HtmlUtils.htmlEscape(v));
+        variables.put("payButton", payButton(invoice));
 
         emailService.sendHtml(to, "Rappel d'échéance : Facture n° " + number, "reminder-email", variables);
         return Optional.of(to);
+    }
+
+    /**
+     * A "Payer en ligne" button when the organization takes card payments, else nothing. Built
+     * after the variables are escaped, so it is the one value that carries markup; the URL is
+     * escaped on its own.
+     */
+    private String payButton(Invoice invoice) {
+        return paymentLinkService.urlForEmail(invoice)
+                .map(url -> "<p style=\"margin:0 0 24px 0;text-align:center;\"><a href=\"" + HtmlUtils.htmlEscape(url)
+                        + "\" style=\"display:inline-block;background-color:#09090b;color:#ffffff;text-decoration:none;"
+                        + "font-size:14px;font-weight:600;padding:12px 24px;border-radius:10px;\">Payer en ligne par carte</a></p>")
+                .orElse("");
     }
 
     /** The address reminders and invoices for this invoice go to, if the customer has one. */

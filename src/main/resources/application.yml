@@ -224,6 +224,14 @@ app:
     # With no SMTP username configured, sending is skipped and the message is logged instead,
     # so local development needs no mail server and never emails a real person by accident.
     enabled: ${MAIL_ENABLED:true}
+  payments:
+    # The frontend address customers open payment links on (https://app.example.com/pay/<token>).
+    public-url: ${PAYMENTS_PUBLIC_URL:http://localhost:3000}
+    # The test gateway settles invoices without a real charge. Turn it off in production.
+    mock-enabled: ${PAYMENTS_MOCK_ENABLED:true}
+    stripe:
+      secret-key: ${STRIPE_SECRET_KEY:}
+      webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
   invitation:
     # Where the invitee lands. The accept page reads the token from the query string, so this
     # must point at the deployed frontend, not the API.

@@ -84,6 +84,12 @@ services:
       # Must point at the frontend, which serves the /invite/accept route -- not at this API.
       INVITATION_ACCEPT_URL: ${INVITATION_ACCEPT_URL:-https://crmbento.com/invite/accept}
       INVITATION_EXPIRY_DAYS: ${INVITATION_EXPIRY_DAYS:-7}
+      # Pay-by-Link: customers open https://crmbento.com/pay/<token>. The test gateway is off in
+      # production; Stripe needs its secret key and the webhook signing secret.
+      PAYMENTS_PUBLIC_URL: ${PAYMENTS_PUBLIC_URL:-https://crmbento.com}
+      PAYMENTS_MOCK_ENABLED: ${PAYMENTS_MOCK_ENABLED:-false}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
       # WhatsApp bot (Baileys) on the internal network. Blank keys disable linking.
       WHATSAPP_BOT_BASE_URL: ${WHATSAPP_BOT_BASE_URL:-http://whatsapp-bot:3000}
       WHATSAPP_BOT_API_KEY: ${WHATSAPP_BOT_API_KEY:-}

@@ -59,12 +59,18 @@ public class TenantFilterInterceptor extends OncePerRequestFilter {
             "/api/v1/webhooks/whatsapp",
             // The Baileys bot's webhook: HMAC-signed, resolves its tenant from the session id.
             "/webhooks/baileys",
-            "/api/v1/webhooks/baileys"
+            "/api/v1/webhooks/baileys",
+            // Stripe's webhook: signature-verified, resolves its tenant from the checkout session.
+            "/webhooks/stripe",
+            "/api/v1/webhooks/stripe"
     );
 
     private static final List<String> PUBLIC_PREFIXES = List.of(
             "/files/public",
             "/api/v1/files/public",
+            // Pay-by-Link pages: the link token resolves the tenant and the invoice.
+            "/public/pay/",
+            "/api/v1/public/pay/",
             "/actuator",
             "/api/v1/actuator",
             "/swagger",
