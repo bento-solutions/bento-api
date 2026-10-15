@@ -4,6 +4,8 @@ import com.bento.crm.common.model.BaseTenantEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Table;
+
+import java.util.UUID;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -44,4 +46,12 @@ public class Brand extends BaseTenantEntity {
     @Column(nullable = false)
     @Builder.Default
     private Boolean isActive = true;
+
+    /** Logo printed on invoices for this brand's customers, instead of the organization's. */
+    @Column(columnDefinition = "uuid")
+    private UUID invoiceLogoFileId;
+
+    /** Footer printed on invoices for this brand's customers, instead of the organization's. */
+    @Column(columnDefinition = "text")
+    private String invoiceFooter;
 }

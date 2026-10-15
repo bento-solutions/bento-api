@@ -27,6 +27,8 @@ public class BillingScheduler {
 
     private final RecurringInvoiceService recurringInvoiceService;
     private final InvoiceReminderService invoiceReminderService;
+    private final SupplierBillService supplierBillService;
+    private final BillingCalendar billingCalendar;
     private final InvoiceMailer invoiceMailer;
     private final OrganizationRepository organizationRepository;
     private final RecurringInvoiceRepository recurringInvoiceRepository;
@@ -62,6 +64,19 @@ public class BillingScheduler {
                 invoiceReminderService.runForOrganization(org.getId());
             } catch (Exception e) {
                 log.error("[billing] reminders for organization {} failed", org.getId(), e);
+            }
+        }
+    }
+
+    /** After the reminders have marked late invoices overdue: alert on supplier bills due or late. */
+    @Scheduled(cron = "${crm.billing.bill-alert-cron:0 15 8 * * *}", zone = "${crm.billing.default-zone:Africa/Casablanca}")
+    public void alertDueSupplierBills() {
+        LocalDate horizon = LocalDate.now(ZoneOffset.UTC).plusDays(SupplierBillService.DUE_SOON_DAYS + 1);
+        for (UUID orgId : supplierBillService.organizationsToAlert(horizon)) {
+            try {
+                supplierBillService.alertForOrganization(orgId, billingCalendar.today(orgId));
+            } catch (Exception e) {
+                log.error("[billing] supplier bill alert for organization {} failed", orgId, e);
             }
         }
     }

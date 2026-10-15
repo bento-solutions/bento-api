@@ -36,6 +36,12 @@ public class BrandResponse {
     @JsonProperty("is_active")
     private Boolean isActive;
 
+    @JsonProperty("invoice_logo_file_id")
+    private UUID invoiceLogoFileId;
+
+    @JsonProperty("invoice_footer")
+    private String invoiceFooter;
+
     @JsonProperty("created_at")
     private Instant createdAt;
 
@@ -52,6 +58,8 @@ public class BrandResponse {
                 .colorHex(brand.getColorHex())
                 .isDefault(brand.getIsDefault())
                 .isActive(brand.getIsActive())
+                .invoiceLogoFileId(brand.getInvoiceLogoFileId())
+                .invoiceFooter(brand.getInvoiceFooter())
                 .createdAt(brand.getCreatedAt())
                 .updatedAt(brand.getUpdatedAt())
                 .build();

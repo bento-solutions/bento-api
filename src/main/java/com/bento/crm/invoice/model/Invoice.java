@@ -90,6 +90,9 @@ public class Invoice extends BaseTenantEntity {
 
     private Instant lastReminderAt;
 
+    /** Supplier bills: the day the organization plans to pay it. */
+    private LocalDate scheduledPaymentDate;
+
     public enum InvoiceType {
         CUSTOMER, VENDOR
     }

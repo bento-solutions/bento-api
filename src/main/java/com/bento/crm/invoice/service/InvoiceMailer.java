@@ -36,6 +36,7 @@ public class InvoiceMailer {
     private final PartnerRepository partnerRepository;
     private final OrganizationRepository organizationRepository;
     private final PaymentRepository paymentRepository;
+    private final InvoiceTemplateService invoiceTemplateService;
 
     /**
      * Emails the invoice with its PDF attached.
@@ -61,7 +62,8 @@ public class InvoiceMailer {
 
         variables.replaceAll((k, v) -> HtmlUtils.htmlEscape(v));
 
-        byte[] pdf = pdfDocumentService.generateInvoicePdf(invoice, partner, org);
+        byte[] pdf = pdfDocumentService.generateInvoicePdf(invoice, partner, org,
+                invoiceTemplateService.brandingFor(invoice, partner));
         emailService.sendHtmlWithAttachment(to, "Facture n° " + number, "invoice-email", variables,
                 new EmailService.Attachment("facture-" + number + ".pdf", pdf, "application/pdf"));
         return Optional.of(to);

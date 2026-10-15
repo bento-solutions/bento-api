@@ -42,6 +42,7 @@ public class InvoiceResponse {
     private UUID recurringInvoiceId;
     private Integer reminderCount;
     private Instant lastReminderAt;
+    private LocalDate scheduledPaymentDate;
     private UUID createdBy;
     private UUID updatedBy;
     // These were previously converted with LocalDateTime.from(Instant), which throws
@@ -75,6 +76,7 @@ public class InvoiceResponse {
                 .recurringInvoiceId(invoice.getRecurringInvoiceId())
                 .reminderCount(invoice.getReminderCount())
                 .lastReminderAt(invoice.getLastReminderAt())
+                .scheduledPaymentDate(invoice.getScheduledPaymentDate())
                 .createdBy(invoice.getCreatedBy())
                 .updatedBy(invoice.getUpdatedBy())
                 .createdAt(invoice.getCreatedAt())

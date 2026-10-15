@@ -18,6 +18,12 @@ import org.springframework.web.bind.annotation.*;
 import java.util.UUID;
 
 import com.bento.crm.common.pdf.PdfDocumentService;
+import com.bento.crm.invoice.dto.AgingReport;
+import com.bento.crm.invoice.dto.BillFromPurchaseOrderRequest;
+import com.bento.crm.invoice.dto.PaymentScheduleRequest;
+import com.bento.crm.invoice.service.AgingService;
+import com.bento.crm.invoice.service.InvoiceTemplateService;
+import com.bento.crm.invoice.service.SupplierBillService;
 import com.bento.crm.organization.model.Organization;
 import com.bento.crm.organization.repository.OrganizationRepository;
 import com.bento.crm.partner.model.Partner;
@@ -37,15 +43,47 @@ public class InvoiceController {
     private final PdfDocumentService pdfDocumentService;
     private final PartnerRepository partnerRepository;
     private final OrganizationRepository organizationRepository;
+    private final InvoiceTemplateService invoiceTemplateService;
+    private final SupplierBillService supplierBillService;
+    private final AgingService agingService;
 
     public InvoiceController(InvoiceService invoiceService,
                              PdfDocumentService pdfDocumentService,
                              PartnerRepository partnerRepository,
-                             OrganizationRepository organizationRepository) {
+                             OrganizationRepository organizationRepository,
+                             InvoiceTemplateService invoiceTemplateService,
+                             SupplierBillService supplierBillService,
+                             AgingService agingService) {
         this.invoiceService = invoiceService;
         this.pdfDocumentService = pdfDocumentService;
         this.partnerRepository = partnerRepository;
         this.organizationRepository = organizationRepository;
+        this.invoiceTemplateService = invoiceTemplateService;
+        this.supplierBillService = supplierBillService;
+        this.agingService = agingService;
+    }
+
+    @GetMapping("/aging")
+    @PreAuthorize("hasAuthority('INVOICES_READ')")
+    @Operation(summary = "Aging report", description = "Outstanding customer or supplier invoices by days past due")
+    public ResponseEntity<AgingReport> aging(@RequestParam(defaultValue = "CUSTOMER") Invoice.InvoiceType type) {
+        return ResponseEntity.ok(agingService.report(type));
+    }
+
+    @PostMapping("/from-purchase-order/{purchaseOrderId}")
+    @PreAuthorize("hasAuthority('INVOICES_CREATE')")
+    @Operation(summary = "Bill a purchase order", description = "Books the supplier's bill for a purchase order and marks the order invoiced")
+    public ResponseEntity<InvoiceResponse> billPurchaseOrder(@PathVariable UUID purchaseOrderId,
+                                                             @Valid @RequestBody(required = false) BillFromPurchaseOrderRequest request) {
+        Invoice bill = supplierBillService.billPurchaseOrder(purchaseOrderId, request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(InvoiceResponse.fromEntity(bill));
+    }
+
+    @PatchMapping("/{id}/payment-schedule")
+    @PreAuthorize("hasAuthority('INVOICES_WRITE')")
+    @Operation(summary = "Schedule a supplier bill payment", description = "Sets or clears the day a supplier bill is planned to be paid")
+    public ResponseEntity<InvoiceResponse> schedulePayment(@PathVariable UUID id, @RequestBody PaymentScheduleRequest request) {
+        return ResponseEntity.ok(InvoiceResponse.fromEntity(supplierBillService.schedulePayment(id, request.getScheduledPaymentDate())));
     }
 
     @PostMapping
@@ -136,7 +174,8 @@ public class InvoiceController {
             partner = partnerRepository.findByOrganizationIdAndId(invoice.getOrganizationId(), invoice.getPartnerId()).orElse(null);
         }
         Organization org = organizationRepository.findById(invoice.getOrganizationId()).orElse(null);
-        byte[] pdf = pdfDocumentService.generateInvoicePdf(invoice, partner, org);
+        byte[] pdf = pdfDocumentService.generateInvoicePdf(invoice, partner, org,
+                invoiceTemplateService.brandingFor(invoice, partner));
 
         String filename = "facture-" + (invoice.getInvoiceNumber() != null ? invoice.getInvoiceNumber() : invoice.getId().toString().substring(0, 8)) + ".pdf";
         return ResponseEntity.ok()

@@ -48,4 +48,12 @@ public interface PaymentRepository extends JpaRepository<Payment, UUID> {
 
     @Query("SELECT p FROM Payment p WHERE p.deletedAt IS NOT NULL AND p.deletedAt < :cutoff")
     List<Payment> findPurgeable(@Param("cutoff") Instant cutoff);
+
+    /** Settled-to-date per invoice across the organization, for the aging report. */
+    @Query("""
+            SELECT p.invoiceId, SUM(p.amount) FROM Payment p
+            WHERE p.organizationId = :orgId AND p.invoiceId IS NOT NULL AND p.deletedAt IS NULL
+            GROUP BY p.invoiceId
+            """)
+    List<Object[]> sumPaidByInvoice(@Param("orgId") UUID orgId);
 }

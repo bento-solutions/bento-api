@@ -72,4 +72,29 @@ public interface InvoiceRepository extends JpaRepository<Invoice, UUID>, JpaSpec
 
     @Query("SELECT i FROM Invoice i WHERE i.organizationId = :orgId AND i.recurringInvoiceId = :recurringId AND i.deletedAt IS NULL ORDER BY i.invoiceDate DESC")
     List<Invoice> findByOrganizationIdAndRecurringInvoiceId(@Param("orgId") UUID orgId, @Param("recurringId") UUID recurringId);
+
+    @Query("""
+            SELECT i FROM Invoice i
+            WHERE i.organizationId = :orgId AND i.purchaseOrderId = :poId
+              AND i.type = com.bento.crm.invoice.model.Invoice.InvoiceType.VENDOR AND i.deletedAt IS NULL
+            """)
+    List<Invoice> findBillsForPurchaseOrder(@Param("orgId") UUID orgId, @Param("poId") UUID poId);
+
+    /** Unpaid invoices of one type: what the aging report and the bill alerts look at. */
+    @Query("""
+            SELECT i FROM Invoice i
+            WHERE i.organizationId = :orgId AND i.type = :type AND i.deletedAt IS NULL
+              AND i.status <> com.bento.crm.invoice.model.Invoice.Status.DRAFT
+            """)
+    List<Invoice> findIssuedByType(@Param("orgId") UUID orgId, @Param("type") Invoice.InvoiceType type);
+
+    @Query("""
+            SELECT DISTINCT i.organizationId FROM Invoice i
+            WHERE i.type = com.bento.crm.invoice.model.Invoice.InvoiceType.VENDOR AND i.deletedAt IS NULL
+              AND i.status IN (com.bento.crm.invoice.model.Invoice.Status.SENT,
+                               com.bento.crm.invoice.model.Invoice.Status.PARTIALLY_PAID,
+                               com.bento.crm.invoice.model.Invoice.Status.OVERDUE)
+              AND i.dueDate IS NOT NULL AND i.dueDate <= :horizon
+            """)
+    List<UUID> findOrganizationsWithBillsDueBy(@Param("horizon") LocalDate horizon);
 }
