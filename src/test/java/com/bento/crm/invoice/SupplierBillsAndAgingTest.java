@@ -56,7 +56,7 @@ class SupplierBillsAndAgingTest extends IntegrationTestBase {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"dealId": "%s", "vendorPartnerId": "%s", "status": "CONFIRMED",
-                                 "lines": [{"description": "Écrans", "qty": 4, "unitPrice": 1000, "vatRate": 0.2}]}
+                                 "lines": [{"product": "Écrans", "qty": 4, "cost": 1000}]}
                                 """.formatted(deal, vendorId)))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();

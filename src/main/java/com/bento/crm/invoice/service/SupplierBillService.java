@@ -107,8 +107,9 @@ public class SupplierBillService {
                 .ifPresent(p -> bill.setCustomerName(p.getName()));
         List<Map<String, Object>> lines = new ArrayList<>();
         if (po.getLines() != null) {
-            po.getLines().forEach(l -> lines.add(new HashMap<>(l)));
+            po.getLines().forEach(l -> lines.add(invoiceLine(l)));
         }
+        lines.removeIf(l -> l.get("unitPrice") == null);
         bill.setLines(lines);
         if (lines.isEmpty()) {
             bill.setSubtotal(po.getSubtotal());
@@ -205,6 +206,34 @@ public class SupplierBillService {
     /** Organizations that may need an alert today: they have unpaid bills due by the horizon. */
     public List<UUID> organizationsToAlert(LocalDate horizon) {
         return invoiceRepository.findOrganizationsWithBillsDueBy(horizon);
+    }
+
+    /**
+     * A purchase order line in invoice shape. The app saves order lines as
+     * {@code product / qty / cost}; invoices use {@code description / qty / unitPrice / vatRate}.
+     */
+    static Map<String, Object> invoiceLine(Map<String, Object> l) {
+        Map<String, Object> line = new HashMap<>(l);
+        Object description = firstOf(l, "description", "product", "item");
+        if (description != null) {
+            line.put("description", description);
+        }
+        Object unitPrice = firstOf(l, "unitPrice", "unit_price", "cost");
+        if (unitPrice != null) {
+            line.put("unitPrice", unitPrice);
+        }
+        line.putIfAbsent("qty", 1);
+        return line;
+    }
+
+    private static Object firstOf(Map<String, Object> map, String... keys) {
+        for (String k : keys) {
+            Object v = map.get(k);
+            if (v != null && !(v instanceof String str && str.isBlank())) {
+                return v;
+            }
+        }
+        return null;
     }
 
     private static BigDecimal total(List<Invoice> invoices) {
