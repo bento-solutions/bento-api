@@ -27,6 +27,15 @@ public class PurchaseOrderService {
 
     private final PurchaseOrderRepository purchaseOrderRepository;
     private final BusinessNumberService businessNumberService;
+    private final org.springframework.context.ApplicationEventPublisher eventPublisher;
+
+    /** A delivered order's goods go into stock (StockService decides whether and where). */
+    private PurchaseOrder delivered(PurchaseOrder po) {
+        if (po.getStatus() == PurchaseOrder.Status.DELIVERED) {
+            eventPublisher.publishEvent(new com.bento.crm.stock.event.StockEvents.PurchaseOrderDelivered(po.getOrganizationId(), po.getId()));
+        }
+        return po;
+    }
 
     static final BigDecimal DEFAULT_VAT_RATE = new BigDecimal("0.20");
 
@@ -35,7 +44,7 @@ public class PurchaseOrderService {
         PurchaseOrder po = new PurchaseOrder();
         po.setOrganizationId(TenantContext.getCurrentOrganizationId());
         applyRequest(po, request);
-        return purchaseOrderRepository.save(po);
+        return delivered(purchaseOrderRepository.save(po));
     }
 
     public PurchaseOrder getPurchaseOrder(UUID id) {
@@ -53,7 +62,7 @@ public class PurchaseOrderService {
     public PurchaseOrder updatePurchaseOrder(UUID id, CreatePurchaseOrderRequest request) {
         PurchaseOrder po = getPurchaseOrder(id);
         applyRequest(po, request);
-        return purchaseOrderRepository.save(po);
+        return delivered(purchaseOrderRepository.save(po));
     }
 
     private void applyRequest(PurchaseOrder po, CreatePurchaseOrderRequest request) {

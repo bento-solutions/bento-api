@@ -28,6 +28,10 @@ public class CreateOrganizationRequest {
     @Size(max = 64, message = "Timezone must be at most 64 characters")
     private String timezone;
 
+    /** When stock leaves the warehouse; null takes the industry's default. */
+    @JsonProperty("stock_issue_trigger")
+    private com.bento.crm.stock.model.StockSettings.IssueTrigger stockIssueTrigger;
+
     @JsonProperty("admin_email")
     @NotBlank(message = "Admin email is required")
     @Email(message = "Admin email must be a valid email address")

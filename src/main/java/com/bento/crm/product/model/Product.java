@@ -44,4 +44,13 @@ public class Product extends BaseTenantEntity {
     @Column(nullable = false)
     @Builder.Default
     private Boolean isActive = true;
+
+    /** Whether stock movements are recorded for this product (goods, not services). */
+    @Column(nullable = false)
+    @Builder.Default
+    private Boolean trackStock = false;
+
+    /** At or below this quantity in a warehouse, managers get a low-stock alert. */
+    @Column(precision = 15, scale = 3)
+    private BigDecimal reorderLevel;
 }

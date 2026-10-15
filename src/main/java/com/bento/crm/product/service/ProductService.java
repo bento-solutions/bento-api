@@ -75,6 +75,10 @@ public class ProductService {
         if (request.getIsActive() != null) {
             p.setIsActive(request.getIsActive());
         }
+        if (request.getTrackStock() != null) {
+            p.setTrackStock(request.getTrackStock());
+        }
+        p.setReorderLevel(request.getReorderLevel());
     }
 
     @Transactional

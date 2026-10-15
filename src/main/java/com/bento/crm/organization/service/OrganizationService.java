@@ -36,6 +36,7 @@ public class OrganizationService {
     private final FileStorageService fileStorageService;
     private final BrandRepository brandRepository;
     private final BusinessTypeRepository businessTypeRepository;
+    private final com.bento.crm.stock.service.StockService stockService;
 
     @Transactional
     public Organization createOrganization(CreateOrganizationRequest request) {
@@ -73,6 +74,7 @@ public class OrganizationService {
 
         userRepository.save(adminUser);
         seedDefaultBrandsAndBusinessTypes(organization.getId());
+        stockService.initialize(organization.getId(), request.getStockIssueTrigger(), request.getIndustry());
         TenantContext.clear();
 
         log.info("Organization created: {} with admin user: {}", organization.getId(), adminEmail);

@@ -31,4 +31,9 @@ public class CreateProductRequest {
     private BigDecimal taxRate;
 
     private Boolean isActive;
+
+    private Boolean trackStock;
+
+    @jakarta.validation.constraints.PositiveOrZero
+    private BigDecimal reorderLevel;
 }

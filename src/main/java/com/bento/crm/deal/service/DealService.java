@@ -28,6 +28,9 @@ public class DealService {
         deal.setOrganizationId(TenantContext.getCurrentOrganizationId());
         applyRequest(deal, request);
         Deal saved = dealRepository.save(deal);
+        if (saved.getStage() != null && saved.getStage() != Deal.DealStage.OPEN && saved.getStage() != Deal.DealStage.CLOSED_LOST) {
+            eventPublisher.publishEvent(new com.bento.crm.stock.event.StockEvents.DealWon(saved.getOrganizationId(), saved.getId()));
+        }
         eventPublisher.publishEvent(com.bento.crm.automation.event.EntityChangedEvent.builder()
                 .organizationId(saved.getOrganizationId())
                 .trigger(com.bento.crm.automation.model.AutomationRule.Trigger.DEAL_CREATED)
@@ -61,6 +64,9 @@ public class DealService {
         Deal deal = getDeal(id);
         applyRequest(deal, request);
         Deal saved = dealRepository.save(deal);
+        if (saved.getStage() != null && saved.getStage() != Deal.DealStage.OPEN && saved.getStage() != Deal.DealStage.CLOSED_LOST) {
+            eventPublisher.publishEvent(new com.bento.crm.stock.event.StockEvents.DealWon(saved.getOrganizationId(), saved.getId()));
+        }
         eventPublisher.publishEvent(com.bento.crm.automation.event.EntityChangedEvent.builder()
                 .organizationId(saved.getOrganizationId())
                 .trigger(com.bento.crm.automation.model.AutomationRule.Trigger.DEAL_UPDATED)

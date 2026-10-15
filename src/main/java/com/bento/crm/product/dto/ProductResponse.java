@@ -26,6 +26,8 @@ public class ProductResponse {
     private BigDecimal costPrice;
     private BigDecimal taxRate;
     private Boolean isActive;
+    private Boolean trackStock;
+    private BigDecimal reorderLevel;
     private Long version;
     private Instant createdAt;
     private Instant updatedAt;
@@ -44,6 +46,8 @@ public class ProductResponse {
                 .costPrice(p.getCostPrice())
                 .taxRate(p.getTaxRate())
                 .isActive(p.getIsActive())
+                .trackStock(p.getTrackStock())
+                .reorderLevel(p.getReorderLevel())
                 .version(p.getVersion())
                 .createdAt(p.getCreatedAt())
                 .updatedAt(p.getUpdatedAt())

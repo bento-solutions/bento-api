@@ -29,6 +29,7 @@ public class InvoiceService {
     private final InvoiceRepository invoiceRepository;
     private final BusinessNumberService businessNumberService;
     private final InvoiceMailer invoiceMailer;
+    private final org.springframework.context.ApplicationEventPublisher eventPublisher;
 
     /** Moroccan standard VAT, applied when the client sends lines but no tax breakdown. */
     static final BigDecimal DEFAULT_VAT_RATE = new BigDecimal("0.20");
@@ -44,7 +45,7 @@ public class InvoiceService {
         Invoice invoice = new Invoice();
         invoice.setOrganizationId(organizationId);
         applyRequest(invoice, request);
-        return invoiceRepository.save(invoice);
+        return issued(invoiceRepository.save(invoice));
     }
 
     public Invoice getInvoice(UUID id) {
@@ -81,7 +82,16 @@ public class InvoiceService {
     public Invoice updateInvoice(UUID id, CreateInvoiceRequest request) {
         Invoice invoice = getInvoice(id);
         applyRequest(invoice, request);
-        return invoiceRepository.save(invoice);
+        return issued(invoiceRepository.save(invoice));
+    }
+
+    /** A customer invoice that has gone out may take its goods out of stock (StockService decides). */
+    private Invoice issued(Invoice invoice) {
+        if (invoice.getType() == Invoice.InvoiceType.CUSTOMER && invoice.getStatus() != null
+                && invoice.getStatus() != Invoice.Status.DRAFT) {
+            eventPublisher.publishEvent(new com.bento.crm.stock.event.StockEvents.InvoiceIssued(invoice.getOrganizationId(), invoice.getId()));
+        }
+        return invoice;
     }
 
     private void applyRequest(Invoice invoice, CreateInvoiceRequest request) {
