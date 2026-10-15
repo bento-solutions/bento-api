@@ -74,6 +74,9 @@ public class TenantFilterInterceptor extends OncePerRequestFilter {
             // Shared drive files: the link token resolves the file.
             "/public/files/",
             "/api/v1/public/files/",
+            // Inbound email webhook: the secret in the path authenticates, the recipient address resolves the tenant.
+            "/public/inbound/",
+            "/api/v1/public/inbound/",
             "/actuator",
             "/api/v1/actuator",
             "/swagger",

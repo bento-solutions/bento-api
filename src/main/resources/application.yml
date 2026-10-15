@@ -217,6 +217,29 @@ app:
   public-api-url: ${PUBLIC_API_URL:https://api.crmbento.com}
   # The deployed frontend, for links people open (shared files).
   frontend-url: ${FRONTEND_URL:${PAYMENTS_PUBLIC_URL:http://localhost:3000}}
+  ai:
+    # Claude reads supplier invoices and bank statements and powers the assistant. Empty key:
+    # the AI features stay off and every received invoice waits for a person.
+    anthropic:
+      api-key: ${ANTHROPIC_API_KEY:}
+      base-url: ${ANTHROPIC_BASE_URL:https://api.anthropic.com}
+    document-model: ${AI_DOCUMENT_MODEL:claude-opus-5-5}
+    assistant-model: ${AI_ASSISTANT_MODEL:claude-opus-5-5}
+    auto-book-confidence: ${AI_AUTO_BOOK_CONFIDENCE:0.85}
+  inbound:
+    # Inbox addresses are <token>@<domain>, e.g. factures-x7k2m9pq@in.crmbento.com.
+    domain: ${INBOUND_DOMAIN:in.crmbento.com}
+    # POST /api/v1/public/inbound/email/<secret> receives emails from the mail provider. Empty: off.
+    webhook-secret: ${INBOUND_WEBHOOK_SECRET:}
+    processing-enabled: ${INBOUND_PROCESSING_ENABLED:true}
+    imap:
+      # Or read a catch-all mailbox over IMAP instead of a webhook.
+      enabled: ${INBOUND_IMAP_ENABLED:false}
+      host: ${INBOUND_IMAP_HOST:}
+      port: ${INBOUND_IMAP_PORT:993}
+      username: ${INBOUND_IMAP_USERNAME:}
+      password: ${INBOUND_IMAP_PASSWORD:}
+      folder: ${INBOUND_IMAP_FOLDER:INBOX}
   storage:
     # local: the server's disk (FILE_STORAGE_PATH). s3: an S3-compatible bucket (AWS, OVH,
     # Scaleway, MinIO). Files already stored stay readable after switching.

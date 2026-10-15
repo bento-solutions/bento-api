@@ -75,6 +75,9 @@ public class SecurityConfig {
                                 // Shared drive files (the expiring link token is the credential)
                                 AntPathRequestMatcher.antMatcher("/public/files/**"),
                                 AntPathRequestMatcher.antMatcher("/api/v1/public/files/**"),
+                                // Inbound email webhook (a shared secret in the path is the credential)
+                                AntPathRequestMatcher.antMatcher("/public/inbound/**"),
+                                AntPathRequestMatcher.antMatcher("/api/v1/public/inbound/**"),
                                 // Public file viewing (e.g. logos)
                                 AntPathRequestMatcher.antMatcher("/files/public/**"),
                                 AntPathRequestMatcher.antMatcher("/api/v1/files/public/**"),

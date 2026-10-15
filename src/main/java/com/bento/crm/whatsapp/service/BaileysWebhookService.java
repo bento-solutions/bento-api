@@ -36,6 +36,7 @@ public class BaileysWebhookService {
     private final WaIngestService ingestService;
     private final WaSessionService sessionService;
     private final WaOutreachGuard outreachGuard;
+    private final com.bento.crm.inbound.service.WhatsAppDocumentCollector documentCollector;
 
     public record Result(List<Long> processed, List<Map<String, Object>> failed) {
     }
@@ -66,7 +67,7 @@ public class BaileysWebhookService {
             return;
         }
         switch (type) {
-            case "message.upsert" -> ingest(account.get(), toInbound(data));
+            case "message.upsert" -> ingest(account.get(), toInbound(data), data);
             case "message.status" -> {
                 StatusUpdate status = toStatus(data);
                 ingestService.applyStatus(account.get().getOrganizationId(), status);
@@ -80,14 +81,17 @@ public class BaileysWebhookService {
         }
     }
 
-    private void ingest(WaAccount account, InboundMessage message) {
+    private void ingest(WaAccount account, InboundMessage message, JsonNode raw) {
         try {
             leadResolver.resolve(account, message);
         } catch (DataIntegrityViolationException e) {
             // Another delivery created the lead for this number a moment earlier; ingest finds it.
             log.debug("[baileys-hook] lead for {} already created concurrently", message.wamid());
         }
-        ingestService.ingest(account.getOrganizationId(), message);
+        if (ingestService.ingest(account.getOrganizationId(), message) == WaIngestService.Outcome.STORED
+                && raw != null) {
+            documentCollector.fromBaileys(account, raw);
+        }
     }
 
     private Optional<WaAccount> account(String sessionId) {

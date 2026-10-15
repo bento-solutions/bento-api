@@ -33,6 +33,7 @@ public class WhatsAppWebhookService {
 
     private final WaAccountRepository accountRepository;
     private final WaIngestService ingestService;
+    private final com.bento.crm.inbound.service.WhatsAppDocumentCollector documentCollector;
 
     /**
      * Processes one webhook body. Meta batches several entries and several changes per delivery,
@@ -54,7 +55,12 @@ public class WhatsAppWebhookService {
                 }
 
                 UUID orgId = account.get().getOrganizationId();
-                value.path("messages").forEach(m -> safely(() -> ingestService.ingest(orgId, toInbound(m))));
+                value.path("messages").forEach(m -> safely(() -> {
+                    if (ingestService.ingest(orgId, toInbound(m)) == WaIngestService.Outcome.STORED) {
+                        // A PDF or photo from a known contact is also filed in their drive folder.
+                        documentCollector.fromMeta(account.get(), m);
+                    }
+                }));
                 value.path("statuses").forEach(s -> safely(() -> ingestService.applyStatus(orgId, toStatus(s))));
             }
         }
