@@ -32,6 +32,12 @@
 
     <dependencyManagement>
         <dependencies>
+            <!-- POI 5.4 needs commons-compress 1.27; Testcontainers alone would pull 1.24. -->
+            <dependency>
+                <groupId>org.apache.commons</groupId>
+                <artifactId>commons-compress</artifactId>
+                <version>1.27.1</version>
+            </dependency>
             <dependency>
                 <groupId>org.springframework.ai</groupId>
                 <artifactId>spring-ai-bom</artifactId>
@@ -227,6 +233,12 @@
             <groupId>software.amazon.awssdk</groupId>
             <artifactId>url-connection-client</artifactId>
             <version>2.29.52</version>
+        </dependency>
+        <!-- Excel bank statements (.xlsx and .xls). -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.4.1</version>
         </dependency>
         <!-- Claude: reads supplier invoices and bank statements, and answers in the assistant. -->
         <dependency>

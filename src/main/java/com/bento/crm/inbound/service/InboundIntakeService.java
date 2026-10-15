@@ -215,7 +215,7 @@ public class InboundIntakeService {
     // Helpers
 
     /** Mail clients often label PDFs application/octet-stream: trust the bytes over the label. */
-    static String sniff(byte[] b, String declared, String fileName) {
+    public static String sniff(byte[] b, String declared, String fileName) {
         if (b == null || b.length < 4) {
             return declared;
         }
@@ -234,7 +234,7 @@ public class InboundIntakeService {
     }
 
     /** Invoices are PDFs or pictures; statements may also be spreadsheets or CSV exports. */
-    static boolean acceptable(InboundDocument.Kind kind, String type, byte[] content) {
+    public static boolean acceptable(InboundDocument.Kind kind, String type, byte[] content) {
         if (type == null || content == null || content.length == 0) {
             return false;
         }

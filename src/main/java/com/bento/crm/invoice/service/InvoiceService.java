@@ -184,6 +184,12 @@ public class InvoiceService {
         return computedFromLines ? totalTax.setScale(2, RoundingMode.HALF_UP) : (subtotal != null ? subtotal.multiply(DEFAULT_VAT_RATE).setScale(2, RoundingMode.HALF_UP) : null);
     }
 
+    /** What a set of lines comes to with VAT (TTC), or {@code null} when there are no usable lines. */
+    public static BigDecimal grossOfLines(List<Map<String, Object>> lines) {
+        BigDecimal net = sumOfLines(lines);
+        return net == null ? null : net.add(calculateTaxFromLines(lines, net));
+    }
+
     /** Σ qty × unitPrice over the JSON lines, or {@code null} when there are no usable lines. */
     static BigDecimal sumOfLines(List<Map<String, Object>> lines) {
         if (lines == null || lines.isEmpty()) {
