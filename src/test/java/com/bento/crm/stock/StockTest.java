@@ -9,6 +9,7 @@ import org.springframework.http.MediaType;
 import java.time.LocalDate;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -134,6 +135,83 @@ class StockTest extends IntegrationTestBase {
                  "lines": [{"item": "Scooter 125", "qty": 3, "unitPrice": 15000}]}
                 """.formatted(customer, LocalDate.now().plusDays(10)), 201);
         assertThat(level(token, product, main)).isEqualTo(1.0);
+    }
+
+    @Test
+    void cancelledSalesGiveTheirStockBackAndManualMovesCannotGoNegative() throws Exception {
+        String token = signUpAndLogin();
+        String product = id(send(token, post("/products"), """
+                {"sku": "LAMP-1", "name": "Lampe berbère", "unitPrice": 250, "trackStock": true}""", 201));
+        String plain = id(send(token, post("/products"), """
+                {"sku": "TAP-1", "name": "Tapis", "unitPrice": 900, "trackStock": true}""", 201));
+        send(token, post("/stock/receipts"), "{\"productId\": \"" + product + "\", \"quantity\": 10}", 201);
+        String main = id(send(token, get("/stock/warehouses"), null, 200).get(0));
+        String customer = id(send(token, post("/partners"), "{\"type\": \"CUSTOMER\", \"name\": \"Riad Zitoun\"}", 201));
+
+        // A line that only carries a description still finds its product.
+        String invoiceBody = """
+                {"type": "CUSTOMER", "partnerId": "%s", "status": "SENT", "dueDate": "%s",
+                 "lines": [{"description": "lampe berbère", "qty": 4, "unitPrice": 250}]}
+                """.formatted(customer, LocalDate.now().plusDays(30));
+        String invoice = id(send(token, post("/invoices"), invoiceBody, 201));
+        assertThat(level(token, product, main)).isEqualTo(6.0);
+
+        // Saving it again after it was sent moves nothing.
+        send(token, patch("/invoices/" + invoice), invoiceBody, 200);
+        assertThat(level(token, product, main)).isEqualTo(6.0);
+        // Changing the quantity afterwards moves only the difference, both ways.
+        send(token, patch("/invoices/" + invoice), invoiceBody.replace("\"qty\": 4", "\"qty\": 7"), 200);
+        assertThat(level(token, product, main)).isEqualTo(3.0);
+        send(token, patch("/invoices/" + invoice), invoiceBody.replace("\"qty\": 4", "\"qty\": 5"), 200);
+        assertThat(level(token, product, main)).isEqualTo(5.0);
+
+        // Deleting the sent invoice puts the goods back; restoring it takes them out again.
+        send(token, delete("/invoices/" + invoice), null, 204);
+        assertThat(level(token, product, main)).isEqualTo(10.0);
+        send(token, post("/invoices/" + invoice + "/restore"), null, 200);
+        assertThat(level(token, product, main)).isEqualTo(5.0);
+
+        // A manual issue or transfer above what is on hand is refused.
+        send(token, post("/stock/issues"), "{\"productId\": \"" + product + "\", \"quantity\": 6}", 400);
+        String depot = id(send(token, post("/stock/warehouses"), "{\"name\": \"Dépôt\"}", 201));
+        send(token, post("/stock/transfers"), """
+                {"productId": "%s", "fromWarehouseId": "%s", "toWarehouseId": "%s", "quantity": 6}
+                """.formatted(product, main, depot), 400);
+        assertThat(level(token, product, main)).isEqualTo(5.0);
+
+        // A tracked product with no moves shows at zero, is not low without a reorder level,
+        // and stock with no cost price is valued at its sale price.
+        assertThat(level(token, plain, main)).isEqualTo(0.0);
+        mockMvc.perform(get("/stock/levels?lowOnly=true").header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.length()").value(0));
+        mockMvc.perform(get("/stock/valuation").header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.totalUnits").value(5.0))
+                .andExpect(jsonPath("$.totalValue").value(1250.0));
+    }
+
+    @Test
+    void aLostDealGivesItsStockBack() throws Exception {
+        String token = signUpAndLogin();
+        send(token, put("/stock/settings"), "{\"issueTrigger\": \"DEAL_WON\"}", 200);
+        String product = id(send(token, post("/products"), """
+                {"sku": "VEL-1", "name": "Vélo", "unitPrice": 3000, "costPrice": 2000, "trackStock": true}""", 201));
+        send(token, post("/stock/receipts"), "{\"productId\": \"" + product + "\", \"quantity\": 5}", 201);
+        String main = id(send(token, get("/stock/warehouses"), null, 200).get(0));
+        String customer = id(send(token, post("/partners"), "{\"type\": \"CUSTOMER\", \"name\": \"Club Atlas\"}", 201));
+        String dealBody = """
+                {"partnerId": "%s", "title": "Vélos", "stage": "%s",
+                 "orderLines": [{"product": "Vélo", "qty": 2, "unitPrice": 3000}]}
+                """;
+        String deal = id(send(token, post("/deals"), dealBody.formatted(customer, "CLOSED_WON"), 201));
+        assertThat(level(token, product, main)).isEqualTo(3.0);
+        // Moving between won stages does not take the goods out again.
+        send(token, patch("/deals/" + deal), dealBody.formatted(customer, "INVOICED"), 200);
+        assertThat(level(token, product, main)).isEqualTo(3.0);
+        // Editing the order lines of a won deal moves only the difference.
+        send(token, patch("/deals/" + deal), dealBody.formatted(customer, "INVOICED").replace("\"qty\": 2", "\"qty\": 4"), 200);
+        assertThat(level(token, product, main)).isEqualTo(1.0);
+        send(token, patch("/deals/" + deal), dealBody.formatted(customer, "CLOSED_LOST"), 200);
+        assertThat(level(token, product, main)).isEqualTo(5.0);
     }
 
     @Test

@@ -134,4 +134,55 @@ class PayByLinkTest extends IntegrationTestBase {
 
         mockMvc.perform(get("/public/pay/not-a-real-token-at-all")).andExpect(status().isNotFound());
     }
+    private void staffPays(String token, String customer, String invoiceId, int amount) throws Exception {
+        mockMvc.perform(post("/payments")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"partnerId": "%s", "invoiceId": "%s", "amount": %d, "method": "BANK_TRANSFER",
+                                 "paymentDate": "%s"}
+                                """.formatted(customer, invoiceId, amount, LocalDate.now())))
+                .andExpect(status().isCreated());
+    }
+
+    private String[] openCheckout(String token, String invoiceId) throws Exception {
+        String url = objectMapper.readTree(mockMvc.perform(post("/invoices/" + invoiceId + "/payment-link")
+                .header("Authorization", "Bearer " + token)).andReturn().getResponse().getContentAsString()).get("url").asText();
+        String payToken = url.substring(url.lastIndexOf('/') + 1);
+        String checkoutUrl = objectMapper.readTree(mockMvc.perform(post("/public/pay/" + payToken + "/checkout"))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString()).get("url").asText();
+        return new String[]{payToken, checkoutUrl.substring(checkoutUrl.indexOf("mock=") + 5)};
+    }
+
+    @Test
+    void aPaymentRecordedByStaffDuringCheckoutIsNotChargedTwice() throws Exception {
+        String token = signUpAndLogin();
+        provider(token, "MOCK", 200);
+        String customer = partner(token, "CUSTOMER", "Dar Salam");
+
+        // Paid in full by transfer while the customer is on the card page: the link closes, nothing more is recorded.
+        String full = invoice(token, "CUSTOMER", customer, "SENT", 600);
+        String[] a = openCheckout(token, full);
+        staffPays(token, customer, full, 1200);
+        mockMvc.perform(get("/public/pay/" + a[0])).andExpect(jsonPath("$.status").value("CANCELLED"));
+        mockMvc.perform(post("/public/pay/" + a[0] + "/mock-complete")
+                .contentType(MediaType.APPLICATION_JSON).content("{\"sessionId\": \"" + a[1] + "\"}"));
+        mockMvc.perform(get("/invoices/" + full).header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.status").value("PAID"))
+                .andExpect(jsonPath("$.amountPaid").value(1200.0));
+        mockMvc.perform(get("/payments/invoice/" + full).header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.length()").value(1));
+
+        // Part paid in between: the test gateway records only what is still owed.
+        String part = invoice(token, "CUSTOMER", customer, "SENT", 600);
+        String[] b = openCheckout(token, part);
+        staffPays(token, customer, part, 500);
+        mockMvc.perform(post("/public/pay/" + b[0] + "/mock-complete")
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"sessionId\": \"" + b[1] + "\"}"))
+                .andExpect(status().isNoContent());
+        mockMvc.perform(get("/invoices/" + part).header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.status").value("PAID"))
+                .andExpect(jsonPath("$.amountPaid").value(1200.0));
+    }
 }

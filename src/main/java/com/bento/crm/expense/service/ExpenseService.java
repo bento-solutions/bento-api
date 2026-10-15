@@ -31,7 +31,7 @@ public class ExpenseService {
     @Transactional(readOnly = true)
     public Page<Expense> list(LocalDate from, LocalDate to, String category, Pageable pageable) {
         return repository.search(TenantContext.getCurrentOrganizationId(), from != null ? from : EARLIEST,
-                to != null ? to : LATEST, blankToNull(category), pageable);
+                to != null ? to : LATEST, category == null || category.isBlank() ? null : category.trim().toUpperCase(java.util.Locale.ROOT), pageable);
     }
 
     @Transactional

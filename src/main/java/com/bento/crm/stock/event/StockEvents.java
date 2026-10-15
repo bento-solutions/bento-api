@@ -19,4 +19,12 @@ public final class StockEvents {
 
     /** A deal was confirmed (left OPEN for any stage other than lost). */
     public record DealWon(UUID organizationId, UUID dealId) {}
+    /** A sent customer invoice was deleted: its goods go back into stock. */
+    public record InvoiceCancelled(UUID organizationId, UUID invoiceId) {}
+    /** A won deal was lost or deleted: its goods go back into stock. */
+    public record DealLost(UUID organizationId, UUID dealId) {}
+    /** A sent customer invoice was edited: stock follows its new quantities. */
+    public record InvoiceChanged(UUID organizationId, UUID invoiceId) {}
+    /** A won deal's order lines were edited: stock follows its new quantities. */
+    public record DealChanged(UUID organizationId, UUID dealId) {}
 }

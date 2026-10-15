@@ -25,6 +25,7 @@ public class PaymentService {
 
     private final PaymentRepository paymentRepository;
     private final InvoiceRepository invoiceRepository;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     @Transactional
     public Payment createPayment(CreatePaymentRequest request) {
@@ -134,6 +135,10 @@ public class PaymentService {
                 if (invoice.getPaidAt() == null) {
                     invoice.setPaidAt(Instant.now());
                 }
+                // A settled invoice has nothing left to pay online: close its open payment link.
+                jdbc.update("UPDATE payment_link SET status = 'CANCELLED', updated_at = now()"
+                        + " WHERE organization_id = ? AND invoice_id = ? AND status = 'OPEN' AND deleted_at IS NULL",
+                        orgId, invoiceId);
             }
             invoiceRepository.save(invoice);
         });

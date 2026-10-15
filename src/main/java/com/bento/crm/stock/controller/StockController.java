@@ -22,7 +22,11 @@ import java.util.UUID;
 @Tag(name = "Stock", description = "Warehouses, stock levels and movements")
 public class StockController {
 
-    private static final String CAN_MOVE = "hasAuthority('PURCHASE_ORDERS_WRITE') or hasAuthority('DEALS_WRITE')";
+    /**
+     * Receiving, issuing, transferring and counting by hand is back-office work: admins and
+     * managers (who manage purchase orders). Salespeople move stock only through their deals.
+     */
+    private static final String CAN_MOVE = "hasAuthority('PURCHASE_ORDERS_WRITE')";
 
     private final StockService service;
 

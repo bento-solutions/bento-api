@@ -66,6 +66,7 @@ public class PaymentLinkService {
     private final NotificationService notificationService;
     private final com.bento.crm.common.pdf.PdfDocumentService pdfDocumentService;
     private final JdbcTemplate jdbc;
+    private final com.bento.crm.notification.service.TeamNotifier teamNotifier;
     private final String publicUrl;
 
     public PaymentLinkService(PaymentSettingsRepository settingsRepository, PaymentLinkRepository linkRepository,
@@ -74,11 +75,13 @@ public class PaymentLinkService {
                               PartnerRepository partnerRepository, OrganizationRepository organizationRepository,
                               InvoiceTemplateService invoiceTemplateService, NotificationService notificationService,
                               com.bento.crm.common.pdf.PdfDocumentService pdfDocumentService, JdbcTemplate jdbc,
+                              com.bento.crm.notification.service.TeamNotifier teamNotifier,
                               @Value("${app.payments.public-url:http://localhost:3000}") String publicUrl) {
         this.settingsRepository = settingsRepository;
         this.linkRepository = linkRepository;
         this.paymentRepository = paymentRepository;
         this.paymentService = paymentService;
+        this.teamNotifier = teamNotifier;
         this.gateways = gateways;
         this.invoiceRepository = invoiceRepository;
         this.partnerRepository = partnerRepository;
@@ -316,11 +319,24 @@ public class PaymentLinkService {
         UUID previous = TenantContext.currentOrganizationIdOrNull();
         TenantContext.setCurrentOrganizationId(link.getOrganizationId());
         try {
+            // The amount was fixed when checkout opened; staff may have recorded a payment since.
+            BigDecimal owed = invoice.getStatus() == Invoice.Status.PAID ? BigDecimal.ZERO
+                    : nz(invoice.getTotal()).subtract(paidOn(invoice)).max(BigDecimal.ZERO);
+            // A real card charge is money received: it is recorded whatever is owed, and any excess
+            // must be refunded. The test gateway charges nothing, so it records only what is owed.
+            boolean realCharge = link.getProvider() != PaymentSettings.Provider.MOCK;
+            BigDecimal recorded = realCharge ? amount : amount.min(owed);
+            if (recorded.signum() <= 0) {
+                link.setStatus(PaymentLink.Status.CANCELLED);
+                linkRepository.saveAndFlush(link);
+                log.info("Test payment for already-settled invoice {} ignored", invoice.getId());
+                return;
+            }
             CreatePaymentRequest request = new CreatePaymentRequest();
             request.setPartnerId(invoice.getPartnerId());
             request.setInvoiceId(invoice.getId());
             request.setPaymentDate(LocalDate.now(CASABLANCA));
-            request.setAmount(amount);
+            request.setAmount(recorded);
             request.setMethod(Payment.Method.CARD);
             request.setReference(reference);
             request.setNotes("Paid online (" + link.getProvider().name().toLowerCase() + ")");
@@ -330,7 +346,14 @@ public class PaymentLinkService {
             link.setPaidAt(Instant.now());
             link.setPaymentId(payment.getId());
             linkRepository.saveAndFlush(link);
-            notifyPaid(invoice, amount);
+            notifyPaid(invoice, recorded);
+            if (realCharge && amount.compareTo(owed) > 0) {
+                teamNotifier.notifyManagers(invoice.getOrganizationId(), "Refund needed: invoice " + numberOf(invoice),
+                        amount.setScale(2, RoundingMode.HALF_UP).toPlainString() + " MAD was paid online but only "
+                                + owed.setScale(2, RoundingMode.HALF_UP).toPlainString()
+                                + " MAD was still owed. Refund the difference to the customer.",
+                        "INVOICE", invoice.getId());
+            }
         } finally {
             if (previous != null) {
                 TenantContext.setCurrentOrganizationId(previous);

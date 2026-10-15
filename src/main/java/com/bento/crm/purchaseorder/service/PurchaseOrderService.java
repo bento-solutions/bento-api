@@ -29,9 +29,12 @@ public class PurchaseOrderService {
     private final BusinessNumberService businessNumberService;
     private final org.springframework.context.ApplicationEventPublisher eventPublisher;
 
-    /** A delivered order's goods go into stock (StockService decides whether and where). */
-    private PurchaseOrder delivered(PurchaseOrder po) {
-        if (po.getStatus() == PurchaseOrder.Status.DELIVERED) {
+    /**
+     * An order that has just been delivered puts its goods into stock (StockService decides
+     * whether and where). Only the change into Delivered counts, not later saves.
+     */
+    private PurchaseOrder delivered(PurchaseOrder po, PurchaseOrder.Status before) {
+        if (po.getStatus() == PurchaseOrder.Status.DELIVERED && before != PurchaseOrder.Status.DELIVERED) {
             eventPublisher.publishEvent(new com.bento.crm.stock.event.StockEvents.PurchaseOrderDelivered(po.getOrganizationId(), po.getId()));
         }
         return po;
@@ -44,7 +47,7 @@ public class PurchaseOrderService {
         PurchaseOrder po = new PurchaseOrder();
         po.setOrganizationId(TenantContext.getCurrentOrganizationId());
         applyRequest(po, request);
-        return delivered(purchaseOrderRepository.save(po));
+        return delivered(purchaseOrderRepository.save(po), null);
     }
 
     public PurchaseOrder getPurchaseOrder(UUID id) {
@@ -61,8 +64,9 @@ public class PurchaseOrderService {
     @Transactional
     public PurchaseOrder updatePurchaseOrder(UUID id, CreatePurchaseOrderRequest request) {
         PurchaseOrder po = getPurchaseOrder(id);
+        PurchaseOrder.Status before = po.getStatus();
         applyRequest(po, request);
-        return delivered(purchaseOrderRepository.save(po));
+        return delivered(purchaseOrderRepository.save(po), before);
     }
 
     private void applyRequest(PurchaseOrder po, CreatePurchaseOrderRequest request) {

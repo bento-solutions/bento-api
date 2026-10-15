@@ -28,9 +28,7 @@ public class DealService {
         deal.setOrganizationId(TenantContext.getCurrentOrganizationId());
         applyRequest(deal, request);
         Deal saved = dealRepository.save(deal);
-        if (saved.getStage() != null && saved.getStage() != Deal.DealStage.OPEN && saved.getStage() != Deal.DealStage.CLOSED_LOST) {
-            eventPublisher.publishEvent(new com.bento.crm.stock.event.StockEvents.DealWon(saved.getOrganizationId(), saved.getId()));
-        }
+        stockOnStageChange(saved, null);
         eventPublisher.publishEvent(com.bento.crm.automation.event.EntityChangedEvent.builder()
                 .organizationId(saved.getOrganizationId())
                 .trigger(com.bento.crm.automation.model.AutomationRule.Trigger.DEAL_CREATED)
@@ -62,11 +60,10 @@ public class DealService {
     @Transactional
     public Deal updateDeal(UUID id, CreateDealRequest request) {
         Deal deal = getDeal(id);
+        Deal.DealStage before = deal.getStage();
         applyRequest(deal, request);
         Deal saved = dealRepository.save(deal);
-        if (saved.getStage() != null && saved.getStage() != Deal.DealStage.OPEN && saved.getStage() != Deal.DealStage.CLOSED_LOST) {
-            eventPublisher.publishEvent(new com.bento.crm.stock.event.StockEvents.DealWon(saved.getOrganizationId(), saved.getId()));
-        }
+        stockOnStageChange(saved, before);
         eventPublisher.publishEvent(com.bento.crm.automation.event.EntityChangedEvent.builder()
                 .organizationId(saved.getOrganizationId())
                 .trigger(com.bento.crm.automation.model.AutomationRule.Trigger.DEAL_UPDATED)
@@ -75,6 +72,26 @@ public class DealService {
                 .payload(dealToPayload(saved))
                 .build());
         return saved;
+    }
+
+    /**
+     * Stock follows the deal only when its stage changes: into a won stage takes the goods out,
+     * from a won stage to lost gives them back. Re-saving a deal in the same stage moves nothing.
+     */
+    private void stockOnStageChange(Deal saved, Deal.DealStage before) {
+        boolean wonNow = isWon(saved.getStage());
+        boolean wonBefore = isWon(before);
+        if (wonNow && !wonBefore) {
+            eventPublisher.publishEvent(new com.bento.crm.stock.event.StockEvents.DealWon(saved.getOrganizationId(), saved.getId()));
+        } else if (wonBefore && saved.getStage() == Deal.DealStage.CLOSED_LOST) {
+            eventPublisher.publishEvent(new com.bento.crm.stock.event.StockEvents.DealLost(saved.getOrganizationId(), saved.getId()));
+        } else if (wonBefore && wonNow) {
+            eventPublisher.publishEvent(new com.bento.crm.stock.event.StockEvents.DealChanged(saved.getOrganizationId(), saved.getId()));
+        }
+    }
+
+    static boolean isWon(Deal.DealStage stage) {
+        return stage != null && stage != Deal.DealStage.OPEN && stage != Deal.DealStage.CLOSED_LOST;
     }
 
     private java.util.Map<String, Object> dealToPayload(Deal d) {
@@ -137,6 +154,9 @@ public class DealService {
         Deal deal = getDeal(id);
         deal.setDeletedAt(java.time.Instant.now());
         dealRepository.save(deal);
+        if (isWon(deal.getStage())) {
+            eventPublisher.publishEvent(new com.bento.crm.stock.event.StockEvents.DealLost(deal.getOrganizationId(), deal.getId()));
+        }
     }
 
     @Transactional
@@ -144,8 +164,13 @@ public class DealService {
         UUID orgId = TenantContext.getCurrentOrganizationId();
         Deal deal = dealRepository.findByOrganizationIdAndIdIncludingDeleted(orgId, id)
                 .orElseThrow(() -> new ResourceNotFoundException("Deal not found"));
+        boolean wasDeleted = deal.getDeletedAt() != null;
         deal.setDeletedAt(null);
-        return dealRepository.save(deal);
+        Deal saved = dealRepository.save(deal);
+        if (wasDeleted) {
+            stockOnStageChange(saved, null);
+        }
+        return saved;
     }
 
     public Page<Deal> listDeleted(Pageable pageable) {

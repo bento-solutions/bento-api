@@ -81,14 +81,26 @@ public class InvoiceService {
     @Transactional
     public Invoice updateInvoice(UUID id, CreateInvoiceRequest request) {
         Invoice invoice = getInvoice(id);
+        boolean wasOut = isOut(invoice);
         applyRequest(invoice, request);
-        return issued(invoiceRepository.save(invoice));
+        Invoice saved = invoiceRepository.save(invoice);
+        // Only the change from draft to sent issues stock; later edits only adjust it to the new
+        // quantities, and moving a sent invoice back to draft puts its goods back.
+        if (!wasOut) return issued(saved);
+        eventPublisher.publishEvent(isOut(saved)
+                ? new com.bento.crm.stock.event.StockEvents.InvoiceChanged(saved.getOrganizationId(), saved.getId())
+                : new com.bento.crm.stock.event.StockEvents.InvoiceCancelled(saved.getOrganizationId(), saved.getId()));
+        return saved;
     }
 
-    /** A customer invoice that has gone out may take its goods out of stock (StockService decides). */
+    private static boolean isOut(Invoice invoice) {
+        return invoice.getType() == Invoice.InvoiceType.CUSTOMER && invoice.getStatus() != null
+                && invoice.getStatus() != Invoice.Status.DRAFT;
+    }
+
+    /** A customer invoice that has just gone out may take its goods out of stock (StockService decides). */
     private Invoice issued(Invoice invoice) {
-        if (invoice.getType() == Invoice.InvoiceType.CUSTOMER && invoice.getStatus() != null
-                && invoice.getStatus() != Invoice.Status.DRAFT) {
+        if (isOut(invoice)) {
             eventPublisher.publishEvent(new com.bento.crm.stock.event.StockEvents.InvoiceIssued(invoice.getOrganizationId(), invoice.getId()));
         }
         return invoice;
@@ -240,6 +252,9 @@ public class InvoiceService {
         }
         invoice.setDeletedAt(Instant.now());
         invoiceRepository.save(invoice);
+        if (isOut(invoice)) {
+            eventPublisher.publishEvent(new com.bento.crm.stock.event.StockEvents.InvoiceCancelled(invoice.getOrganizationId(), invoice.getId()));
+        }
     }
 
     @Transactional
@@ -247,8 +262,11 @@ public class InvoiceService {
         UUID orgId = TenantContext.getCurrentOrganizationId();
         Invoice invoice = invoiceRepository.findByOrganizationIdAndIdIncludingDeleted(orgId, id)
                 .orElseThrow(() -> new ResourceNotFoundException("Invoice not found"));
+        boolean wasDeleted = invoice.getDeletedAt() != null;
         invoice.setDeletedAt(null);
-        return invoiceRepository.save(invoice);
+        Invoice saved = invoiceRepository.save(invoice);
+        // A restored sent invoice takes its goods out again (they went back when it was deleted).
+        return wasDeleted ? issued(saved) : saved;
     }
 
     public Page<Invoice> listDeleted(Pageable pageable) {

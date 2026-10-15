@@ -169,32 +169,53 @@ public class StockService {
 
     // ── Levels, movements, valuation ───────────────────────────────────────────
 
-    /** On-hand quantity of every stock-tracked product, per warehouse (zero rows included). */
+    /**
+     * On-hand quantity per product and warehouse, for every warehouse that has held the product.
+     * A tracked product that was never stocked shows once, at zero, in the default warehouse.
+     */
     @Transactional
     public List<LevelRow> levels(UUID warehouseId, boolean lowOnly) {
         UUID orgId = TenantContext.getCurrentOrganizationId();
         defaultWarehouse(orgId);
         List<LevelRow> rows = jdbc.query("""
-                SELECT p.id AS product_id, p.sku, p.name, p.category, w.id AS warehouse_id, w.name AS warehouse_name,
-                       COALESCE(l.quantity, 0) AS quantity, p.reorder_level, p.cost_price
-                FROM product p
-                CROSS JOIN warehouse w
-                LEFT JOIN stock_level l ON l.organization_id = p.organization_id AND l.product_id = p.id AND l.warehouse_id = w.id
-                WHERE p.organization_id = ? AND w.organization_id = p.organization_id
-                  AND p.deleted_at IS NULL AND p.track_stock = TRUE
-                  AND w.deleted_at IS NULL AND (w.is_active = TRUE OR COALESCE(l.quantity, 0) <> 0)
-                  AND (CAST(? AS uuid) IS NULL OR w.id = CAST(? AS uuid))
-                ORDER BY lower(p.name), w.is_default DESC, lower(w.name)
+                SELECT * FROM (
+                    SELECT p.id AS product_id, p.sku, p.name, p.category, w.id AS warehouse_id, w.name AS warehouse_name,
+                           l.quantity, p.reorder_level, p.cost_price, p.unit_price, w.is_default
+                    FROM stock_level l
+                    JOIN product p ON p.id = l.product_id AND p.organization_id = l.organization_id
+                    JOIN warehouse w ON w.id = l.warehouse_id AND w.organization_id = l.organization_id
+                    WHERE l.organization_id = ? AND p.deleted_at IS NULL AND p.track_stock = TRUE
+                      AND w.deleted_at IS NULL AND (w.is_active = TRUE OR l.quantity <> 0)
+                    UNION ALL
+                    SELECT p.id, p.sku, p.name, p.category, w.id, w.name, 0, p.reorder_level, p.cost_price, p.unit_price, w.is_default
+                    FROM product p
+                    JOIN warehouse w ON w.organization_id = p.organization_id AND w.is_default = TRUE AND w.deleted_at IS NULL
+                    WHERE p.organization_id = ? AND p.deleted_at IS NULL AND p.track_stock = TRUE
+                      AND NOT EXISTS (SELECT 1 FROM stock_level l WHERE l.organization_id = p.organization_id AND l.product_id = p.id)
+                ) r
+                WHERE (CAST(? AS uuid) IS NULL OR r.warehouse_id = CAST(? AS uuid))
+                ORDER BY lower(r.name), r.is_default DESC, lower(r.warehouse_name)
                 """, (rs, i) -> {
             BigDecimal qty = rs.getBigDecimal("quantity");
             BigDecimal reorder = rs.getBigDecimal("reorder_level");
             BigDecimal cost = rs.getBigDecimal("cost_price");
-            BigDecimal value = cost != null ? qty.max(BigDecimal.ZERO).multiply(cost).setScale(2, RoundingMode.HALF_UP) : BigDecimal.ZERO;
+            BigDecimal valuedAt = valuationPrice(cost, rs.getBigDecimal("unit_price"));
+            BigDecimal value = valuedAt != null ? qty.max(BigDecimal.ZERO).multiply(valuedAt).setScale(2, RoundingMode.HALF_UP) : BigDecimal.ZERO;
             return new LevelRow(rs.getObject("product_id", UUID.class), rs.getString("sku"), rs.getString("name"),
                     rs.getString("category"), rs.getObject("warehouse_id", UUID.class), rs.getString("warehouse_name"),
-                    qty, reorder, cost, value, reorder != null && qty.compareTo(reorder) <= 0);
-        }, orgId, warehouseId, warehouseId);
+                    qty, reorder, cost, value, isLow(qty, reorder));
+        }, orgId, orgId, warehouseId, warehouseId);
         return lowOnly ? rows.stream().filter(LevelRow::low).toList() : rows;
+    }
+
+    /** Stock is valued at purchase cost, or at the sale price when no cost is set (empty or zero). */
+    static BigDecimal valuationPrice(BigDecimal cost, BigDecimal salePrice) {
+        return cost != null && cost.signum() > 0 ? cost : salePrice;
+    }
+
+    /** Low only when a reorder level is set and the shelf is at or below it. */
+    static boolean isLow(BigDecimal qty, BigDecimal reorder) {
+        return reorder != null && reorder.signum() > 0 && qty.compareTo(reorder) <= 0;
     }
 
     @Transactional(readOnly = true)
@@ -256,6 +277,9 @@ public class StockService {
         UUID orgId = TenantContext.getCurrentOrganizationId();
         Product product = trackedProduct(orgId, r.productId());
         Warehouse w = r.warehouseId() != null ? activeWarehouse(orgId, r.warehouseId()) : defaultWarehouse(orgId);
+        if (signed.signum() < 0) {
+            requireOnHand(orgId, product, w, signed.negate());
+        }
         BigDecimal cost = r.unitCost() != null ? r.unitCost() : product.getCostPrice();
         StockMovement m = move(orgId, product, w.getId(), type, signed, cost, null, null, null, r.note());
         return toResponse(m, product.getName(), w.getName());
@@ -270,6 +294,7 @@ public class StockService {
         Product product = trackedProduct(orgId, r.productId());
         Warehouse from = warehouse(orgId, r.fromWarehouseId());
         Warehouse to = activeWarehouse(orgId, r.toWarehouseId());
+        requireOnHand(orgId, product, from, r.quantity());
         UUID transferId = UUID.randomUUID();
         String label = from.getName() + " → " + to.getName();
         StockMovement out = move(orgId, product, from.getId(), StockMovement.Type.TRANSFER_OUT, r.quantity().negate(),
@@ -329,7 +354,7 @@ public class StockService {
     @Transactional
     public void onInvoiceIssued(StockEvents.InvoiceIssued e) {
         if (settingsFor(e.organizationId()).getIssueTrigger() != StockSettings.IssueTrigger.INVOICE_SENT
-                || movementRepository.existsForReference(e.organizationId(), REF_INVOICE, e.invoiceId())) {
+                || stillOut(e.organizationId(), REF_INVOICE, e.invoiceId())) {
             return;
         }
         invoiceRepository.findByOrganizationIdAndId(e.organizationId(), e.invoiceId())
@@ -341,20 +366,127 @@ public class StockService {
     @Transactional
     public void onDealWon(StockEvents.DealWon e) {
         if (settingsFor(e.organizationId()).getIssueTrigger() != StockSettings.IssueTrigger.DEAL_WON
-                || movementRepository.existsForReference(e.organizationId(), REF_DEAL, e.dealId())) {
+                || stillOut(e.organizationId(), REF_DEAL, e.dealId())) {
             return;
         }
-        dealRepository.findByOrganizationIdAndId(e.organizationId(), e.dealId()).ifPresent(deal -> {
-            List<Map<String, Object>> lines = new ArrayList<>();
-            deal.getOrderLines().forEach(l -> {
-                Map<String, Object> m = new HashMap<>();
-                m.put("product", l.getProduct());
-                m.put("qty", l.getQty());
-                lines.add(m);
-            });
-            issueLines(e.organizationId(), lines, REF_DEAL, deal.getId(),
-                    deal.getOrderNumber() != null ? deal.getOrderNumber() : deal.getTitle());
+        dealRepository.findByOrganizationIdAndId(e.organizationId(), e.dealId()).ifPresent(deal ->
+                issueLines(e.organizationId(), dealLines(deal), REF_DEAL, deal.getId(), dealLabel(deal)));
+    }
+
+    private static List<Map<String, Object>> dealLines(com.bento.crm.deal.model.Deal deal) {
+        List<Map<String, Object>> lines = new ArrayList<>();
+        deal.getOrderLines().forEach(l -> {
+            Map<String, Object> m = new HashMap<>();
+            m.put("product", l.getProduct());
+            m.put("qty", l.getQty());
+            lines.add(m);
         });
+        return lines;
+    }
+
+    private static String dealLabel(com.bento.crm.deal.model.Deal deal) {
+        return deal.getOrderNumber() != null ? deal.getOrderNumber() : deal.getTitle();
+    }
+
+    @EventListener
+    @Transactional
+    public void onInvoiceChanged(StockEvents.InvoiceChanged e) {
+        if (!movementRepository.existsForReference(e.organizationId(), REF_INVOICE, e.invoiceId())) return;
+        invoiceRepository.findByOrganizationIdAndId(e.organizationId(), e.invoiceId()).ifPresent(inv ->
+                follow(e.organizationId(), nonNull(inv.getLines()), REF_INVOICE, inv.getId(), inv.getInvoiceNumber()));
+    }
+
+    @EventListener
+    @Transactional
+    public void onDealChanged(StockEvents.DealChanged e) {
+        if (!movementRepository.existsForReference(e.organizationId(), REF_DEAL, e.dealId())) return;
+        dealRepository.findByOrganizationIdAndId(e.organizationId(), e.dealId()).ifPresent(deal ->
+                follow(e.organizationId(), dealLines(deal), REF_DEAL, deal.getId(), dealLabel(deal)));
+    }
+
+    /**
+     * Brings what a document has taken out in line with its current lines: more goods are issued
+     * from the default warehouse, fewer are put back where they came from.
+     */
+    private void follow(UUID orgId, List<Map<String, Object>> lines, String refType, UUID refId, String label) {
+        Map<UUID, BigDecimal> wanted = new LinkedHashMap<>();
+        Map<UUID, Product> products = new HashMap<>();
+        for (Map<String, Object> line : lines) {
+            BigDecimal qty = decimal(line.getOrDefault("qty", line.get("quantity")));
+            if (qty == null || qty.signum() <= 0) continue;
+            resolve(orgId, line).ifPresent(p -> {
+                products.put(p.getId(), p);
+                wanted.merge(p.getId(), qty, BigDecimal::add);
+            });
+        }
+        record Out(UUID productId, UUID warehouseId, BigDecimal quantity) {}
+        List<Out> outs = jdbc.query("""
+                SELECT product_id, warehouse_id, -sum(quantity) AS quantity
+                FROM stock_movement WHERE organization_id = ? AND reference_type = ? AND reference_id = ?
+                GROUP BY product_id, warehouse_id HAVING sum(quantity) < 0
+                """, (rs, i) -> new Out(rs.getObject("product_id", UUID.class), rs.getObject("warehouse_id", UUID.class),
+                rs.getBigDecimal("quantity")), orgId, refType, refId);
+        Set<UUID> all = new LinkedHashSet<>(wanted.keySet());
+        outs.forEach(o -> all.add(o.productId()));
+        UUID warehouseId = defaultWarehouse(orgId).getId();
+        for (UUID productId : all) {
+            BigDecimal out = outs.stream().filter(o -> o.productId().equals(productId))
+                    .map(Out::quantity).reduce(BigDecimal.ZERO, BigDecimal::add);
+            BigDecimal delta = wanted.getOrDefault(productId, BigDecimal.ZERO).subtract(out);
+            Product p = products.computeIfAbsent(productId, id ->
+                    productRepository.findByOrganizationIdAndIdIncludingDeleted(orgId, id).orElse(null));
+            if (p == null || delta.signum() == 0) continue;
+            if (delta.signum() > 0) {
+                move(orgId, p, warehouseId, StockMovement.Type.ISSUE, delta.negate(), p.getCostPrice(), refType, refId, label, "Modification");
+                continue;
+            }
+            BigDecimal back = delta.negate();
+            for (Out o : outs) {
+                if (back.signum() <= 0) break;
+                if (!o.productId().equals(productId)) continue;
+                BigDecimal q = back.min(o.quantity());
+                move(orgId, p, o.warehouseId(), StockMovement.Type.RECEIPT, q, p.getCostPrice(), refType, refId, label, "Modification");
+                back = back.subtract(q);
+            }
+        }
+    }
+
+    @EventListener
+    @Transactional
+    public void onInvoiceCancelled(StockEvents.InvoiceCancelled e) {
+        giveBack(e.organizationId(), REF_INVOICE, e.invoiceId());
+    }
+
+    @EventListener
+    @Transactional
+    public void onDealLost(StockEvents.DealLost e) {
+        giveBack(e.organizationId(), REF_DEAL, e.dealId());
+    }
+
+    /** Whether a document's goods are currently out of stock (issued and not given back). */
+    private boolean stillOut(UUID orgId, String refType, UUID refId) {
+        Integer open = jdbc.queryForObject("""
+                SELECT count(*) FROM (
+                    SELECT 1 FROM stock_movement WHERE organization_id = ? AND reference_type = ? AND reference_id = ?
+                    GROUP BY product_id, warehouse_id HAVING sum(quantity) <> 0) t
+                """, Integer.class, orgId, refType, refId);
+        return open != null && open > 0;
+    }
+
+    /** Puts back whatever a document took out, under the same reference so the history reads as one. */
+    private void giveBack(UUID orgId, String refType, UUID refId) {
+        record Net(UUID productId, UUID warehouseId, BigDecimal quantity, String label) {}
+        List<Net> nets = jdbc.query("""
+                SELECT product_id, warehouse_id, sum(quantity) AS quantity, max(reference_label) AS label
+                FROM stock_movement WHERE organization_id = ? AND reference_type = ? AND reference_id = ?
+                GROUP BY product_id, warehouse_id HAVING sum(quantity) < 0
+                """, (rs, i) -> new Net(rs.getObject("product_id", UUID.class), rs.getObject("warehouse_id", UUID.class),
+                rs.getBigDecimal("quantity"), rs.getString("label")), orgId, refType, refId);
+        for (Net n : nets) {
+            productRepository.findByOrganizationIdAndIdIncludingDeleted(orgId, n.productId()).ifPresent(p ->
+                    move(orgId, p, n.warehouseId(), StockMovement.Type.RECEIPT, n.quantity().negate(), p.getCostPrice(),
+                            refType, refId, n.label(), "Annulation"));
+        }
     }
 
     private void issueLines(UUID orgId, List<Map<String, Object>> lines, String refType, UUID refId, String label) {
@@ -383,7 +515,7 @@ public class StockService {
                 }
             }
         }
-        for (String key : List.of("sku", "product", "item", "name")) {
+        for (String key : List.of("sku", "product", "item", "name", "description")) {
             Object v = line.get(key);
             if (v == null || v.toString().isBlank()) continue;
             List<UUID> ids = jdbc.queryForList("""
@@ -429,7 +561,7 @@ public class StockService {
 
         BigDecimal reorder = product.getReorderLevel();
         BigDecimal before = after.subtract(signed);
-        if (signed.signum() < 0 && reorder != null && before.compareTo(reorder) > 0 && after.compareTo(reorder) <= 0) {
+        if (signed.signum() < 0 && isLow(after, reorder) && !isLow(before, reorder)) {
             notifyLowStock(orgId, product, warehouseId, after);
         }
         return m;
@@ -456,6 +588,22 @@ public class StockService {
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────────
+
+    /**
+     * People cannot take out more than the books show (a count corrects the books first). Sales
+     * still go through when the shelf is short: they are never blocked by stock.
+     */
+    private void requireOnHand(UUID orgId, Product product, Warehouse w, BigDecimal wanted) {
+        // Lock the level row so two people cannot both take the last units.
+        List<BigDecimal> q = jdbc.queryForList(
+                "SELECT quantity FROM stock_level WHERE organization_id = ? AND product_id = ? AND warehouse_id = ? FOR UPDATE",
+                BigDecimal.class, orgId, product.getId(), w.getId());
+        BigDecimal onHand = q.isEmpty() ? BigDecimal.ZERO : q.get(0);
+        if (wanted.compareTo(onHand) > 0) {
+            throw new IllegalArgumentException("Only " + onHand.stripTrailingZeros().toPlainString() + " of "
+                    + product.getName() + " in " + w.getName());
+        }
+    }
 
     private BigDecimal level(UUID orgId, UUID productId, UUID warehouseId) {
         List<BigDecimal> q = jdbc.queryForList(
