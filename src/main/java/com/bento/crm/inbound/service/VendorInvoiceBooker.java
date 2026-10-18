@@ -104,7 +104,9 @@ public class VendorInvoiceBooker {
             reasons.add("Automatic booking is off for this inbox");
         }
         if (!trustedSender(orgId, doc, mailbox, partnerId)) {
-            reasons.add("Unknown sender " + (doc.getSender() == null ? "" : doc.getSender()).trim());
+            String sender = (doc.getSender() == null ? "" : doc.getSender()).trim();
+            // A known supplier's address is easy to forge: say why it was not trusted.
+            reasons.add(partnerId != null ? "Sender not verified " + sender : "Unknown sender " + sender);
         }
         boolean duplicate = partnerId != null && e.invoiceNumber() != null && invoiceExists(orgId, partnerId, e.invoiceNumber());
         if (duplicate) {
@@ -132,6 +134,12 @@ public class VendorInvoiceBooker {
         BigDecimal tax = f.tax() != null ? f.tax()
                 : f.subtotal() != null ? f.total().subtract(f.subtotal()) : null;
         BigDecimal subtotal = f.subtotal() != null ? f.subtotal() : tax != null ? f.total().subtract(tax) : null;
+        if (f.subtotal() != null && f.tax() != null
+                && f.subtotal().add(f.tax()).subtract(f.total()).abs().compareTo(new BigDecimal("0.01")) > 0) {
+            // Never book a total other than the one the person typed: they correct HT, TVA or TTC.
+            throw new IllegalArgumentException("HT + TVA (" + f.subtotal().add(f.tax()).setScale(2, RoundingMode.HALF_UP)
+                    + ") is not the TTC entered (" + f.total().setScale(2, RoundingMode.HALF_UP) + "): correct one of them");
+        }
         if (subtotal == null) {
             // Only a total: book it as the amount due with no VAT breakdown rather than invent one.
             subtotal = f.total();

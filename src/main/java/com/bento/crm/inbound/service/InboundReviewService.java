@@ -49,6 +49,12 @@ public class InboundReviewService {
             InboundDocument.Kind.BANK_STATEMENT, "PAYMENTS_READ",
             InboundDocument.Kind.OTHER, "FILES_READ");
 
+    /** Who may change (set aside, read again) which kind of document. */
+    static final Map<InboundDocument.Kind, String> WRITE_AUTHORITY = Map.of(
+            InboundDocument.Kind.VENDOR_INVOICE, "INVOICES_WRITE",
+            InboundDocument.Kind.BANK_STATEMENT, "PAYMENTS_WRITE",
+            InboundDocument.Kind.OTHER, "FILES_WRITE");
+
     private final InboundIntakeService intake;
     private final InboundMailboxRepository mailboxRepository;
     private final InboundDocumentRepository documentRepository;
@@ -205,26 +211,26 @@ public class InboundReviewService {
         doc.setPartnerId(invoice.getPartnerId());
         doc.setReviewReason(null);
         doc.setProcessedAt(Instant.now());
-        documentRepository.save(doc);
+        documentRepository.saveAndFlush(doc);
         return get(id);
     }
 
     @Transactional
     public InboundDtos.Document ignore(UUID id) {
-        InboundDocument doc = document(TenantContext.getCurrentOrganizationId(), id);
+        InboundDocument doc = writable(document(TenantContext.getCurrentOrganizationId(), id));
         if (doc.getStatus() == InboundDocument.Status.BOOKED) {
             throw new IllegalStateException("A booked invoice is removed from Finance, not from here");
         }
         doc.setStatus(InboundDocument.Status.IGNORED);
         doc.setProcessedAt(Instant.now());
-        documentRepository.save(doc);
+        documentRepository.saveAndFlush(doc);
         return get(id);
     }
 
     /** Reads the document again (after AI was set up, or a temporary failure). */
     @Transactional
     public InboundDtos.Document retry(UUID id) {
-        InboundDocument doc = document(TenantContext.getCurrentOrganizationId(), id);
+        InboundDocument doc = writable(document(TenantContext.getCurrentOrganizationId(), id));
         if (doc.getStatus() == InboundDocument.Status.BOOKED || doc.getStatus() == InboundDocument.Status.QUEUED) {
             throw new IllegalStateException("This document cannot be read again");
         }
@@ -232,11 +238,20 @@ public class InboundReviewService {
         doc.setAttempts(0);
         doc.setNextAttemptAt(null);
         doc.setError(null);
-        documentRepository.save(doc);
+        documentRepository.saveAndFlush(doc);
         return get(id);
     }
 
+    private static InboundDocument writable(InboundDocument d) {
+        if (!CurrentUser.hasAuthority(WRITE_AUTHORITY.get(d.getKind()))) {
+            throw new org.springframework.security.access.AccessDeniedException("Not allowed");
+        }
+        return d;
+    }
+
+    /** Locks the row first, so a decision by a person and the AI reader never interleave. */
     private InboundDocument document(UUID orgId, UUID id) {
+        jdbc.queryForList("SELECT id FROM inbound_document WHERE id = ? AND organization_id = ? FOR UPDATE", UUID.class, id, orgId);
         InboundDocument d = documentRepository.find(orgId, id)
                 .orElseThrow(() -> new ResourceNotFoundException("Document not found"));
         if (!CurrentUser.hasAuthority(READ_AUTHORITY.get(d.getKind()))) {

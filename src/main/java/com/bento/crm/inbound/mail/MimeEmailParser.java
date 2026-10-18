@@ -31,12 +31,12 @@ public final class MimeEmailParser {
 
     private MimeEmailParser() {}
 
-    public static RawEmail parse(byte[] mime) throws MessagingException, IOException {
+    public static RawEmail parse(byte[] mime, Set<String> trustedAuthservIds) throws MessagingException, IOException {
         MimeMessage message = new MimeMessage(Session.getInstance(new Properties()), new ByteArrayInputStream(mime));
-        return parse(message);
+        return parse(message, trustedAuthservIds);
     }
 
-    public static RawEmail parse(MimeMessage message) throws MessagingException, IOException {
+    public static RawEmail parse(MimeMessage message, Set<String> trustedAuthservIds) throws MessagingException, IOException {
         Set<String> recipients = new LinkedHashSet<>();
         for (String header : DELIVERY_HEADERS) {
             String[] values = message.getHeader(header);
@@ -65,28 +65,50 @@ public final class MimeEmailParser {
         collect(message, attachments, 0);
         Instant received = message.getSentDate() != null ? message.getSentDate().toInstant() : Instant.now();
         return new RawEmail(new ArrayList<>(recipients), from, message.getSubject(), message.getMessageID(), received,
-                attachments, verified(message.getHeader("Authentication-Results"), from));
+                attachments, verified(message.getHeader("Authentication-Results"), from, trustedAuthservIds));
     }
 
     /**
-     * Whether a receiving server vouched for the sender's domain. A From header alone is easy to
-     * forge, so without this an email never books an invoice on its own.
+     * Whether our own receiving server vouched for the sender's domain. A From header alone is easy
+     * to forge, so without this an email never books an invoice on its own.
+     *
+     * <p>Anyone can write Authentication-Results headers into the email they send, so only the
+     * topmost one counts (receiving servers add theirs on top), and only when its authserv-id is
+     * one of {@code trusted} (our mail provider's). With nothing configured no email is verified.
+     *
+     * @param results the Authentication-Results headers, topmost first
      */
-    public static boolean verified(String[] results, String from) {
-        if (results == null || from == null || !from.contains("@")) {
+    public static boolean verified(String[] results, String from, Set<String> trusted) {
+        if (results == null || results.length == 0 || from == null || !from.contains("@") || trusted == null
+                || trusted.isEmpty()) {
             return false;
         }
-        String domain = from.substring(from.lastIndexOf('@') + 1).toLowerCase(Locale.ROOT);
-        for (String r : results) {
-            String v = r.toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
-            if (v.matches(".*\\bdmarc=pass\\b.*header\\.from=" + java.util.regex.Pattern.quote(domain) + "\\b.*")) {
-                return true;
-            }
-            boolean spf = v.matches(".*\\bspf=pass\\b.*");
-            boolean dkim = v.matches(".*\\bdkim=pass\\b.*header\\.(d|i)=@?" + java.util.regex.Pattern.quote(domain) + "\\b.*");
-            if (spf && dkim) {
-                return true;
-            }
+        String domain = from.substring(from.lastIndexOf('@') + 1).toLowerCase(Locale.ROOT).trim();
+        String top = results[0].toLowerCase(Locale.ROOT).replaceAll("\\s+", " ").trim();
+        String[] clauses = top.split(";");
+        // "mx.example.net 1" -> the authserv-id is the first word; a version number may follow.
+        String authserv = clauses[0].trim().split(" ")[0];
+        if (trusted.stream().noneMatch(t -> t.trim().toLowerCase(Locale.ROOT).equals(authserv))) {
+            return false;
+        }
+        boolean spf = false, dkim = false;
+        for (int i = 1; i < clauses.length; i++) {
+            String c = clauses[i].trim();
+            if (c.startsWith("dmarc=pass") && property(c, "header.from", domain)) return true;
+            if (c.startsWith("spf=pass") && (property(c, "smtp.mailfrom", domain) || !c.contains("smtp.mailfrom="))) spf = true;
+            if (c.startsWith("dkim=pass") && (property(c, "header.d", domain) || property(c, "header.i", domain))) dkim = true;
+        }
+        return spf && dkim;
+    }
+
+    /** {@code name=value} in a clause, where value is exactly the domain (or an address at it). */
+    private static boolean property(String clause, String name, String domain) {
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile("(?:^|\\s)" + java.util.regex.Pattern.quote(name)
+                + "=([^\\s;()]+)").matcher(clause);
+        while (m.find()) {
+            String v = m.group(1);
+            String d = v.contains("@") ? v.substring(v.lastIndexOf('@') + 1) : v;
+            if (d.equals(domain)) return true;
         }
         return false;
     }

@@ -42,7 +42,7 @@ public class ClaudeClient {
         try {
             Message m = client().messages().create(params.build());
             if (m.stopReason().map(r -> r.equals(StopReason.REFUSAL)).orElse(false)) {
-                throw new AiException("The model declined this request", null);
+                throw new AiRefusedException();
             }
             return m;
         } catch (AnthropicException e) {
@@ -66,6 +66,13 @@ public class ClaudeClient {
             }
         }
         return c;
+    }
+
+    /** The model declined (after the server-side fallback): retrying the same input will not help. */
+    public static class AiRefusedException extends AiException {
+        public AiRefusedException() {
+            super("The model declined this request", null);
+        }
     }
 
     /** The AI could not answer: not configured, unreachable, rate limited or declined. */

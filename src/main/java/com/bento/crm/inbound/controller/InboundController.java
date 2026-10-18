@@ -24,6 +24,7 @@ import java.util.UUID;
 public class InboundController {
 
     private static final String CAN_SEE = "hasAnyAuthority('INVOICES_READ', 'PAYMENTS_READ')";
+    private static final String CAN_CHANGE = "hasAnyAuthority('INVOICES_WRITE', 'PAYMENTS_WRITE')";
 
     private final InboundReviewService review;
 
@@ -88,13 +89,13 @@ public class InboundController {
     }
 
     @PostMapping("/documents/{id}/ignore")
-    @PreAuthorize(CAN_SEE)
+    @PreAuthorize(CAN_CHANGE)
     public InboundDtos.Document ignore(@PathVariable UUID id) {
         return review.ignore(id);
     }
 
     @PostMapping("/documents/{id}/retry")
-    @PreAuthorize(CAN_SEE)
+    @PreAuthorize(CAN_CHANGE)
     public InboundDtos.Document retry(@PathVariable UUID id) {
         return review.retry(id);
     }

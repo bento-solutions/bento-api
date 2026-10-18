@@ -232,6 +232,9 @@ app:
     # POST /api/v1/public/inbound/email/<secret> receives emails from the mail provider. Empty: off.
     webhook-secret: ${INBOUND_WEBHOOK_SECRET:}
     processing-enabled: ${INBOUND_PROCESSING_ENABLED:true}
+    # authserv-id(s) of the server that receives the mail (the first word of the Authentication-Results
+    # header it adds, e.g. mx.sendgrid.net). Only that header is trusted to auto-book; empty: nothing is.
+    trusted-authserv-ids: ${INBOUND_TRUSTED_AUTHSERV_IDS:}
     imap:
       # Or read a catch-all mailbox over IMAP instead of a webhook.
       enabled: ${INBOUND_IMAP_ENABLED:false}

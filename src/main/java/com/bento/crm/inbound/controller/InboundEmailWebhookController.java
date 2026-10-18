@@ -45,6 +45,10 @@ public class InboundEmailWebhookController {
     @Value("${app.inbound.webhook-secret:}")
     private String secret;
 
+    /** authserv-ids of our mail provider: only their Authentication-Results header is believed. */
+    @Value("${app.inbound.trusted-authserv-ids:}")
+    private java.util.Set<String> trustedAuthservIds;
+
     @PostMapping("/email/{secret}")
     public ResponseEntity<Map<String, Object>> receive(@PathVariable("secret") String given, HttpServletRequest request) throws Exception {
         if (secret == null || secret.isBlank() || !MessageDigest.isEqual(secret.getBytes(StandardCharsets.UTF_8),
@@ -70,7 +74,7 @@ public class InboundEmailWebhookController {
             for (String name : List.of("email", "body-mime")) {
                 Part part = request.getPart(name);
                 if (part != null) {
-                    return MimeEmailParser.parse(part.getInputStream().readNBytes(MAX_BYTES));
+                    return MimeEmailParser.parse(part.getInputStream().readNBytes(MAX_BYTES), trusted());
                 }
             }
             return null;
@@ -79,7 +83,7 @@ public class InboundEmailWebhookController {
         if (type.startsWith("application/json")) {
             return postmark(objectMapper.readTree(body));
         }
-        return body.length == 0 ? null : MimeEmailParser.parse(body);
+        return body.length == 0 ? null : MimeEmailParser.parse(body, trusted());
     }
 
     /** Postmark inbound JSON. Its spam and SPF verdicts arrive as headers. */
@@ -108,6 +112,11 @@ public class InboundEmailWebhookController {
         }
         String from = j.path("FromFull").path("Email").asText(j.path("From").asText(null));
         return new RawEmail(to, from, j.path("Subject").asText(null), j.path("MessageID").asText(null), Instant.now(),
-                attachments, MimeEmailParser.verified(authResults.toArray(String[]::new), from));
+                attachments, MimeEmailParser.verified(authResults.toArray(String[]::new), from, trusted()));
+    }
+
+    private java.util.Set<String> trusted() {
+        return trustedAuthservIds == null ? java.util.Set.of()
+                : trustedAuthservIds.stream().filter(t -> t != null && !t.isBlank()).collect(java.util.stream.Collectors.toSet());
     }
 }

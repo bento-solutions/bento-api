@@ -48,7 +48,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @TestPropertySource(properties = {
         "app.inbound.webhook-secret=test-inbound-secret",
         "app.inbound.processing-enabled=false",
-        "app.inbound.domain=in.example.ma"
+        "app.inbound.domain=in.example.ma",
+        "app.inbound.trusted-authserv-ids=mx.example.ma"
 })
 class InboundTest extends IntegrationTestBase {
 
@@ -165,7 +166,7 @@ class InboundTest extends IntegrationTestBase {
         processor.runOnce();
         JsonNode review = documents(token, "NEEDS_REVIEW");
         assertThat(review.size()).isEqualTo(1);
-        assertThat(review.get(0).get("reviewReason").asText()).contains("Unknown sender");
+        assertThat(review.get(0).get("reviewReason").asText()).contains("Sender not verified");
         assertThat(review.get(0).get("extraction").get("invoiceNumber").asText()).isEqualTo("F-2026-002");
         String docId = review.get(0).get("id").asText();
 
@@ -173,7 +174,11 @@ class InboundTest extends IntegrationTestBase {
         String book = """
                 {"partnerId": "%s", "invoiceNumber": "F-2026-002", "invoiceDate": "2026-10-02",
                  "subtotal": 1000, "tax": 200, "total": 1200}""".formatted(vendor);
-        json(post("/inbound/documents/" + docId + "/book"), token, book, 200);
+        // HT + TVA must make the TTC typed: a different total is refused, never silently replaced.
+        json(post("/inbound/documents/" + docId + "/book"), token, book.replace("\"total\": 1200", "\"total\": 1300"), 400);
+        JsonNode booked2 = json(post("/inbound/documents/" + docId + "/book"), token, book, 200);
+        assertThat(booked2.get("status").asText()).isEqualTo("BOOKED");
+        assertThat(booked2.get("invoiceId").asText()).isNotBlank();
         json(post("/inbound/documents/" + docId + "/book"), token, book, 409);
         mockMvc.perform(get("/inbound/documents/counts").header("Authorization", "Bearer " + token))
                 .andExpect(jsonPath("$.BOOKED").value(2))
@@ -181,7 +186,7 @@ class InboundTest extends IntegrationTestBase {
 
         // An invoice already booked under that number is recognised as a duplicate.
         postEmail("test-inbound-secret", email("compta@atlas-fournitures.ma", address,
-                "mx; dmarc=pass header.from=atlas-fournitures.ma", "again.pdf", pdf("third")), 200);
+                "mx.example.ma; dmarc=pass header.from=atlas-fournitures.ma", "again.pdf", pdf("third")), 200);
         processor.runOnce();
         assertThat(documents(token, "DUPLICATE").size()).isEqualTo(1);
     }
@@ -279,11 +284,85 @@ class InboundTest extends IntegrationTestBase {
     }
 
     @Test
-    void onlyAnAuthenticatedSenderDomainCountsAsVerified() {
-        assertThat(MimeEmailParser.verified(new String[]{"mx; dmarc=pass header.from=atlas.ma"}, "a@atlas.ma")).isTrue();
-        assertThat(MimeEmailParser.verified(new String[]{"mx; dmarc=pass header.from=evil.ma"}, "a@atlas.ma")).isFalse();
-        assertThat(MimeEmailParser.verified(new String[]{"mx; spf=pass smtp.mailfrom=atlas.ma; dkim=pass header.d=atlas.ma"}, "a@atlas.ma")).isTrue();
-        assertThat(MimeEmailParser.verified(new String[]{"mx; spf=pass; dkim=fail header.d=atlas.ma"}, "a@atlas.ma")).isFalse();
-        assertThat(MimeEmailParser.verified(null, "a@atlas.ma")).isFalse();
+    void onlyOurReceivingServersVerdictOnTheSenderDomainCounts() {
+        java.util.Set<String> mx = java.util.Set.of("mx.example.ma");
+        assertThat(MimeEmailParser.verified(new String[]{"mx.example.ma; dmarc=pass header.from=atlas.ma"}, "a@atlas.ma", mx)).isTrue();
+        assertThat(MimeEmailParser.verified(new String[]{"mx.example.ma 1; dmarc=pass (p=none) header.from=atlas.ma"}, "a@atlas.ma", mx)).isTrue();
+        assertThat(MimeEmailParser.verified(new String[]{"mx.example.ma; dmarc=pass header.from=evil.ma"}, "a@atlas.ma", mx)).isFalse();
+        // A look-alike domain is not the sender's domain.
+        assertThat(MimeEmailParser.verified(new String[]{"mx.example.ma; dmarc=pass header.from=atlas.ma.evil.test"}, "a@atlas.ma", mx)).isFalse();
+        assertThat(MimeEmailParser.verified(new String[]{"mx.example.ma; spf=pass smtp.mailfrom=atlas.ma; dkim=pass header.d=atlas.ma"}, "a@atlas.ma", mx)).isTrue();
+        assertThat(MimeEmailParser.verified(new String[]{"mx.example.ma; spf=pass; dkim=fail header.d=atlas.ma"}, "a@atlas.ma", mx)).isFalse();
+        // dmarc=fail in one clause and a pass elsewhere in the same header do not mix.
+        assertThat(MimeEmailParser.verified(new String[]{"mx.example.ma; dmarc=fail header.from=atlas.ma; dkim=pass header.d=other.test"}, "a@atlas.ma", mx)).isFalse();
+        // Headers the sender wrote: another authserv-id, or below our server's own header.
+        assertThat(MimeEmailParser.verified(new String[]{"attacker.test; dmarc=pass header.from=atlas.ma"}, "a@atlas.ma", mx)).isFalse();
+        assertThat(MimeEmailParser.verified(new String[]{"mx.example.ma; dmarc=fail header.from=atlas.ma",
+                "mx.example.ma; dmarc=pass header.from=atlas.ma"}, "a@atlas.ma", mx)).isFalse();
+        assertThat(MimeEmailParser.verified(new String[]{"mx.example.ma; dmarc=pass header.from=atlas.ma"}, "a@atlas.ma", java.util.Set.of())).isFalse();
+        assertThat(MimeEmailParser.verified(null, "a@atlas.ma", mx)).isFalse();
+    }
+
+    @Test
+    void aForgedAuthenticationHeaderDoesNotBookAndAPersonsDecisionWinsOverTheReader() throws Exception {
+        String token = signUpAndLogin();
+        JsonNode settings = json(get("/inbound/settings"), token, null, 200);
+        JsonNode invoices = settings.get("mailboxes").get(0).get("kind").asText().equals("VENDOR_INVOICES")
+                ? settings.get("mailboxes").get(0) : settings.get("mailboxes").get(1);
+        String address = invoices.get("address").asText();
+        json(post("/partners"), token, "{\"type\": \"VENDOR\", \"name\": \"Vendor Test\", \"email\": \"mh@vendor.test\"}", 201);
+        when(extractor.available()).thenReturn(true);
+        when(extractor.extract(any(), any(), any())).thenReturn(invoice("Vendor Test", "F-056178", 0.99));
+
+        // Our server says DMARC failed; the sender added a passing header of their own below it.
+        MimeMessage m = new MimeMessage(Session.getInstance(new Properties()),
+                new java.io.ByteArrayInputStream(email("mh@vendor.test", address,
+                        "attacker.test; dmarc=pass header.from=vendor.test", "forged.pdf", pdf("forged"))));
+        m.addHeader("X-Placeholder", "1");
+        String[] own = {"mx.example.ma; spf=fail smtp.mailfrom=vendor.test; dmarc=fail header.from=vendor.test"};
+        m.removeHeader("Authentication-Results");
+        m.addHeader("Authentication-Results", own[0]);
+        m.addHeader("Authentication-Results", "attacker.test; dmarc=pass header.from=vendor.test");
+        m.saveChanges();
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        m.writeTo(out);
+        postEmail("test-inbound-secret", out.toByteArray(), 200);
+        processor.runOnce();
+        JsonNode review = documents(token, "NEEDS_REVIEW");
+        assertThat(review.size()).isEqualTo(1);
+        assertThat(review.get(0).get("reviewReason").asText()).contains("Sender not verified");
+        assertThat(documents(token, "BOOKED").size()).isZero();
+
+        // Booked by a person while it is still waiting for the reader: the reader leaves it alone.
+        String id = objectMapper.readTree(mockMvc.perform(multipart("/inbound/documents")
+                        .file(new MockMultipartFile("file", "manual.pdf", "application/pdf", pdf("manual")))
+                        .param("kind", "VENDOR_INVOICE")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).get("id").asText();
+        JsonNode booked = json(post("/inbound/documents/" + id + "/book"), token,
+                "{\"supplierName\": \"Autre Fournisseur\", \"invoiceNumber\": \"M-1\", \"subtotal\": 100, \"tax\": 20, \"total\": 120}", 200);
+        assertThat(booked.get("status").asText()).isEqualTo("BOOKED");
+        processor.runOnce();
+        JsonNode after = json(get("/inbound/documents/" + id), token, null, 200);
+        assertThat(after.get("status").asText()).isEqualTo("BOOKED");
+        assertThat(after.get("invoiceId").asText()).isEqualTo(booked.get("invoiceId").asText());
+
+        // A refusal goes straight to a person instead of being retried.
+        when(extractor.extract(any(), any(), any())).thenThrow(new com.bento.crm.ai.ClaudeClient.AiRefusedException());
+        String refused = objectMapper.readTree(mockMvc.perform(multipart("/inbound/documents")
+                        .file(new MockMultipartFile("file", "declined.pdf", "application/pdf", pdf("declined")))
+                        .param("kind", "VENDOR_INVOICE")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isCreated()).andReturn().getResponse().getContentAsString()).get("id").asText();
+        processor.runOnce();
+        JsonNode declined = json(get("/inbound/documents/" + refused), token, null, 200);
+        assertThat(declined.get("status").asText()).isEqualTo("NEEDS_REVIEW");
+        assertThat(declined.get("reviewReason").asText()).contains("declined");
+
+        // Ignoring changes the document: it needs write rights, and the answer shows the new status.
+        String viewer = tokenForNewUser(orgIdOf(token), UserRole.VIEWER);
+        json(post("/inbound/documents/" + refused + "/ignore"), viewer, null, 403);
+        assertThat(json(post("/inbound/documents/" + refused + "/ignore"), token, null, 200).get("status").asText()).isEqualTo("IGNORED");
+        assertThat(json(post("/inbound/documents/" + refused + "/retry"), token, null, 200).get("status").asText()).isEqualTo("QUEUED");
     }
 }

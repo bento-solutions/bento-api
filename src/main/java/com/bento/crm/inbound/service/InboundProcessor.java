@@ -114,7 +114,11 @@ public class InboundProcessor {
             for (InboundDocumentHandler h : handlers) {
                 if (h.handles(doc.getKind())) {
                     byte[] content = fileStorageService.readAll(file);
-                    tx.executeWithoutResult(s -> h.handle(doc, content, file.getContentType(), file.getFileName()));
+                    tx.executeWithoutResult(s -> {
+                        if (lockQueued(doc.getId())) {
+                            h.handle(doc, content, file.getContentType(), file.getFileName());
+                        }
+                    });
                     return;
                 }
             }
@@ -135,6 +139,10 @@ public class InboundProcessor {
         InboundMailbox mailbox = doc.getMailboxId() == null ? null
                 : mailboxRepository.find(doc.getOrganizationId(), doc.getMailboxId()).orElse(null);
         tx.executeWithoutResult(s -> {
+            // A person may have booked or set it aside while the AI was reading: theirs stands.
+            if (!lockQueued(doc.getId())) {
+                return;
+            }
             InboundDocument d = documentRepository.findById(doc.getId()).orElseThrow();
             d.setExtraction(toMap(e));
             d.setConfidence(e.confidence() == null ? null : BigDecimal.valueOf(e.confidence()).setScale(3, RoundingMode.HALF_UP));
@@ -164,34 +172,48 @@ public class InboundProcessor {
         });
     }
 
+    /** Locks the row and tells whether it is still waiting for the reader. */
+    private boolean lockQueued(UUID id) {
+        List<String> status = jdbc.queryForList("SELECT status FROM inbound_document WHERE id = ? FOR UPDATE", String.class, id);
+        return !status.isEmpty() && InboundDocument.Status.QUEUED.name().equals(status.get(0));
+    }
+
     private void retryOrFail(InboundDocument doc, RuntimeException e) {
-        boolean last = doc.getAttempts() >= MAX_ATTEMPTS || !(e instanceof ClaudeClient.AiException);
+        boolean refused = e instanceof ClaudeClient.AiRefusedException;
+        boolean last = refused || doc.getAttempts() >= MAX_ATTEMPTS || !(e instanceof ClaudeClient.AiException);
         log.warn("Inbound document {} attempt {} failed: {}", doc.getId(), doc.getAttempts(), e.getMessage());
-        tx.executeWithoutResult(s -> documentRepository.findById(doc.getId()).ifPresent(d -> {
+        tx.executeWithoutResult(s -> {
+            if (!lockQueued(doc.getId())) return;
+            documentRepository.findById(doc.getId()).ifPresent(d -> {
             d.setError(truncate(e.getMessage()));
             if (last) {
-                // Reading failed for good: a person enters the invoice from the file instead.
-                d.setStatus(doc.getKind() == InboundDocument.Kind.VENDOR_INVOICE
-                        ? InboundDocument.Status.NEEDS_REVIEW : InboundDocument.Status.FAILED);
-                d.setReviewReason("The document could not be read automatically");
+                // Reading failed for good: a person enters the document from the file instead.
+                d.setStatus(doc.getKind() == InboundDocument.Kind.OTHER
+                        ? InboundDocument.Status.FAILED : InboundDocument.Status.NEEDS_REVIEW);
+                d.setReviewReason(refused ? "The AI declined to read this document: enter it by hand"
+                        : "The document could not be read automatically");
                 d.setNextAttemptAt(null);
                 d.setProcessedAt(Instant.now());
             } else {
                 d.setNextAttemptAt(Instant.now().plus(Duration.ofMinutes(5L << d.getAttempts())));
             }
             documentRepository.save(d);
-        }));
+            });
+        });
     }
 
     private void finish(InboundDocument doc, InboundDocument.Status status, String reason, String error) {
-        tx.executeWithoutResult(s -> documentRepository.findById(doc.getId()).ifPresent(d -> {
+        tx.executeWithoutResult(s -> {
+            if (!lockQueued(doc.getId())) return;
+            documentRepository.findById(doc.getId()).ifPresent(d -> {
             d.setStatus(status);
             d.setReviewReason(reason);
             d.setError(error);
             d.setNextAttemptAt(null);
             d.setProcessedAt(Instant.now());
             documentRepository.save(d);
-        }));
+            });
+        });
     }
 
     private Map<String, Object> toMap(DocumentExtraction e) {

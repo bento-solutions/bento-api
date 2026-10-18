@@ -40,6 +40,9 @@ public class ImapPoller {
     private String username;
     @Value("${app.inbound.imap.password}")
     private String password;
+    @Value("${app.inbound.trusted-authserv-ids:}")
+    private java.util.Set<String> trustedAuthservIds;
+
     @Value("${app.inbound.imap.folder:INBOX}")
     private String folderName;
 
@@ -62,7 +65,7 @@ public class ImapPoller {
                         break;
                     }
                     try {
-                        intake.ingest(MimeEmailParser.parse((MimeMessage) m));
+                        intake.ingest(MimeEmailParser.parse((MimeMessage) m, trustedAuthservIds));
                     } catch (Exception e) {
                         log.warn("Could not read inbound email {}: {}", m.getMessageNumber(), e.getMessage());
                     }
