@@ -77,7 +77,7 @@ public class ChecklistService {
 
     List<ChecklistDtos.Item> items(UUID requestId) {
         return jdbc.query("""
-                SELECT i.*, f.file_name FROM document_request_item i LEFT JOIN stored_file f ON f.id = i.file_id
+                SELECT i.*, f.file_name, f.content_type FROM document_request_item i LEFT JOIN stored_file f ON f.id = i.file_id
                 WHERE i.request_id = ? AND i.deleted_at IS NULL ORDER BY i.sort_order, i.created_at
                 """, ChecklistService::item, requestId);
     }
@@ -345,6 +345,6 @@ public class ChecklistService {
         return new ChecklistDtos.Item(rs.getObject("id", UUID.class), rs.getString("label"), rs.getBoolean("required"),
                 DocumentRequestItem.Status.valueOf(rs.getString("status")), rs.getObject("file_id", UUID.class),
                 rs.getString("file_name"), t == null ? null : t.toInstant(), rs.getString("review_note"),
-                rs.getInt("sort_order"));
+                rs.getInt("sort_order"), rs.getString("content_type"));
     }
 }

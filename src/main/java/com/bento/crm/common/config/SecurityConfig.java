@@ -42,7 +42,7 @@ public class SecurityConfig {
      */
     private final ObjectProvider<RateLimitFilter> rateLimitFilter;
 
-    @Value("${CORS_ALLOWED_ORIGINS:https://crmbento.com,https://www.crmbento.com,https://dev.crmbento.com,http://localhost:4200,http://localhost:4201,http://localhost:3000}")
+    @Value("${CORS_ALLOWED_ORIGINS:https://crmbento.com,https://www.crmbento.com,https://dev.crmbento.com,http://localhost:4200,http://localhost:4201,http://localhost:3000,https://localhost,capacitor://localhost}")
     private String allowedOrigins;
 
     @Bean

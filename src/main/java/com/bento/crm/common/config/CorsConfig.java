@@ -12,7 +12,7 @@ import java.util.List;
 @Configuration
 public class CorsConfig implements WebMvcConfigurer {
 
-    @Value("${CORS_ALLOWED_ORIGINS:https://crmbento.com,https://www.crmbento.com,https://dev.crmbento.com,http://localhost:4200,http://localhost:4201,http://localhost:3000}")
+    @Value("${CORS_ALLOWED_ORIGINS:https://crmbento.com,https://www.crmbento.com,https://dev.crmbento.com,http://localhost:4200,http://localhost:4201,http://localhost:3000,https://localhost,capacitor://localhost}")
     private String allowedOrigins;
 
     @Override

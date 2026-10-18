@@ -20,7 +20,7 @@ public final class ChecklistDtos {
     public record Detail(Summary request, String note, List<Item> items) {}
 
     public record Item(UUID id, String label, boolean required, DocumentRequestItem.Status status, UUID fileId,
-                       String fileName, Instant receivedAt, String reviewNote, int sortOrder) {}
+                       String fileName, Instant receivedAt, String reviewNote, int sortOrder, String contentType) {}
 
     public record CreateRequest(UUID partnerId, String title, String period, LocalDate dueDate,
                                 DocumentRequest.Channel remindChannel, Integer remindEveryDays, String note,
