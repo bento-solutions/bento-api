@@ -346,6 +346,7 @@ public class MissionService {
         req.setDueDate(LocalDate.now().plusDays(30));
         req.setLines(lines);
         Invoice inv = invoiceService.createInvoice(orgId, req);
+        missionRepository.flush(); // the invoice row must exist before the JDBC update points at it
         for (MissionDtos.DisbursementRow d : open) {
             jdbc.update("UPDATE disbursement SET invoice_id = ?, updated_at = now() WHERE id = ?", inv.getId(), d.id());
         }

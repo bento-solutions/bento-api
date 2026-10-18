@@ -37,7 +37,8 @@ public final class TaxRules {
     public static List<Deadline> between(TaxProfile p, LocalDate from, LocalDate to) {
         List<Deadline> out = new ArrayList<>();
         // Periods that end up to two years before "to" can still be due inside the window.
-        YearMonth first = YearMonth.from(from).minusMonths(15), last = YearMonth.from(to);
+        // and an instalment can be due up to a year before the end of its financial year.
+        YearMonth first = YearMonth.from(from).minusMonths(15), last = YearMonth.from(to).plusMonths(12);
         for (YearMonth m = first; !m.isAfter(last); m = m.plusMonths(1)) {
             String label = m.toString();
             if (p.getVatRegime() == TaxProfile.VatRegime.MONTHLY) {
