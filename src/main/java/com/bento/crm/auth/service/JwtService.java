@@ -26,6 +26,9 @@ public class JwtService {
     public static final String CLAIM_TOKEN_TYPE = "typ";
     public static final String TYPE_ACCESS = "access";
     public static final String TYPE_REFRESH = "refresh";
+    /** Client portal sessions: accepted only on /portal/**, and never as a staff access token. */
+    public static final String TYPE_PORTAL = "portal";
+    static final long PORTAL_TOKEN_MILLIS = 12L * 60 * 60 * 1000;
 
     private final JwtProperties jwtProperties;
 
@@ -59,6 +62,29 @@ public class JwtService {
                 .setExpiration(new Date(System.currentTimeMillis() + jwtProperties.getRefreshTokenExpiry()))
                 .signWith(jwtProperties.getSecretKey(), SignatureAlgorithm.HS256)
                 .compact();
+    }
+
+    public String generatePortalToken(UUID portalUserId, UUID organizationId, UUID partnerId) {
+        return Jwts.builder()
+                .setId(UUID.randomUUID().toString())
+                .setSubject(portalUserId.toString())
+                .claim(CLAIM_TOKEN_TYPE, TYPE_PORTAL)
+                .claim("org", organizationId.toString())
+                .claim("partner", partnerId.toString())
+                .setIssuedAt(new Date())
+                .setExpiration(new Date(System.currentTimeMillis() + PORTAL_TOKEN_MILLIS))
+                .signWith(jwtProperties.getSecretKey(), SignatureAlgorithm.HS256)
+                .compact();
+    }
+
+    /** A valid portal token's claims, or null. */
+    public Claims tryParsePortalToken(String token) {
+        try {
+            Claims claims = parseAllClaims(token);
+            return TYPE_PORTAL.equals(claims.get(CLAIM_TOKEN_TYPE, String.class)) ? claims : null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     public UUID extractUserId(String token) {

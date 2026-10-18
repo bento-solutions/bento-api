@@ -77,6 +77,9 @@ public class TenantFilterInterceptor extends OncePerRequestFilter {
             // Inbound email webhook: the secret in the path authenticates, the recipient address resolves the tenant.
             "/public/inbound/",
             "/api/v1/public/inbound/",
+            // Client portal sign-in, invitation acceptance and password reset.
+            "/portal/auth/",
+            "/api/v1/portal/auth/",
             "/actuator",
             "/api/v1/actuator",
             "/swagger",
@@ -171,6 +174,12 @@ public class TenantFilterInterceptor extends OncePerRequestFilter {
         if (token == null) {
             return null;
         }
+        if (isPortalPath(request)) {
+            // The client portal takes portal tokens only: a staff session cannot browse it as a
+            // client, and (below) a portal token opens nothing outside it.
+            Claims portal = jwtService.tryParsePortalToken(token);
+            return portal == null ? null : parseUuid(portal.get("org", String.class));
+        }
         // Access tokens only: a refresh token also carries an "org" claim, and honouring it here
         // would let a 30-day credential open a tenant-scoped session.
         Claims claims = jwtService.tryParseAccessToken(token);
@@ -196,8 +205,22 @@ public class TenantFilterInterceptor extends OncePerRequestFilter {
         return PUBLIC_PREFIXES.stream().anyMatch(path::startsWith);
     }
 
+    /** Client portal endpoints, which authenticate with portal tokens. */
+    public static boolean isPortalPath(HttpServletRequest request) {
+        String path = pathWithinApplication(request);
+        return path.startsWith("/portal/") && !path.startsWith("/portal/auth/");
+    }
+
+    private static UUID parseUuid(String s) {
+        try {
+            return s == null ? null : UUID.fromString(s);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+    }
+
     /** The request path with the servlet context-path ({@code /api/v1}) removed. */
-    private static String pathWithinApplication(HttpServletRequest request) {
+    static String pathWithinApplication(HttpServletRequest request) {
         String uri = request.getRequestURI();
         String contextPath = request.getContextPath();
         if (contextPath != null && !contextPath.isEmpty() && uri.startsWith(contextPath)) {

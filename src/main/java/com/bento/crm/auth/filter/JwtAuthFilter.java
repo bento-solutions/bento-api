@@ -1,5 +1,9 @@
 package com.bento.crm.auth.filter;
 
+import com.bento.crm.common.config.TenantFilterInterceptor;
+import com.bento.crm.portal.PortalPrincipal;
+import java.util.UUID;
+
 import com.bento.crm.apitoken.security.ApiTokenPrincipal;
 import com.bento.crm.auth.service.JwtService;
 import com.bento.crm.whatsapp.service.WaActor;
@@ -53,7 +57,16 @@ public class JwtAuthFilter extends OncePerRequestFilter {
             token = request.getParameter("token");
         }
 
-        if (token != null) {
+        if (token != null && TenantFilterInterceptor.isPortalPath(request)) {
+            Claims portal = jwtService.tryParsePortalToken(token);
+            if (portal != null) {
+                UsernamePasswordAuthenticationToken auth = new UsernamePasswordAuthenticationToken(
+                        portal.getSubject(), null, List.of(new SimpleGrantedAuthority(PortalPrincipal.AUTHORITY)));
+                auth.setDetails(new PortalPrincipal(UUID.fromString(portal.getSubject()),
+                        UUID.fromString(portal.get("org", String.class)), UUID.fromString(portal.get("partner", String.class))));
+                SecurityContextHolder.getContext().setAuthentication(auth);
+            }
+        } else if (token != null) {
             Claims claims = jwtService.tryParseAccessToken(token);
 
             if (claims != null) {

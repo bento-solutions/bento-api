@@ -78,6 +78,9 @@ public class SecurityConfig {
                                 // Inbound email webhook (a shared secret in the path is the credential)
                                 AntPathRequestMatcher.antMatcher("/public/inbound/**"),
                                 AntPathRequestMatcher.antMatcher("/api/v1/public/inbound/**"),
+                                // Client portal sign-in, invitation acceptance and password reset
+                                AntPathRequestMatcher.antMatcher("/portal/auth/**"),
+                                AntPathRequestMatcher.antMatcher("/api/v1/portal/auth/**"),
                                 // Public file viewing (e.g. logos)
                                 AntPathRequestMatcher.antMatcher("/files/public/**"),
                                 AntPathRequestMatcher.antMatcher("/api/v1/files/public/**"),
