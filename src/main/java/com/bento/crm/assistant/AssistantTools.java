@@ -68,7 +68,7 @@ public class AssistantTools {
         d.add(new Def("propose_invoice_reminders", "Suggest sending payment reminders for customer invoices. Nothing is sent until the user confirms it in the app.",
                 props("invoice_ids", Map.of("type", "array", "items", Map.of("type", "string")),
                         "channel", enumOf("email", "whatsapp")),
-                List.of("invoice_ids"), "INVOICES_WRITE", (org, in) -> "Shown to the user to confirm. Nothing is sent yet.", true));
+                List.of("invoice_ids"), "INVOICES_WRITE", this::reminderInvoices, true));
         return d;
     }
 
@@ -200,6 +200,52 @@ public class AssistantTools {
                 WHERE d.organization_id = ? AND d.deleted_at IS NULL AND d.status = 'NEEDS_REVIEW' AND d.kind = 'VENDOR_INVOICE'
                 ORDER BY d.received_at DESC LIMIT ?
                 """, org, MAX_ROWS);
+    }
+
+    /** Key of a proposal tool's output that replaces the model's input as the proposal shown to the user. */
+    public static final String PROPOSAL = "proposal";
+
+    /**
+     * Keeps only the ids that are this organization's customer invoices still owed, and gives the
+     * user the number, customer and amount of each, so they confirm what will really be sent.
+     */
+    private Object reminderInvoices(UUID org, JsonNode in) {
+        List<UUID> ids = new ArrayList<>();
+        in.path("invoice_ids").forEach(n -> {
+            try {
+                ids.add(UUID.fromString(n.asText("")));
+            } catch (IllegalArgumentException ignored) {
+                // an id the model made up: dropped
+            }
+        });
+        List<Map<String, Object>> invoices = ids.isEmpty() ? List.of() : jdbc.queryForList(
+                "SELECT x.*, coalesce(nullif(x.customer_name, ''), p.company_name, p.name) AS customer FROM (" + INVOICES
+                        + " AND i.type = 'CUSTOMER' AND i.status NOT IN ('PAID', 'DRAFT') AND i.id = ANY (?)) x"
+                        + " JOIN invoice inv ON inv.id = x.id LEFT JOIN partner p ON p.id = inv.partner_id"
+                        + " WHERE x.owed > 0 ORDER BY x.due_date LIMIT ?",
+                org, ids.toArray(UUID[]::new), MAX_ROWS);
+        if (invoices.isEmpty()) {
+            throw new IllegalArgumentException("None of these ids is an unpaid customer invoice: look them up with list_invoices first");
+        }
+        List<Map<String, Object>> shown = invoices.stream().map(i -> {
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", i.get("id").toString());
+            m.put("invoice_number", i.get("invoice_number"));
+            m.put("customer_name", i.get("customer"));
+            m.put("due_date", i.get("due_date") == null ? null : i.get("due_date").toString());
+            m.put("owed", i.get("owed"));
+            return m;
+        }).toList();
+        Map<String, Object> proposal = new LinkedHashMap<>();
+        proposal.put("invoice_ids", shown.stream().map(m -> m.get("id")).toList());
+        proposal.put("invoices", shown);
+        if (!text(in, "channel").isEmpty()) proposal.put("channel", text(in, "channel"));
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("message", "Shown to the user to confirm. Nothing is sent yet."
+                + (shown.size() < ids.size() ? " " + (ids.size() - shown.size()) + " id(s) were not unpaid customer invoices and were left out." : ""));
+        out.put("invoices", shown);
+        out.put(PROPOSAL, proposal);
+        return out;
     }
 
     // Schema helpers

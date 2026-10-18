@@ -27,6 +27,7 @@ import java.util.stream.Collectors;
 public class FileController {
 
     private final FileStorageService fileStorageService;
+    private final com.bento.crm.drive.service.DriveService driveService;
 
     @PostMapping(consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @PreAuthorize("hasAuthority('FILES_WRITE')")
@@ -46,6 +47,7 @@ public class FileController {
             @RequestParam("ownerEntityType") String ownerEntityType,
             @RequestParam("ownerEntityId") UUID ownerEntityId) {
         List<StoredFileResponse> files = fileStorageService.listByOwner(ownerEntityType, ownerEntityId).stream()
+                .filter(driveService::readable)
                 .map(StoredFileResponse::fromEntity)
                 .collect(Collectors.toList());
         return ResponseEntity.ok(files);
@@ -56,6 +58,9 @@ public class FileController {
     @Operation(summary = "Download file", description = "Download a previously uploaded file")
     public ResponseEntity<Resource> downloadFile(@PathVariable UUID id) {
         StoredFile storedFile = fileStorageService.getMetadata(id);
+        if (!driveService.readable(storedFile)) {
+            throw new com.bento.crm.common.exception.ResourceNotFoundException("File not found");
+        }
         Resource resource = fileStorageService.load(id);
 
         MediaType mediaType;
@@ -97,6 +102,9 @@ public class FileController {
     @PreAuthorize("hasAuthority('FILES_WRITE')")
     @Operation(summary = "Delete file", description = "Delete a previously uploaded file")
     public ResponseEntity<Void> deleteFile(@PathVariable UUID id) {
+        if (!driveService.readable(fileStorageService.getMetadata(id))) {
+            throw new com.bento.crm.common.exception.ResourceNotFoundException("File not found");
+        }
         fileStorageService.delete(id);
         return ResponseEntity.noContent().build();
     }

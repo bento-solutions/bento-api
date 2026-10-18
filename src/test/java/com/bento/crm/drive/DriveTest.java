@@ -110,6 +110,18 @@ class DriveTest extends IntegrationTestBase {
                 .andExpect(status().isNotFound());
         mockMvc.perform(get("/drive?folderId=" + vendorFolder).header("Authorization", "Bearer " + sales))
                 .andExpect(status().isNotFound());
+        // The older /files download checks the same rule.
+        mockMvc.perform(get("/files/" + fileId).header("Authorization", "Bearer " + sales))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(delete("/files/" + fileId).header("Authorization", "Bearer " + sales))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(get("/files/" + fileId).header("Authorization", "Bearer " + admin))
+                .andExpect(status().isOk());
+        // System folders take no subfolders, so nothing can be filed outside their rules.
+        mockMvc.perform(post("/drive/folders").header("Authorization", "Bearer " + admin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"name\": \"Divers\", \"parentId\": \"" + vendorFolder + "\"}"))
+                .andExpect(status().isConflict());
         mockMvc.perform(get("/drive").header("Authorization", "Bearer " + sales))
                 .andExpect(jsonPath("$.folders.length()").value(0));
         mockMvc.perform(get("/drive").header("Authorization", "Bearer " + admin))

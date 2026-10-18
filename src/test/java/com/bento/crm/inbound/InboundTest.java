@@ -36,6 +36,7 @@ import java.util.Properties;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -257,6 +258,9 @@ class InboundTest extends IntegrationTestBase {
         // Every read-only tool's query is valid against the real schema.
         UUID org = orgIdOf(token);
         String partner = json(post("/partners"), token, "{\"type\": \"CUSTOMER\", \"name\": \"Café Atlas\"}", 201).get("id").asText();
+        String invoice = json(post("/invoices"), token, "{\"type\": \"CUSTOMER\", \"partnerId\": \"" + partner
+                + "\", \"status\": \"SENT\", \"lines\": [{\"description\": \"Audit\", \"qty\": 1, \"unitPrice\": 1000}]}", 201)
+                .get("id").asText();
         SecurityContextHolder.getContext().setAuthentication(new UsernamePasswordAuthenticationToken(UUID.randomUUID().toString(),
                 null, com.bento.crm.common.model.Permission.class.getEnumConstants().length > 0
                 ? java.util.Arrays.stream(com.bento.crm.common.model.Permission.values())
@@ -271,6 +275,7 @@ class InboundTest extends IntegrationTestBase {
                 case "list_invoices" -> "{\"type\": \"CUSTOMER\", \"overdue_only\": true}";
                 case "list_tasks" -> "{\"mine_only\": true, \"overdue_only\": true}";
                 case "stock_levels" -> "{\"low_only\": true}";
+                case "propose_invoice_reminders" -> "{\"invoice_ids\": [\"" + invoice + "\", \"" + UUID.randomUUID() + "\", \"made-up\"]}";
                 default -> "{}";
             });
             Object out = d.run().apply(org, input);
@@ -281,6 +286,20 @@ class InboundTest extends IntegrationTestBase {
                 .filter(t -> t.name().equals("search_contacts")).findFirst().orElseThrow()
                 .run().apply(org, objectMapper.readTree("{\"query\": \"atlas\"}"));
         assertThat(found).hasSize(1);
+
+        // A reminder proposal keeps only real unpaid invoices and names them for the user.
+        AssistantTools.Def remind = tools.stream().filter(t -> t.name().equals("propose_invoice_reminders")).findFirst().orElseThrow();
+        @SuppressWarnings("unchecked")
+        java.util.Map<String, Object> out = (java.util.Map<String, Object>) remind.run()
+                .apply(org, objectMapper.readTree("{\"invoice_ids\": [\"" + invoice + "\", \"" + UUID.randomUUID() + "\"]}"));
+        JsonNode proposal = objectMapper.valueToTree(out.get(AssistantTools.PROPOSAL));
+        assertThat(proposal.get("invoice_ids")).hasSize(1);
+        assertThat(proposal.at("/invoices/0/customer_name").asText()).isEqualTo("Café Atlas");
+        assertThat(proposal.at("/invoices/0/owed").decimalValue()).isPositive();
+        assertThat(proposal.at("/invoices/0/invoice_number").asText()).isNotBlank();
+        assertThatThrownBy(() -> remind.run()
+                        .apply(org, objectMapper.readTree("{\"invoice_ids\": [\"" + UUID.randomUUID() + "\"]}")))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test

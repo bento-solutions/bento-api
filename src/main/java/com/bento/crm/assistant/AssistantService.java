@@ -105,8 +105,15 @@ public class AssistantService {
             JsonNode input = objectMapper.valueToTree(call._input().convert(Object.class));
             Object out = def.run().apply(orgId, input);
             if (def.proposal()) {
+                Object shown = input;
+                if (out instanceof Map<?, ?> m && m.containsKey(AssistantTools.PROPOSAL)) {
+                    shown = m.get(AssistantTools.PROPOSAL);
+                    Map<Object, Object> forModel = new java.util.LinkedHashMap<>(m);
+                    forModel.remove(AssistantTools.PROPOSAL);
+                    out = forModel;
+                }
                 proposals.add(new Proposal(def.name().substring("propose_".length()),
-                        objectMapper.convertValue(input, Map.class)));
+                        objectMapper.convertValue(shown, Map.class)));
             } else {
                 lookedUp.add(def.name());
             }

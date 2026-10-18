@@ -150,6 +150,11 @@ public class DriveService {
     public FolderResponse createFolder(FolderRequest r) {
         UUID orgId = TenantContext.getCurrentOrganizationId();
         DriveFolder parent = r.parentId() == null ? null : visibleFolder(orgId, r.parentId());
+        if (parent != null && parent.getSystemKey() != null && !CLIENTS.equals(parent.getSystemKey())
+                && parent.getPartnerId() == null) {
+            // System folders (supplier invoices, statements, received) are filled by the app, month by month.
+            throw new IllegalStateException("Folders cannot be added inside this system folder");
+        }
         DriveFolder f = new DriveFolder();
         f.setOrganizationId(orgId);
         f.setParentId(parent == null ? null : parent.getId());
@@ -394,6 +399,22 @@ public class DriveService {
             throw new ResourceNotFoundException("Folder not found");
         }
         return f;
+    }
+
+    /**
+     * Whether the current user may open this file through the older /files endpoints: the same
+     * owner and folder checks as the drive (supplier bills and bank statements need finance
+     * rights). Organization files (logos) stay readable, they are public already.
+     */
+    public boolean readable(StoredFile f) {
+        if ("ORGANIZATION".equals(f.getOwnerEntityType())) {
+            return true;
+        }
+        String ownerAuthority = f.getOwnerEntityType() == null ? null : OWNER_AUTHORITY.get(f.getOwnerEntityType());
+        if (ownerAuthority != null && !CurrentUser.hasAuthority(ownerAuthority)) {
+            return false;
+        }
+        return f.getFolderId() == null || folderRepository.find(f.getOrganizationId(), f.getFolderId()).map(this::canSee).orElse(true);
     }
 
     private StoredFile visibleFile(UUID orgId, UUID id) {
