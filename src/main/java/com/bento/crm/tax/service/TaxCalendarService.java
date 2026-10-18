@@ -111,11 +111,12 @@ public class TaxCalendarService {
                     INSERT INTO tax_deadline (organization_id, profile_id, partner_id, kind, period_label, period_start,
                                               period_end, due_date)
                     SELECT ?, ?, ?, ?, ?, ?, ?, ?
-                    WHERE NOT EXISTS (SELECT 1 FROM tax_deadline WHERE profile_id = ? AND kind = ? AND period_label = ?
-                                      AND (deleted_at IS NULL OR status <> 'TODO'))
+                    WHERE NOT EXISTS (SELECT 1 FROM tax_deadline WHERE organization_id = ? AND partner_id IS NOT DISTINCT FROM ?
+                                      AND kind = ? AND period_label = ? AND (deleted_at IS NULL OR status <> 'TODO'))
                     ON CONFLICT DO NOTHING
                     """, p.getOrganizationId(), p.getId(), p.getPartnerId(), d.kind().name(), d.periodLabel(),
-                    d.periodStart(), d.periodEnd(), d.dueDate(), p.getId(), d.kind().name(), d.periodLabel());
+                    d.periodStart(), d.periodEnd(), d.dueDate(), p.getOrganizationId(), p.getPartnerId(),
+                    d.kind().name(), d.periodLabel());
         }
         return added;
     }
@@ -145,7 +146,10 @@ public class TaxCalendarService {
             d.setDoneAt(r.status() == TaxDeadline.Status.DONE ? Instant.now() : null);
             d.setDoneBy(r.status() == TaxDeadline.Status.DONE ? CurrentUser.idOrNull() : null);
         }
-        if (r.amount() != null) d.setAmount(r.amount().signum() < 0 ? null : r.amount());
+        if (r.amount() != null) {
+            if (r.amount().signum() < 0) throw new IllegalArgumentException("The amount cannot be negative");
+            d.setAmount(r.amount());
+        }
         if (r.note() != null) d.setNote(r.note().isBlank() ? null : r.note().length() > 500 ? r.note().substring(0, 500) : r.note());
         deadlineRepository.saveAndFlush(d);
         return jdbc.query(SELECT + " WHERE d.id = ?", TaxCalendarService::deadline, id).get(0);

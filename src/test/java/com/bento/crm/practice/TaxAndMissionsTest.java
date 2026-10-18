@@ -113,6 +113,15 @@ class TaxAndMissionsTest extends IntegrationTestBase {
         assertThat(done.get("status").asText()).isEqualTo("DONE");
         assertThat(done.hasNonNull("doneAt")).isTrue();
         assertThat(done.get("overdue").asBoolean()).isFalse();
+        json(put("/tax-calendar/deadlines/" + id), token, "{\"amount\": -3}", 400);
+
+        // Removing the company profile and creating it again does not bring the done period back as due.
+        String period = done.get("periodLabel").asText(), kind = done.get("kind").asText();
+        json(delete("/tax-calendar/profiles/" + own.get("id").asText()), token, null, 204);
+        json(post("/tax-calendar/profiles"), token, "{\"vatRegime\": \"MONTHLY\"}", 201);
+        JsonNode again = json(get("/tax-calendar/deadlines?companyOnly=true"), token, null, 200);
+        assertThat(again).filteredOn(d -> d.get("kind").asText().equals(kind) && d.get("periodLabel").asText().equals(period))
+                .singleElement().satisfies(d -> assertThat(d.get("status").asText()).isEqualTo("DONE"));
 
         // Switching the client to no VAT drops their future TVA lines; done lines stay.
         json(put("/tax-calendar/profiles/" + theirs.get("id").asText()), token, "{\"vatRegime\": \"NONE\"}", 200);
