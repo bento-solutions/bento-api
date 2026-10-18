@@ -28,7 +28,8 @@ public class JwtService {
     public static final String TYPE_REFRESH = "refresh";
     /** Client portal sessions: accepted only on /portal/**, and never as a staff access token. */
     public static final String TYPE_PORTAL = "portal";
-    static final long PORTAL_TOKEN_MILLIS = 12L * 60 * 60 * 1000;
+    public static final long PORTAL_TOKEN_SECONDS = 12L * 60 * 60;
+    static final long PORTAL_TOKEN_MILLIS = PORTAL_TOKEN_SECONDS * 1000;
 
     private final JwtProperties jwtProperties;
 

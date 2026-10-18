@@ -30,6 +30,7 @@ import java.util.stream.Collectors;
 public class JwtAuthFilter extends OncePerRequestFilter {
 
     private final JwtService jwtService;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
@@ -59,6 +60,12 @@ public class JwtAuthFilter extends OncePerRequestFilter {
 
         if (token != null && TenantFilterInterceptor.isPortalPath(request)) {
             Claims portal = jwtService.tryParsePortalToken(token);
+            if (portal != null && !portalSessionValid(portal)) {
+                response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+                response.setContentType("application/json");
+                response.getWriter().write("{\"error\":\"Your session has ended: sign in again\"}");
+                return;
+            }
             if (portal != null) {
                 UsernamePasswordAuthenticationToken auth = new UsernamePasswordAuthenticationToken(
                         portal.getSubject(), null, List.of(new SimpleGrantedAuthority(PortalPrincipal.AUTHORITY)));
@@ -85,5 +92,24 @@ public class JwtAuthFilter extends OncePerRequestFilter {
         }
 
         filterChain.doFilter(request, response);
+    }
+
+    /**
+     * A client session ends as soon as the firm deactivates or removes the account, moves it to
+     * another client, or the password is reset.
+     */
+    private boolean portalSessionValid(Claims portal) {
+        try {
+            Boolean ok = jdbc.query("""
+                    SELECT 1 FROM portal_user WHERE id = ? AND organization_id = ? AND partner_id = ? AND is_active
+                      AND deleted_at IS NULL AND password_hash IS NOT NULL
+                      AND (password_changed_at IS NULL OR password_changed_at <= ?)
+                    """, (org.springframework.jdbc.core.ResultSetExtractor<Boolean>) java.sql.ResultSet::next, UUID.fromString(portal.getSubject()), UUID.fromString(portal.get("org", String.class)),
+                    UUID.fromString(portal.get("partner", String.class)),
+                    java.sql.Timestamp.from(portal.getIssuedAt().toInstant()));
+            return Boolean.TRUE.equals(ok);
+        } catch (IllegalArgumentException | NullPointerException e) {
+            return false;
+        }
     }
 }

@@ -15,6 +15,8 @@ CREATE TABLE portal_user (
     invite_expires_at   TIMESTAMPTZ,
     is_active           BOOLEAN NOT NULL DEFAULT TRUE,
     last_login_at       TIMESTAMPTZ,
+    -- Sessions issued before this are no longer accepted (password reset).
+    password_changed_at TIMESTAMPTZ,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_by          UUID,

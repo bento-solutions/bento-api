@@ -21,7 +21,6 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.util.HtmlUtils;
 
 import java.time.Duration;
@@ -84,8 +83,10 @@ public class ChecklistReminderService {
         return sent;
     }
 
-    /** "Remind now" from the app. */
-    @Transactional
+    /**
+     * "Remind now" from the app. Not one transaction: a WhatsApp send that fails rolls back its own
+     * work only, and the email fallback still goes out.
+     */
     public ChecklistDtos.RemindResult remindNow(UUID id) {
         DocumentRequest r = requestRepository.find(TenantContext.getCurrentOrganizationId(), id)
                 .orElseThrow(() -> new ResourceNotFoundException("Checklist not found"));

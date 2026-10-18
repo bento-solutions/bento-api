@@ -19,11 +19,14 @@ public class NotificationService {
 
     private final NotificationRepository notificationRepository;
     private final AppUserRepository userRepository;
+    private final org.springframework.context.ApplicationEventPublisher events;
 
     public NotificationService(NotificationRepository notificationRepository,
-                               AppUserRepository userRepository) {
+                               AppUserRepository userRepository,
+                               org.springframework.context.ApplicationEventPublisher events) {
         this.notificationRepository = notificationRepository;
         this.userRepository = userRepository;
+        this.events = events;
     }
 
     private static UUID getCurrentUserId() {
@@ -62,7 +65,9 @@ public class NotificationService {
         if (notification.getIsRead() == null) {
             notification.setIsRead(false);
         }
-        return notificationRepository.save(notification);
+        Notification saved = notificationRepository.save(notification);
+        events.publishEvent(com.bento.crm.push.PushService.NotificationCreated.of(saved));
+        return saved;
     }
 
     /**
