@@ -1,5 +1,9 @@
 package com.bento.crm.bank.service;
 
+import com.bento.crm.inbound.model.InboundMailbox;
+import com.bento.crm.inbound.repository.InboundMailboxRepository;
+import java.util.Locale;
+
 import com.bento.crm.ai.ClaudeClient;
 import com.bento.crm.bank.model.BankAccount;
 import com.bento.crm.bank.model.BankImport;
@@ -30,6 +34,7 @@ public class BankStatementHandler implements InboundDocumentHandler {
     private final BankImportService importService;
     private final InboundDocumentRepository documentRepository;
     private final TeamNotifier teamNotifier;
+    private final InboundMailboxRepository mailboxRepository;
 
     @Override
     public boolean handles(InboundDocument.Kind kind) {
@@ -64,6 +69,14 @@ public class BankStatementHandler implements InboundDocumentHandler {
                     : "No bank account has the number " + s.accountNumber() + ": add it or choose the account");
             return;
         }
+        String distrust = distrust(d);
+        if (distrust != null) {
+            // A forged statement could otherwise mark invoices paid: a person checks it first.
+            found.put("bankAccountId", account.get().getId().toString());
+            d.setExtraction(found);
+            review(d, distrust);
+            return;
+        }
         BankImport imp = importService.importInto(d.getOrganizationId(), account.get(), s, d.getFileId(), d.getId(),
                 format.name().toLowerCase());
         found.put("importId", imp.getId().toString());
@@ -78,6 +91,35 @@ public class BankStatementHandler implements InboundDocumentHandler {
         d.setNextAttemptAt(null);
         d.setProcessedAt(Instant.now());
         documentRepository.save(d);
+    }
+
+    /**
+     * Why this statement may not be filed without a person, or null when it may: dropped in by
+     * a user, or emailed by an authenticated sender on the statements inbox's trusted list.
+     */
+    String distrust(InboundDocument d) {
+        if (d.getChannel() == InboundDocument.Channel.UPLOAD) {
+            return null;
+        }
+        String sender = d.getSender() == null ? "" : d.getSender().trim().toLowerCase(Locale.ROOT);
+        if (d.getChannel() != InboundDocument.Channel.EMAIL || !sender.contains("@")) {
+            return "Statements sent this way are checked by a person: check it and import it";
+        }
+        if (!d.isSenderVerified()) {
+            return "Sender not verified " + sender + ": check the statement before importing it";
+        }
+        InboundMailbox mailbox = d.getMailboxId() == null ? null
+                : mailboxRepository.find(d.getOrganizationId(), d.getMailboxId()).orElse(null);
+        String domain = sender.substring(sender.indexOf('@'));
+        if (mailbox != null) {
+            for (String allowed : mailbox.getAllowedSenders()) {
+                String a = allowed.trim().toLowerCase(Locale.ROOT);
+                if (a.equals(sender) || (a.startsWith("@") && a.equals(domain))) {
+                    return null;
+                }
+            }
+        }
+        return "Sender " + sender + " is not a trusted sender of the statements inbox: check the statement before importing it";
     }
 
     private void review(InboundDocument d, String reason) {

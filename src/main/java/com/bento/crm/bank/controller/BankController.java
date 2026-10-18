@@ -128,8 +128,8 @@ public class BankController {
 
     @GetMapping("/transactions/{id}/candidates")
     @PreAuthorize(READ)
-    public List<BankDtos.Candidate> candidates(@PathVariable UUID id) {
-        return bank.candidates(id);
+    public List<BankDtos.Candidate> candidates(@PathVariable UUID id, @RequestParam(required = false) String q) {
+        return bank.candidates(id, q);
     }
 
     @PostMapping("/transactions/{id}/match")

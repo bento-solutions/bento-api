@@ -52,6 +52,32 @@ public class ReconciliationService {
         return transactionRepository.find(orgId, id).orElseThrow(() -> new ResourceNotFoundException("Bank line not found"));
     }
 
+    /**
+     * Open invoices of the line's direction whose number or customer/supplier name contains
+     * {@code q}, for matching by hand when nothing is suggested. Invoices owing less than the
+     * line are left out: a line cannot pay more than what is owed.
+     */
+    public List<BankDtos.Candidate> search(UUID orgId, BankTransaction t, String q) {
+        String needle = StatementText.norm(q == null ? "" : q).trim();
+        if (needle.length() < 2) return List.of();
+        BigDecimal abs = t.getAmount().abs();
+        String type = t.getAmount().signum() > 0 ? "CUSTOMER" : "VENDOR";
+        List<BankDtos.Candidate> out = new ArrayList<>();
+        for (Map<String, Object> r : openInvoices(orgId, type)) {
+            BigDecimal outstanding = (BigDecimal) r.get("outstanding");
+            String number = (String) r.get("invoice_number");
+            String partner = (String) r.get("partner_name");
+            boolean hit = (number != null && StatementText.norm(number).contains(needle))
+                    || (partner != null && StatementText.norm(partner).contains(needle));
+            if (!hit || abs.compareTo(outstanding.add(TOLERANCE)) > 0) continue;
+            out.add(new BankDtos.Candidate("INVOICE", (UUID) r.get("id"), number == null ? "Invoice" : number, partner,
+                    date(r.get("due_date")), (BigDecimal) r.get("total"), outstanding, 0,
+                    outstanding.subtract(abs).abs().compareTo(TOLERANCE) <= 0 ? "same amount" : "part of what is owed"));
+            if (out.size() >= 20) break;
+        }
+        return out;
+    }
+
     /** What this line could be paying or receiving, best first. */
     public List<BankDtos.Candidate> candidates(UUID orgId, BankTransaction t) {
         BigDecimal abs = t.getAmount().abs();

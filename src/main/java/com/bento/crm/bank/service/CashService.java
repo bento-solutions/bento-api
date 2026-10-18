@@ -130,8 +130,9 @@ public class CashService {
             }
         }
 
-        // Costs that come back every month (salaries, CNSS, rent...): their average over the last
-        // three full months, on the day of the month they usually leave.
+        // Costs that come back every month (salaries, CNSS, rent...): their average per month over
+        // the months they were seen in the last three full months (a company's first statements
+        // often cover only two), on the day of the month they usually leave.
         LocalDate from = YearMonth.from(today).minusMonths(3).atDay(1);
         LocalDate to = YearMonth.from(today).atDay(1).minusDays(1);
         Map<String, BigDecimal> totals = new HashMap<>();
@@ -151,7 +152,7 @@ public class CashService {
         List<BankDtos.CategoryTotal> recurringMonthly = new ArrayList<>();
         for (Map.Entry<String, BigDecimal> e : totals.entrySet()) {
             if (monthsSeen.get(e.getKey()).size() < 2) continue; // seen once: not a monthly cost
-            BigDecimal monthly = e.getValue().divide(BigDecimal.valueOf(3), 2, RoundingMode.HALF_UP);
+            BigDecimal monthly = e.getValue().divide(BigDecimal.valueOf(monthsSeen.get(e.getKey()).size()), 2, RoundingMode.HALF_UP);
             recurringMonthly.add(new BankDtos.CategoryTotal(e.getKey(), monthly));
             int day = lastDay.get(e.getKey());
             for (YearMonth m = YearMonth.from(today); !m.atDay(1).isAfter(end); m = m.plusMonths(1)) {

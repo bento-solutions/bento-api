@@ -297,8 +297,9 @@ public class BankService {
         return r.get(0);
     }
 
-    public List<BankDtos.Candidate> candidates(UUID id) {
-        return reconciliation.candidates(org(), reconciliation.transaction(org(), id));
+    public List<BankDtos.Candidate> candidates(UUID id, String q) {
+        BankTransaction t = reconciliation.transaction(org(), id);
+        return q == null || q.isBlank() ? reconciliation.candidates(org(), t) : reconciliation.search(org(), t, q);
     }
 
     public BankDtos.Transaction match(UUID id, BankDtos.MatchRequest r) {
