@@ -28,12 +28,13 @@ class InvoiceFooterTest {
 
     @Test
     void legalIdentifiersAreInTheFooterOfEveryInvoice() throws Exception {
-        InvoiceBranding b = new InvoiceBranding("Atlas Conseil SARL", "12 rue Ibn Batouta, Casablanca", null, null, null,
-                "001234567000089", "1234567", "Casablanca 98765", null, null, "100 000 MAD", null, null, null, null, null,
-                "Merci pour votre confiance");
+        InvoiceBranding b = new InvoiceBranding("Atlas Conseil SARL", "12 rue Ibn Batouta, Casablanca", "+212 522 00 00 00", null, null,
+                "001234567000089", "1234567", "Casablanca 98765", null, null, "100 000 MAD", "Attijariwafa Bank",
+                "007 780 0001234567890123 45", null, null, null, "Merci pour votre confiance");
         String text = page1(pdf.generateInvoicePdf(invoice(), null, null, b));
         assertThat(text).contains("ICE : 001234567000089", "IF : 1234567", "RC : Casablanca 98765",
-                "au capital de 100 000 MAD", "Siège : 12 rue Ibn Batouta", "Merci pour votre confiance", "Page 1");
+                "au capital de 100 000 MAD", "Siège : 12 rue Ibn Batouta", "Tél : +212 522 00 00 00",
+                "Banque : Attijariwafa Bank · RIB : 007 780 0001234567890123 45", "Merci pour votre confiance", "Page 1");
     }
 
     @Test

@@ -297,16 +297,20 @@ public class PdfDocumentService {
                     prefixed("Siège : ", b.address()));
             String ids = join(" · ", prefixed("ICE : ", b.ice()), prefixed("IF : ", b.ifNumber()), prefixed("RC : ", b.rc()),
                     prefixed("Patente : ", b.patente()), prefixed("CNSS : ", b.cnss()));
-            if (ids != null) {
+            String contact = join(" · ", prefixed("Tél : ", b.phone()), prefixed("Email : ", b.email()), b.website());
+            String bank = b.rib() == null || b.rib().isBlank() ? null : join(" · ", prefixed("Banque : ", b.bankName()), "RIB : " + b.rib());
+            if (ids != null || contact != null || bank != null || (b.address() != null && !b.address().isBlank())) {
                 lines.add(company);
-                lines.add(ids);
             }
+            if (contact != null) lines.add(contact);
+            if (ids != null) lines.add(ids);
+            if (bank != null) lines.add(bank);
             if (b.footer() != null && !b.footer().isBlank()) {
                 for (String l : b.footer().strip().split("\\R")) if (!l.isBlank()) lines.add(l.strip());
             }
         }
         if (lines.isEmpty()) lines.add("Document émis par Bento CRM.");
-        return lines.size() > 6 ? lines.subList(0, 6) : lines;
+        return lines.size() > 7 ? lines.subList(0, 7) : lines;
     }
 
     /** Draws the footer lines and the page number at the bottom of each page. */
