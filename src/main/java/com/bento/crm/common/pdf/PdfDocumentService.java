@@ -50,8 +50,13 @@ public class PdfDocumentService {
      */
     public byte[] generateInvoicePdf(Invoice invoice, Partner partner, Organization org, InvoiceBranding branding) {
         try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
-            Document document = new Document(PageSize.A4, 36, 36, 36, 36);
-            PdfWriter.getInstance(document, out);
+            String issuer = branding != null && branding.legalName() != null ? branding.legalName()
+                    : (org != null && org.getName() != null ? org.getName() : "Bento CRM");
+            List<String> footerLines = footerLines(issuer, branding);
+            // Leave room at the bottom of every page for the legal footer.
+            Document document = new Document(PageSize.A4, 36, 36, 36, 36 + 11 * footerLines.size() + 14);
+            PdfWriter writer = PdfWriter.getInstance(document, out);
+            writer.setPageEvent(new LegalFooter(footerLines));
             document.open();
 
             Color accent = branding != null && branding.accent() != null ? branding.accent() : PRIMARY_COLOR;
@@ -225,25 +230,6 @@ public class PdfDocumentService {
                 document.add(new Paragraph(join(" · ", prefixed("Banque : ", branding.bankName()), "RIB : " + branding.rib()), FONT_BODY));
             }
 
-            // Footer: the legal identifiers Moroccan invoices must carry, then the custom footer
-            String legal = branding == null ? null : join(" · ",
-                    issuerName + (branding.capital() != null ? " au capital de " + branding.capital() : ""),
-                    prefixed("ICE : ", branding.ice()), prefixed("IF : ", branding.ifNumber()),
-                    prefixed("RC : ", branding.rc()), prefixed("Patente : ", branding.patente()),
-                    prefixed("CNSS : ", branding.cnss()));
-            StringBuilder footerText = new StringBuilder("\n\n");
-            if (legal != null && branding.ice() != null) {
-                footerText.append(legal).append('\n');
-            }
-            if (branding != null && branding.footer() != null) {
-                footerText.append(branding.footer());
-            } else if (branding == null || branding.ice() == null) {
-                footerText.append("Document émis par Bento CRM.");
-            }
-            Paragraph footer = new Paragraph(footerText.toString(), FONT_MUTED);
-            footer.setAlignment(Element.ALIGN_CENTER);
-            document.add(footer);
-
             document.close();
             return out.toByteArray();
         } catch (Exception e) {
@@ -298,6 +284,56 @@ public class PdfDocumentService {
         Paragraph p = new Paragraph(text, font);
         p.setAlignment(Element.ALIGN_RIGHT);
         cell.addElement(p);
+    }
+
+    /**
+     * The footer printed at the bottom of every invoice page: the issuer's legal identifiers
+     * (each one that is filled in, never invented), its address, then the custom footer text.
+     */
+    static List<String> footerLines(String issuer, InvoiceBranding b) {
+        List<String> lines = new java.util.ArrayList<>();
+        if (b != null) {
+            String company = join(" · ", issuer + (b.capital() != null && !b.capital().isBlank() ? " au capital de " + b.capital() : ""),
+                    prefixed("Siège : ", b.address()));
+            String ids = join(" · ", prefixed("ICE : ", b.ice()), prefixed("IF : ", b.ifNumber()), prefixed("RC : ", b.rc()),
+                    prefixed("Patente : ", b.patente()), prefixed("CNSS : ", b.cnss()));
+            if (ids != null) {
+                lines.add(company);
+                lines.add(ids);
+            }
+            if (b.footer() != null && !b.footer().isBlank()) {
+                for (String l : b.footer().strip().split("\\R")) if (!l.isBlank()) lines.add(l.strip());
+            }
+        }
+        if (lines.isEmpty()) lines.add("Document émis par Bento CRM.");
+        return lines.size() > 6 ? lines.subList(0, 6) : lines;
+    }
+
+    /** Draws the footer lines and the page number at the bottom of each page. */
+    private static final class LegalFooter extends com.lowagie.text.pdf.PdfPageEventHelper {
+        private final List<String> lines;
+
+        LegalFooter(List<String> lines) {
+            this.lines = lines;
+        }
+
+        @Override
+        public void onEndPage(PdfWriter writer, Document document) {
+            com.lowagie.text.pdf.PdfContentByte cb = writer.getDirectContent();
+            float centre = (document.left() + document.right()) / 2;
+            float y = 36 + 11 * lines.size();
+            cb.setColorStroke(new Color(0xDD, 0xDD, 0xDD));
+            cb.setLineWidth(0.5f);
+            cb.moveTo(document.left(), y + 6);
+            cb.lineTo(document.right(), y + 6);
+            cb.stroke();
+            for (String line : lines) {
+                y -= 11;
+                com.lowagie.text.pdf.ColumnText.showTextAligned(cb, Element.ALIGN_CENTER, new Phrase(line, FONT_MUTED), centre, y, 0);
+            }
+            com.lowagie.text.pdf.ColumnText.showTextAligned(cb, Element.ALIGN_RIGHT,
+                    new Phrase("Page " + writer.getPageNumber(), FONT_MUTED), document.right(), 22, 0);
+        }
     }
 
     private static String prefixed(String prefix, String value) {
