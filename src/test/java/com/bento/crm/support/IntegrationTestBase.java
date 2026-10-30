@@ -52,6 +52,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
         "spring.jpa.hibernate.ddl-auto=validate",
         "spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect",
         "app.rate-limit.enabled=false",
+        "app.payments.mock-enabled=true",
         "JWT_SECRET=test-only-secret-key-not-for-production-use-minimum-32-bytes"
 })
 public abstract class IntegrationTestBase {

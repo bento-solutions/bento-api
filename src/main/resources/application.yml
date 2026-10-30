@@ -267,11 +267,16 @@ app:
   payments:
     # The frontend address customers open payment links on (https://app.example.com/pay/<token>).
     public-url: ${PAYMENTS_PUBLIC_URL:http://localhost:3000}
-    # The test gateway settles invoices without a real charge. Turn it off in production.
-    mock-enabled: ${PAYMENTS_MOCK_ENABLED:true}
+    # The test gateway settles invoices without a real charge, through a public endpoint. Off
+    # unless asked for, so a deployment that forgets the setting cannot be paid with a test card.
+    mock-enabled: ${PAYMENTS_MOCK_ENABLED:false}
     stripe:
       secret-key: ${STRIPE_SECRET_KEY:}
       webhook-secret: ${STRIPE_WEBHOOK_SECRET:}
+  push:
+    fcm:
+      # Firebase service-account JSON key, for push notifications to the mobile app. Empty: push is off.
+      service-account-file: ${FCM_SERVICE_ACCOUNT_FILE:}
   invitation:
     # Where the invitee lands. The accept page reads the token from the query string, so this
     # must point at the deployed frontend, not the API.

@@ -24,6 +24,7 @@ node_modules/
 # Application
 logs/
 uploads/
+secrets/
 *.log
 
 # OS
