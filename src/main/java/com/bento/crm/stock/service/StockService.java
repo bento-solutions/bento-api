@@ -154,11 +154,13 @@ public class StockService {
     /** The organization's default warehouse, created on first use as "Entrepôt principal". */
     Warehouse defaultWarehouse(UUID orgId) {
         return warehouseRepository.findDefault(orgId).orElseGet(() -> {
-            Warehouse w = new Warehouse();
-            w.setOrganizationId(orgId);
-            w.setName("Entrepôt principal");
-            w.setIsDefault(true);
-            return warehouseRepository.saveAndFlush(w);
+            // One atomic statement: the inventory page asks for warehouses, levels and the valuation
+            // at once, so a new organization's first requests race to create it, and a plain insert
+            // would fail the loser on the unique default-warehouse index (a 409 on page load).
+            jdbc.update("INSERT INTO warehouse (organization_id, name, is_default) VALUES (?, 'Entrepôt principal', TRUE) "
+                    + "ON CONFLICT DO NOTHING", orgId);
+            return warehouseRepository.findDefault(orgId)
+                    .orElseThrow(() -> new IllegalStateException("The default warehouse could not be created"));
         });
     }
 

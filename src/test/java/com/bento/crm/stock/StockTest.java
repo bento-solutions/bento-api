@@ -215,6 +215,31 @@ class StockTest extends IntegrationTestBase {
     }
 
     @Test
+    void aNewOrganizationsFirstRequestsMayRaceToCreateTheDefaultWarehouse() throws Exception {
+        String token = signUpAndLogin();
+        int callers = 6;
+        java.util.concurrent.CyclicBarrier gate = new java.util.concurrent.CyclicBarrier(callers);
+        java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(callers);
+        try {
+            java.util.List<java.util.concurrent.Future<Integer>> calls = new java.util.ArrayList<>();
+            for (int i = 0; i < callers; i++) {
+                String path = i % 2 == 0 ? "/stock/warehouses" : "/stock/levels";
+                calls.add(pool.submit(() -> {
+                    gate.await();
+                    return mockMvc.perform(get(path).header("Authorization", "Bearer " + token))
+                            .andReturn().getResponse().getStatus();
+                }));
+            }
+            for (java.util.concurrent.Future<Integer> call : calls) {
+                assertThat(call.get()).isEqualTo(200);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(send(token, get("/stock/warehouses"), null, 200).size()).isEqualTo(1);
+    }
+
+    @Test
     void theDefaultTriggerFollowsTheIndustry() {
         assertThat(StockSettings.defaultFor("Retail")).isEqualTo(StockSettings.IssueTrigger.INVOICE_SENT);
         assertThat(StockSettings.defaultFor("Logistics")).isEqualTo(StockSettings.IssueTrigger.DEAL_WON);
