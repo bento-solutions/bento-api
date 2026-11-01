@@ -107,6 +107,12 @@ public enum Permission {
     WHATSAPP_DRAFT("WHATSAPP_DRAFT"),
     WHATSAPP_ADMIN("WHATSAPP_ADMIN"),
 
+    // General ledger. WRITE covers manual entries, accounts and cost centers; CLOSE locks
+    // periods and closes the fiscal year.
+    LEDGER_READ("LEDGER_READ"),
+    LEDGER_WRITE("LEDGER_WRITE"),
+    LEDGER_CLOSE("LEDGER_CLOSE"),
+
     // Personal API tokens (for AI agents and integrations).
     API_TOKENS_MANAGE("API_TOKENS_MANAGE"),
 
@@ -135,6 +141,7 @@ public enum Permission {
                     FILES_READ, FILES_WRITE,
                     ANALYTICS_READ,
                     WHATSAPP_READ, WHATSAPP_READ_ALL, WHATSAPP_SEND, WHATSAPP_DRAFT, WHATSAPP_ADMIN,
+                    LEDGER_READ, LEDGER_WRITE, LEDGER_CLOSE,
                     API_TOKENS_MANAGE,
                     ADMIN_ACCESS
             );
@@ -155,6 +162,7 @@ public enum Permission {
                     FILES_READ, FILES_WRITE,
                     ANALYTICS_READ,
                     WHATSAPP_READ, WHATSAPP_READ_ALL, WHATSAPP_SEND, WHATSAPP_DRAFT,
+                    LEDGER_READ, LEDGER_WRITE,
                     API_TOKENS_MANAGE
             );
             case SALESPERSON -> Set.of(
