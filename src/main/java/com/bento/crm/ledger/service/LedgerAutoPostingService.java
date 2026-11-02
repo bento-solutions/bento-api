@@ -771,24 +771,27 @@ public class LedgerAutoPostingService {
             docs.add(new Doc(BANK_OPENING, rs.getObject(1, UUID.class), rs.getString(2)));
         }, orgId);
 
-        int posted = 0, skipped = 0;
+        int posted = 0, updated = 0, skipped = 0;
         List<LedgerDtos.RepostError> errors = new ArrayList<>();
         for (Doc d : docs) {
-            if (entryRepository.findLive(orgId, d.sourceType(), d.id()).isPresent()) {
-                skipped++;
-                continue;
-            }
+            // Every document goes through sync: a live entry that still matches is left alone, a stale
+            // one (posted before a rule changed) is reversed and re-posted.
+            boolean had = entryRepository.findLive(orgId, d.sourceType(), d.id()).isPresent();
             try {
                 Boolean done = perDocument.execute(st -> repostOne(orgId, d));
-                if (Boolean.TRUE.equals(done)) posted++;
-                else skipped++;
+                if (Boolean.TRUE.equals(done)) {
+                    if (had) updated++;
+                    else posted++;
+                } else {
+                    skipped++;
+                }
             } catch (RuntimeException e) {
                 log.info("[ledger] repost of {} {} failed: {}", d.sourceType(), d.id(), e.getMessage());
                 errors.add(new LedgerDtos.RepostError(d.sourceType(), d.id(), d.label(),
                         e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
             }
         }
-        return new LedgerDtos.RepostResult(posted, skipped, errors);
+        return new LedgerDtos.RepostResult(posted, updated, skipped, errors);
     }
 
     private boolean repostOne(UUID orgId, Doc d) {
