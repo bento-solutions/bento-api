@@ -21,6 +21,7 @@ public class RecurringInvoiceResponse {
 
     private UUID id;
     private UUID partnerId;
+    private com.bento.crm.invoice.model.Invoice.InvoiceType type;
     private String name;
     private RecurringInvoice.Frequency frequency;
     private Integer intervalCount;

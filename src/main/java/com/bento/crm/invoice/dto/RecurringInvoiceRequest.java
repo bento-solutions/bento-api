@@ -23,6 +23,9 @@ public class RecurringInvoiceRequest {
     @NotNull
     private UUID partnerId;
 
+    /** CUSTOMER (default) or VENDOR: a VENDOR template generates supplier bills. */
+    private com.bento.crm.invoice.model.Invoice.InvoiceType type;
+
     @NotBlank
     private String name;
 

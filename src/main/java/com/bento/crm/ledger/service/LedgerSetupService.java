@@ -39,12 +39,30 @@ public class LedgerSetupService {
             new Seed("1191", "Résultat net de l'exercice (bénéficiaire)"),
             new Seed("1199", "Résultat net de l'exercice (déficitaire)"),
             new Seed("1481", "Emprunts auprès des établissements de crédit"),
+            new Seed("2220", "Brevets, marques, droits et valeurs similaires"),
+            new Seed("2332", "Matériel et outillage"),
+            new Seed("2340", "Matériel de transport"),
+            new Seed("2351", "Mobilier de bureau"),
+            new Seed("2352", "Matériel de bureau"),
+            new Seed("2355", "Matériel informatique"),
+            new Seed("2356", "Agencements, installations et aménagements divers"),
+            new Seed("2822", "Amortissements des brevets, marques, droits et valeurs similaires"),
+            new Seed("28332", "Amortissements du matériel et outillage"),
+            new Seed("28340", "Amortissements du matériel de transport"),
+            new Seed("28351", "Amortissements du mobilier de bureau"),
+            new Seed("28352", "Amortissements du matériel de bureau"),
+            new Seed("28355", "Amortissements du matériel informatique"),
+            new Seed("28356", "Amortissements des agencements, installations et aménagements divers"),
             new Seed("3111", "Marchandises"),
             new Seed("3411", "Fournisseurs débiteurs, avances et acomptes versés"),
             new Seed("3421", "Clients"),
+            new Seed("3427", "Clients, factures à établir et créances sur travaux non encore facturables"),
             new Seed("3453", "Acomptes sur impôts sur les résultats"),
+            new Seed("3458", "État, autres comptes débiteurs"),
             new Seed("3481", "Créances sur les entreprises du groupe et associés"),
             new Seed("34552", "État, TVA récupérable sur charges"),
+            new Seed("34558", "Crédit de TVA"),
+            new Seed("3491", "Charges constatées d'avance"),
             new Seed("4411", "Fournisseurs"),
             new Seed("4417", "Fournisseurs, factures non parvenues"),
             new Seed("4421", "Clients, avances et acomptes reçus"),
@@ -55,6 +73,8 @@ public class LedgerSetupService {
             new Seed("44554", "État, TVA facturée 7 %"),
             new Seed("4481", "Dettes sur les entreprises du groupe et associés"),
             new Seed("4456", "État, TVA due"),
+            new Seed("4458", "État, autres comptes créditeurs"),
+            new Seed("4491", "Produits constatés d'avance"),
             new Seed("4497", "Comptes d'attente"),
             new Seed("5115", "Virements de fonds"),
             new Seed("5141", "Banques"),
@@ -72,12 +92,16 @@ public class LedgerSetupService {
             new Seed("6161", "Impôts et taxes directs"),
             new Seed("6171", "Rémunérations du personnel"),
             new Seed("6174", "Charges sociales"),
+            new Seed("6192", "Dotations d'exploitation aux amortissements des immobilisations incorporelles"),
+            new Seed("6193", "Dotations d'exploitation aux amortissements des immobilisations corporelles"),
             new Seed("6311", "Intérêts des emprunts et dettes"),
+            new Seed("6513", "Valeurs nettes d'amortissements des immobilisations cédées"),
             new Seed("7111", "Ventes de marchandises au Maroc"),
             new Seed("7121", "Ventes de marchandises à l'étranger"),
             new Seed("7124", "Ventes de services produits au Maroc"),
             new Seed("7127", "Ventes de services produits à l'étranger"),
-            new Seed("7381", "Intérêts et produits assimilés")
+            new Seed("7381", "Intérêts et produits assimilés"),
+            new Seed("7513", "Produits des cessions des immobilisations corporelles")
     );
 
     static final List<JournalSeed> JOURNALS = List.of(
@@ -174,6 +198,7 @@ public class LedgerSetupService {
         });
         seedPostingSetup(orgId);
         seedPhase3(orgId);
+        seedPhase3WaveB(orgId);
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
@@ -232,7 +257,7 @@ public class LedgerSetupService {
     }
 
     /** The posting-setup version this code seeds; ledger_settings.setup_version says what an organization has. */
-    static final int SETUP_VERSION = 3;
+    static final int SETUP_VERSION = 4;
 
     static final String EXPORT_MENTION = "Exonéré de TVA, article 92-I-1° du CGI (exportation)";
     static final String EXEMPT_MENTION = "Exonéré de TVA (article 91 du CGI)";
@@ -244,8 +269,8 @@ public class LedgerSetupService {
      * seeds, so a value a person changed afterwards is never put back.
      */
     private void seedPhase3(UUID orgId) {
-        int moved = jdbc.update("UPDATE ledger_settings SET setup_version = ?, updated_at = now()"
-                + " WHERE organization_id = ? AND setup_version < ?", SETUP_VERSION, orgId, SETUP_VERSION);
+        int moved = jdbc.update("UPDATE ledger_settings SET setup_version = 3, updated_at = now()"
+                + " WHERE organization_id = ? AND setup_version < 3", orgId);
         if (moved == 0) {
             return;
         }
@@ -271,6 +296,37 @@ public class LedgerSetupService {
         jdbc.update("UPDATE ledger_business_group SET vat_rule = 'EXEMPT', exempt_vat_code = 'EXPORT' WHERE organization_id = ?"
                 + " AND code = 'EXPORT' AND exempt_vat_code IS NULL"
                 + " AND EXISTS (SELECT 1 FROM ledger_vat_setup v WHERE v.organization_id = ? AND v.code = 'EXPORT')", orgId, orgId);
+    }
+
+    /** A fixed-asset category: code, name, asset, depreciation and expense accounts, default life in months. */
+    record AssetCategorySeed(String code, String name, String asset, String depreciation, String expense, int lifeMonths) {}
+
+    static final List<AssetCategorySeed> ASSET_CATEGORIES = List.of(
+            new AssetCategorySeed("IT_EQUIPMENT", "Matériel informatique", "2355", "28355", "6193", 60),
+            new AssetCategorySeed("OFFICE_EQUIPMENT", "Matériel de bureau", "2352", "28352", "6193", 60),
+            new AssetCategorySeed("OFFICE_FURNITURE", "Mobilier de bureau", "2351", "28351", "6193", 120),
+            new AssetCategorySeed("VEHICLES", "Matériel de transport", "2340", "28340", "6193", 60),
+            new AssetCategorySeed("TOOLS", "Matériel et outillage", "2332", "28332", "6193", 120),
+            new AssetCategorySeed("FITTINGS", "Agencements et installations", "2356", "28356", "6193", 120),
+            new AssetCategorySeed("SOFTWARE", "Logiciels", "2220", "2822", "6192", 36));
+
+    /**
+     * Phase 3 wave B seeds (version 4), once per organization: the fixed-asset categories. The
+     * accounts the wave needs (34558, the cut-off and fixed-asset accounts) are in {@link #ACCOUNTS}.
+     */
+    private void seedPhase3WaveB(UUID orgId) {
+        int moved = jdbc.update("UPDATE ledger_settings SET setup_version = 4, updated_at = now()"
+                + " WHERE organization_id = ? AND setup_version < 4", orgId);
+        if (moved == 0) {
+            return;
+        }
+        int order = 0;
+        for (AssetCategorySeed c : ASSET_CATEGORIES) {
+            jdbc.update("INSERT INTO ledger_asset_category (organization_id, code, name, asset_account_id, depreciation_account_id,"
+                    + " expense_account_id, default_life_months, sort_order) VALUES (?, ?, ?, " + ACCOUNT + ", " + ACCOUNT + ", "
+                    + ACCOUNT + ", ?, ?) ON CONFLICT DO NOTHING", orgId, c.code(), c.name(), orgId, c.asset(), orgId,
+                    c.depreciation(), orgId, c.expense(), c.lifeMonths(), order++);
+        }
     }
 
     private void seedCategories(UUID orgId, String kind, Map<String, String> categories) {

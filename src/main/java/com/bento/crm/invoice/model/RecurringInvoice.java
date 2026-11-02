@@ -34,6 +34,12 @@ public class RecurringInvoice extends BaseTenantEntity {
     @Column(nullable = false, columnDefinition = "uuid")
     private UUID partnerId;
 
+    /** CUSTOMER templates bill customers; VENDOR templates generate supplier bills (phase 3). */
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 10)
+    @Builder.Default
+    private Invoice.InvoiceType type = Invoice.InvoiceType.CUSTOMER;
+
     @Column(nullable = false)
     private String name;
 

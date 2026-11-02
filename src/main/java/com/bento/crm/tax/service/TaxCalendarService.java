@@ -44,6 +44,7 @@ public class TaxCalendarService {
     private final PartnerRepository partnerRepository;
     private final TeamNotifier teamNotifier;
     private final JdbcTemplate jdbc;
+    private final com.bento.crm.ledger.service.LedgerVatService ledgerVat;
 
     private static UUID org() {
         return TenantContext.getCurrentOrganizationId();
@@ -145,6 +146,10 @@ public class TaxCalendarService {
             d.setStatus(r.status());
             d.setDoneAt(r.status() == TaxDeadline.Status.DONE ? Instant.now() : null);
             d.setDoneBy(r.status() == TaxDeadline.Status.DONE ? CurrentUser.idOrNull() : null);
+            // The company's own TVA return done: its period's VAT settlement posts, if not posted yet.
+            if (r.status() == TaxDeadline.Status.DONE && d.getKind() == TaxDeadline.Kind.TVA && d.getPartnerId() == null) {
+                ledgerVat.settleForDeadline(d.getOrganizationId(), d.getPeriodStart(), d.getPeriodEnd());
+            }
         }
         if (r.amount() != null) {
             if (r.amount().signum() < 0) throw new IllegalArgumentException("The amount cannot be negative");

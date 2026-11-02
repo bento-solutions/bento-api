@@ -39,9 +39,10 @@ public class RecurringInvoiceController {
     @GetMapping
     @PreAuthorize("hasAuthority('INVOICES_READ')")
     @Operation(summary = "List recurring invoices")
-    public ResponseEntity<PageResponse<RecurringInvoiceResponse>> list(Pageable pageable) {
+    public ResponseEntity<PageResponse<RecurringInvoiceResponse>> list(
+            @RequestParam(required = false) com.bento.crm.invoice.model.Invoice.InvoiceType type, Pageable pageable) {
         return ResponseEntity.ok(PageResponse.fromPage(
-                recurringInvoiceService.list(pageable).map(recurringInvoiceService::toResponse)));
+                recurringInvoiceService.list(type, pageable).map(recurringInvoiceService::toResponse)));
     }
 
     @GetMapping("/{id}")

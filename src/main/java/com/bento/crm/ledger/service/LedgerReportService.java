@@ -25,6 +25,16 @@ public class LedgerReportService {
 
     private final LedgerSetupService setup;
     private final JdbcTemplate jdbc;
+    private final LedgerPostingService posting;
+
+    /**
+     * Year-end carry-forwards are not counted twice: entries before the last carry-forward on or
+     * before the period start are left out (it holds them), and a carry-forward inside the period
+     * is left out (the period already holds what it carries). Two parameters: floor, from.
+     */
+    private static final String CARRY_FORWARD = " AND e.entry_date >= ? AND NOT (COALESCE(e.source_type, '') = 'YEAR_END'"
+            + " AND e.reversed_by_id IS NULL AND e.reversal_of_id IS NULL AND e.entry_date > ?"
+            + " AND e.journal_id IN (SELECT oj.id FROM ledger_journal oj WHERE oj.organization_id = e.organization_id AND oj.kind = 'OPENING'))";
 
     private UUID org() {
         UUID orgId = TenantContext.getCurrentOrganizationId();
@@ -91,6 +101,9 @@ public class LedgerReportService {
             filter.append(" AND l.cost_center_id = ?");
             params.add(costCenterId);
         }
+        filter.append(CARRY_FORWARD);
+        params.add(posting.carryForwardFloor(orgId, p.from()));
+        params.add(p.from());
 
         Map<UUID, Acc> accounts = new HashMap<>();
         Map<UUID, BigDecimal> opening = new HashMap<>();
@@ -153,7 +166,8 @@ public class LedgerReportService {
     public LedgerDtos.TrialBalance trialBalance(LocalDate from, LocalDate to, Integer accountClass) {
         UUID orgId = org();
         Period p = period(orgId, from, to);
-        List<Object> params = new ArrayList<>(List.of(p.from(), p.from(), p.to(), p.from(), p.to(), orgId, p.to()));
+        List<Object> params = new ArrayList<>(List.of(p.from(), p.from(), p.to(), p.from(), p.to(), orgId, p.to(),
+                posting.carryForwardFloor(orgId, p.from()), p.from()));
         String classFilter = "";
         if (accountClass != null) {
             if (accountClass < 1 || accountClass > 8) {
@@ -172,7 +186,7 @@ public class LedgerReportService {
                 FROM ledger_entry_line l
                 JOIN ledger_entry e ON e.id = l.entry_id AND e.organization_id = l.organization_id AND e.deleted_at IS NULL
                 JOIN ledger_account a ON a.id = l.account_id AND a.organization_id = l.organization_id
-                WHERE l.organization_id = ? AND l.deleted_at IS NULL AND e.entry_date <= ?""" + classFilter + """
+                WHERE l.organization_id = ? AND l.deleted_at IS NULL AND e.entry_date <= ?""" + CARRY_FORWARD + classFilter + """
 
                 GROUP BY a.id, a.code, a.name, a.account_class
                 ORDER BY a.code
