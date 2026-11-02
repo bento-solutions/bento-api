@@ -43,6 +43,7 @@ public class BankImportService {
     private final BankCategorizer categorizer;
     private final ReconciliationService reconciliation;
     private final JdbcTemplate jdbc;
+    private final com.bento.crm.ledger.service.LedgerAutoPostingService ledger;
 
     /** The account whose number is the statement's, comparing digits (a RIB contains the account number). */
     public Optional<BankAccount> matchAccount(UUID orgId, String number) {
@@ -124,6 +125,8 @@ public class BankImportService {
         }
         transactionRepository.flush();
         reconciliation.autoMatch(orgId, added);
+        // Lines left unmatched post against their category's account (matched ones already did nothing).
+        ledger.bankLines(added);
         // Callers read the result back with plain SQL, which does not flush the session.
         transactionRepository.flush();
         return imp;

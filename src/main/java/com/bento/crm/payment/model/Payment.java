@@ -50,6 +50,15 @@ public class Payment extends BaseTenantEntity {
     @Column(columnDefinition = "text")
     private String notes;
 
+    /** The bank account the money went through (bank matching fills it); null with the cash register. */
+    @Column(columnDefinition = "uuid")
+    private UUID bankAccountId;
+
+    /** Paid in cash, through the cash register (5161) rather than a bank account. */
+    @Column(nullable = false)
+    @Builder.Default
+    private boolean cashRegister = false;
+
     public enum Method {
         BANK_TRANSFER, CHECK, CASH, CARD, DIRECT_DEBIT, OTHER
     }

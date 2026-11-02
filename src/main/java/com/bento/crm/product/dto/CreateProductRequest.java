@@ -36,4 +36,18 @@ public class CreateProductRequest {
 
     @jakarta.validation.constraints.PositiveOrZero
     private BigDecimal reorderLevel;
+
+    /**
+     * Ledger product posting group (null = GOODS for stocked products, SERVICES otherwise). On an
+     * update a field left out keeps the product's group; an explicit null clears it.
+     */
+    private java.util.UUID productGroupId;
+
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private boolean productGroupIdSet;
+
+    public void setProductGroupId(java.util.UUID id) {
+        this.productGroupId = id;
+        this.productGroupIdSet = true;
+    }
 }

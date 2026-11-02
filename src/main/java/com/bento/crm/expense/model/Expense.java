@@ -51,4 +51,8 @@ public class Expense extends BaseTenantEntity {
 
     @Column(length = 100)
     private String reference;
+
+    /** Analytic cost center the expense line posts to. */
+    @Column(columnDefinition = "uuid")
+    private UUID costCenterId;
 }

@@ -76,6 +76,16 @@ public class Partner extends BaseTenantEntity {
     @Column(columnDefinition = "uuid")
     private UUID assignedToUserId;
 
+    /** Ledger posting groups; null means the organization's default group. */
+    @Column(columnDefinition = "uuid")
+    private UUID customerGroupId;
+
+    @Column(columnDefinition = "uuid")
+    private UUID supplierGroupId;
+
+    @Column(columnDefinition = "uuid")
+    private UUID businessGroupId;
+
     @Column(columnDefinition = "uuid")
     private UUID ownerId;
 

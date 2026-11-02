@@ -28,6 +28,7 @@ public class ProductResponse {
     private Boolean isActive;
     private Boolean trackStock;
     private BigDecimal reorderLevel;
+    private UUID productGroupId;
     private Long version;
     private Instant createdAt;
     private Instant updatedAt;
@@ -48,6 +49,7 @@ public class ProductResponse {
                 .isActive(p.getIsActive())
                 .trackStock(p.getTrackStock())
                 .reorderLevel(p.getReorderLevel())
+                .productGroupId(p.getProductGroupId())
                 .version(p.getVersion())
                 .createdAt(p.getCreatedAt())
                 .updatedAt(p.getUpdatedAt())

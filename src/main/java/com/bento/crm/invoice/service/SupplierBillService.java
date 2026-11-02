@@ -226,7 +226,21 @@ public class SupplierBillService {
             line.put("unitPrice", unitPrice);
         }
         line.putIfAbsent("qty", 1);
+        // Order lines carry the VAT rate as a percentage (20); invoice lines as a fraction (0.20).
+        Object rate = line.get("vatRate");
+        BigDecimal r = rate == null ? null : rate instanceof BigDecimal d ? d
+                : rate instanceof Number n ? new BigDecimal(n.toString()) : parse(rate.toString());
+        line.put("vatRate", r == null ? new BigDecimal("0.20")
+                : r.compareTo(BigDecimal.ONE) > 0 ? r.movePointLeft(2) : r);
         return line;
+    }
+
+    private static BigDecimal parse(String s) {
+        try {
+            return new BigDecimal(s.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private static Object firstOf(Map<String, Object> map, String... keys) {

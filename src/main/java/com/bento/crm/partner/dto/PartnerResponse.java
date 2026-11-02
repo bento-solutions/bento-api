@@ -111,6 +111,15 @@ public class PartnerResponse {
     @JsonProperty("source_url")
     private String sourceUrl;
 
+    @JsonProperty("customerGroupId")
+    private UUID customerGroupId;
+
+    @JsonProperty("supplierGroupId")
+    private UUID supplierGroupId;
+
+    @JsonProperty("businessGroupId")
+    private UUID businessGroupId;
+
     @JsonProperty("created_at")
     private Instant createdAt;
 
@@ -161,6 +170,9 @@ public class PartnerResponse {
                 .notes(partner.getNotes())
                 .externalId(partner.getExternalId())
                 .sourceUrl(partner.getSourceUrl())
+                .customerGroupId(partner.getCustomerGroupId())
+                .supplierGroupId(partner.getSupplierGroupId())
+                .businessGroupId(partner.getBusinessGroupId())
                 .createdAt(partner.getCreatedAt())
                 .deletedAt(partner.getDeletedAt())
                 .updatedAt(partner.getUpdatedAt())

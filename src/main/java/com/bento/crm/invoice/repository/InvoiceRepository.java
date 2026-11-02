@@ -41,7 +41,10 @@ public interface InvoiceRepository extends JpaRepository<Invoice, UUID>, JpaSpec
     @Query("SELECT i FROM Invoice i WHERE i.organizationId = :orgId AND i.deletedAt IS NOT NULL ORDER BY i.deletedAt DESC")
     Page<Invoice> findDeletedByOrganizationId(@Param("orgId") UUID orgId, Pageable pageable);
 
-    @Query("SELECT i FROM Invoice i WHERE i.deletedAt IS NOT NULL AND i.deletedAt < :cutoff")
+    /** Posted invoices stay: the ledger keeps pointing at them. */
+    @Query("SELECT i FROM Invoice i WHERE i.deletedAt IS NOT NULL AND i.deletedAt < :cutoff"
+            + " AND NOT EXISTS (SELECT 1 FROM LedgerEntry e WHERE e.organizationId = i.organizationId"
+            + " AND e.sourceId = i.id AND e.sourceType IN ('INVOICE', 'BILL'))")
     List<Invoice> findPurgeable(@Param("cutoff") Instant cutoff);
 
     /**

@@ -106,7 +106,7 @@ public class OrganizationService {
         Organization organization = organizationRepository.save(Organization.builder()
                 .name(name)
                 .industry(industry)
-                .defaultCurrency(currency != null ? currency.toUpperCase(java.util.Locale.ROOT) : "USD")
+                .defaultCurrency(currency != null ? currency.toUpperCase(java.util.Locale.ROOT) : "MAD")
                 .timezone(timezone != null ? timezone : "UTC")
                 .fiscalYearStartMonth(1)
                 .plan("FREE")

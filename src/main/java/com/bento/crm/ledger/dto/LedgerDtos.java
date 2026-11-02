@@ -1,6 +1,7 @@
 package com.bento.crm.ledger.dto;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonSetter;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
@@ -107,4 +108,50 @@ public final class LedgerDtos {
 
     public record TrialBalanceTotals(BigDecimal openingDebit, BigDecimal openingCredit, BigDecimal periodDebit,
                                      BigDecimal periodCredit, BigDecimal closingDebit, BigDecimal closingCredit) {}
+
+    // Posting setup (phase 2)
+
+    public record PostingSetup(List<PartnerGroup> partnerGroups, List<Group> businessGroups, List<Group> productGroups,
+                               List<GeneralSetupRow> generalSetup, List<VatSetupRow> vatSetup,
+                               List<BankAccountRow> bankAccounts, UUID cashAccountId, String cashAccountCode,
+                               List<CategoryRow> bankCategories, List<CategoryRow> expenseCategories,
+                               LocalDate startDate) {}
+
+    public record PartnerGroup(UUID id, String code, String name, String side, UUID accountId, String accountCode,
+                               @JsonProperty("isDefault") boolean isDefault) {}
+
+    public record Group(UUID id, String code, String name, @JsonProperty("isDefault") boolean isDefault) {}
+
+    public record GeneralSetupRow(UUID id, UUID businessGroupId, UUID productGroupId, UUID salesAccountId,
+                                  String salesAccountCode, UUID purchaseAccountId, String purchaseAccountCode) {}
+
+    public record VatSetupRow(UUID id, String code, String name, BigDecimal rate, UUID collectedAccountId,
+                              String collectedAccountCode, UUID recoverableAccountId, String recoverableAccountCode,
+                              boolean exempt) {}
+
+    public record BankAccountRow(UUID bankAccountId, String bankAccountName, UUID accountId, String accountCode) {}
+
+    public record CategoryRow(String category, UUID accountId, String accountCode) {}
+
+    public record PartnerGroupCreate(@NotBlank @Size(max = 20) String code, @NotBlank @Size(max = 160) String name,
+                                     @NotBlank String side, @NotNull UUID accountId) {}
+
+    public record PartnerGroupUpdate(@Size(min = 1, max = 160) String name, UUID accountId,
+                                     @JsonProperty("isDefault") Boolean isDefault) {}
+
+    public record GroupCreate(@NotBlank @Size(max = 20) String code, @NotBlank @Size(max = 160) String name) {}
+
+    public record GroupUpdate(@Size(min = 1, max = 160) String name, @JsonProperty("isDefault") Boolean isDefault) {}
+
+    public record GeneralSetupUpdate(UUID salesAccountId, UUID purchaseAccountId) {}
+
+    public record VatSetupUpdate(UUID collectedAccountId, UUID recoverableAccountId) {}
+
+    public record AccountAssignment(@NotNull UUID accountId) {}
+
+    public record StartDateUpdate(@NotNull LocalDate startDate) {}
+
+    public record RepostResult(int posted, int skipped, List<RepostError> errors) {}
+
+    public record RepostError(String sourceType, UUID sourceId, String label, String message) {}
 }

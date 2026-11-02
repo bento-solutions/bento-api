@@ -93,7 +93,10 @@ public interface PartnerRepository extends JpaRepository<Partner, UUID>, JpaSpec
     Page<Partner> findDeletedByOrganizationId(@Param("orgId") UUID orgId, Pageable pageable);
 
     /** Org-wide on purpose: the purge job runs outside any tenant request context. */
-    @Query("SELECT p FROM Partner p WHERE p.deletedAt IS NOT NULL AND p.deletedAt < :cutoff")
+    /** Partners with ledger lines stay, so their receivable and payable history keeps its partner. */
+    @Query("SELECT p FROM Partner p WHERE p.deletedAt IS NOT NULL AND p.deletedAt < :cutoff"
+            + " AND NOT EXISTS (SELECT 1 FROM LedgerEntryLine l WHERE l.organizationId = p.organizationId"
+            + " AND l.partnerId = p.id)")
     List<Partner> findPurgeable(@Param("cutoff") java.time.Instant cutoff);
 
     /**

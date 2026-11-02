@@ -21,6 +21,7 @@ import java.util.UUID;
 public class ProductService {
 
     private final ProductRepository productRepository;
+    private final com.bento.crm.ledger.service.LedgerPostingSetupService postingSetup;
 
     @Transactional
     public Product createProduct(CreateProductRequest request) {
@@ -79,6 +80,10 @@ public class ProductService {
             p.setTrackStock(request.getTrackStock());
         }
         p.setReorderLevel(request.getReorderLevel());
+        if (request.isProductGroupIdSet() || p.getId() == null) {
+            postingSetup.checkProductGroup(p.getOrganizationId(), request.getProductGroupId());
+            p.setProductGroupId(request.getProductGroupId());
+        }
     }
 
     @Transactional
