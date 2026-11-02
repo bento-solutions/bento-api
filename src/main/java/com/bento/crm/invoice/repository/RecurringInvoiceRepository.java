@@ -24,6 +24,12 @@ public interface RecurringInvoiceRepository extends JpaRepository<RecurringInvoi
     @Query("SELECT r FROM RecurringInvoice r WHERE r.organizationId = :orgId AND r.deletedAt IS NULL ORDER BY r.createdAt DESC")
     Page<RecurringInvoice> findByOrganizationId(@Param("orgId") UUID orgId, Pageable pageable);
 
+    @Query("SELECT r FROM RecurringInvoice r WHERE r.organizationId = :orgId AND r.type = :type AND r.deletedAt IS NULL"
+            + " ORDER BY r.createdAt DESC")
+    Page<RecurringInvoice> findByOrganizationIdAndType(@Param("orgId") UUID orgId,
+                                                       @Param("type") com.bento.crm.invoice.model.Invoice.InvoiceType type,
+                                                       Pageable pageable);
+
     @Query("SELECT r FROM RecurringInvoice r WHERE r.organizationId = :orgId AND r.id = :id AND r.deletedAt IS NULL")
     Optional<RecurringInvoice> findByOrganizationIdAndId(@Param("orgId") UUID orgId, @Param("id") UUID id);
 

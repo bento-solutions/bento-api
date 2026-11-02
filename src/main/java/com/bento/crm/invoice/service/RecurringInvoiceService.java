@@ -72,7 +72,14 @@ public class RecurringInvoiceService {
     }
 
     public Page<RecurringInvoice> list(Pageable pageable) {
-        return recurringInvoiceRepository.findByOrganizationId(TenantContext.getCurrentOrganizationId(), pageable);
+        return list(null, pageable);
+    }
+
+    /** The templates of one side (CUSTOMER or VENDOR), or all of them when {@code type} is null. */
+    public Page<RecurringInvoice> list(Invoice.InvoiceType type, Pageable pageable) {
+        UUID orgId = TenantContext.getCurrentOrganizationId();
+        return type == null ? recurringInvoiceRepository.findByOrganizationId(orgId, pageable)
+                : recurringInvoiceRepository.findByOrganizationIdAndType(orgId, type, pageable);
     }
 
     /**
@@ -194,15 +201,16 @@ public class RecurringInvoiceService {
     private Generated bill(RecurringInvoice template, LocalDate invoiceDate) {
         UUID orgId = template.getOrganizationId();
         Partner partner = partnerRepository.findByOrganizationIdAndId(orgId, template.getPartnerId()).orElse(null);
+        boolean vendor = template.getType() == Invoice.InvoiceType.VENDOR;
         boolean canEmail = partner != null && partner.getEmail() != null && partner.getEmail().contains("@");
-        boolean send = Boolean.TRUE.equals(template.getAutoSend()) && canEmail;
+        boolean send = !vendor && Boolean.TRUE.equals(template.getAutoSend()) && canEmail;
 
         CreateInvoiceRequest request = new CreateInvoiceRequest();
-        request.setType(Invoice.InvoiceType.CUSTOMER);
+        request.setType(vendor ? Invoice.InvoiceType.VENDOR : Invoice.InvoiceType.CUSTOMER);
         request.setPartnerId(template.getPartnerId());
-        // Without an address to send it to, the invoice waits as a draft rather than claiming
-        // to have been sent.
-        request.setStatus(send ? Invoice.Status.SENT : Invoice.Status.DRAFT);
+        // A supplier bill is booked as received (SENT), which posts it in AC. A customer invoice
+        // without an address to send it to waits as a draft rather than claiming to have been sent.
+        request.setStatus(vendor || send ? Invoice.Status.SENT : Invoice.Status.DRAFT);
         request.setInvoiceDate(invoiceDate);
         request.setDueDate(invoiceDate.plusDays(orDefault(template.getPaymentTermsDays(), 30)));
         request.setCustomerName(template.getCustomerName() != null ? template.getCustomerName()
@@ -228,6 +236,7 @@ public class RecurringInvoiceService {
         return RecurringInvoiceResponse.builder()
                 .id(template.getId())
                 .partnerId(template.getPartnerId())
+                .type(template.getType() == null ? Invoice.InvoiceType.CUSTOMER : template.getType())
                 .name(template.getName())
                 .frequency(template.getFrequency())
                 .intervalCount(template.getIntervalCount())
@@ -268,6 +277,7 @@ public class RecurringInvoiceService {
             throw new IllegalArgumentException("Add at least one line with a quantity and a unit price");
         }
         template.setPartnerId(request.getPartnerId());
+        if (request.getType() != null) template.setType(request.getType());
         template.setName(request.getName().trim());
         template.setPaymentTermsDays(orDefault(request.getPaymentTermsDays(), 30));
         template.setAutoSend(request.getAutoSend() == null || request.getAutoSend());

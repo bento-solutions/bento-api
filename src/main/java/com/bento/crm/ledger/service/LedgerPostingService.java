@@ -45,6 +45,14 @@ public class LedgerPostingService {
 
     private static final BigDecimal ZERO = BigDecimal.ZERO.setScale(2);
 
+    public static final String LOCKED = "This period is locked";
+
+    /**
+     * What a posting dated on or before the lock date does: a manual entry (or a closing action a
+     * person takes) is refused; an automatic posting moves to the day after the lock date.
+     */
+    public enum LockPolicy { REJECT, SHIFT }
+
     private final LedgerSetupService setup;
     private final LedgerJournalRepository journalRepository;
     private final LedgerAccountRepository accountRepository;
@@ -66,7 +74,97 @@ public class LedgerPostingService {
         setup.ensure(orgId);
         LedgerJournal journal = journalRepository.findByOrganizationIdAndCode(orgId, journalCode)
                 .orElseThrow(() -> new ResourceNotFoundException("Journal not found: " + journalCode));
-        return write(orgId, journal, date, description, sourceType, sourceId, sourceLabel, null, lines, false);
+        return write(orgId, journal, date, description, sourceType, sourceId, sourceLabel, null, lines, false, false,
+                LockPolicy.SHIFT);
+    }
+
+    /** Same as {@link #post}, refusing a date on or before the lock date (an action a person takes). */
+    @Transactional
+    public LedgerEntry postManual(UUID orgId, String journalCode, LocalDate date, String description, String sourceType,
+                                  UUID sourceId, String sourceLabel, List<PostingLine> lines) {
+        setup.ensure(orgId);
+        LedgerJournal journal = journalRepository.findByOrganizationIdAndCode(orgId, journalCode)
+                .orElseThrow(() -> new ResourceNotFoundException("Journal not found: " + journalCode));
+        return write(orgId, journal, date, description, sourceType, sourceId, sourceLabel, null, lines, false, false,
+                LockPolicy.REJECT);
+    }
+
+    /**
+     * Reverses an entry with a mirror entry (source REVERSAL) dated {@code date}, and marks it
+     * reversed. Refused (400) when the date is locked and the policy is REJECT.
+     */
+    @Transactional
+    public LedgerEntry reverse(UUID orgId, LedgerEntry original, LocalDate date, LockPolicy policy) {
+        if (original.getReversedById() != null) {
+            throw new IllegalArgumentException("This entry has already been reversed");
+        }
+        LedgerJournal journal = journalRepository.findByOrganizationIdAndId(orgId, original.getJournalId())
+                .orElseThrow(() -> new ResourceNotFoundException("Journal not found"));
+        List<PostingLine> lines = lineRepository.findByOrganizationIdAndEntryIdIn(orgId, List.of(original.getId())).stream()
+                .map(l -> new PostingLine(l.getAccountId(), l.getPartnerId(), l.getCostCenterId(), l.getLabel(),
+                        l.getCredit(), l.getDebit()))
+                .toList();
+        LedgerEntry reversal = write(orgId, journal, date, "Reversal of " + original.getNumber() + ": " + original.getDescription(),
+                LedgerEntryService.SOURCE_REVERSAL, original.getId(), original.getNumber(), original.getId(), lines, true, true,
+                policy);
+        original.setReversedById(reversal.getId());
+        entryRepository.saveAndFlush(original);
+        return reversal;
+    }
+
+    // Lock date
+
+    /** The organization's lock date, or null when none is set. */
+    public LocalDate lockDate(UUID orgId) {
+        List<LocalDate> rows = jdbc.queryForList("SELECT lock_date FROM ledger_settings WHERE organization_id = ?",
+                LocalDate.class, orgId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** Whether a date is on or before the lock date. */
+    public boolean isLocked(UUID orgId, LocalDate date) {
+        LocalDate lock = lockDate(orgId);
+        return lock != null && date != null && !date.isAfter(lock);
+    }
+
+    /** 400 "This period is locked" when the date is on or before the lock date. */
+    public void checkNotLocked(UUID orgId, LocalDate date) {
+        if (isLocked(orgId, date)) {
+            throw new IllegalArgumentException(LOCKED);
+        }
+    }
+
+    /** The date an automatic posting dated {@code date} gets: the day after the lock date when locked. */
+    public LocalDate effectiveDate(UUID orgId, LocalDate date) {
+        LocalDate lock = lockDate(orgId);
+        return lock != null && date != null && !date.isAfter(lock) ? lock.plusDays(1) : date;
+    }
+
+    // Year-end carry-forward
+
+    /**
+     * The date of the last live carry-forward entry (the AN entry a year-end close posts) on or
+     * before {@code asOf}, or 0001-01-01. Balances as of a date count only entries from then on:
+     * the carry-forward already holds everything before it.
+     */
+    public LocalDate carryForwardFloor(UUID orgId, LocalDate asOf) {
+        LocalDate floor = jdbc.queryForObject("""
+                SELECT MAX(e.entry_date) FROM ledger_entry e JOIN ledger_journal j ON j.id = e.journal_id AND j.kind = 'OPENING'
+                WHERE e.organization_id = ? AND e.source_type = 'YEAR_END' AND e.reversed_by_id IS NULL
+                  AND e.reversal_of_id IS NULL AND e.deleted_at IS NULL AND e.entry_date <= ?
+                """, LocalDate.class, orgId, asOf == null ? LocalDate.of(9999, 12, 31) : asOf);
+        return floor == null ? LocalDate.of(1, 1, 1) : floor;
+    }
+
+    /** Balance (debit minus credit) of an account as of a date (null: everything), from the last carry-forward. */
+    public BigDecimal balance(UUID orgId, UUID accountId, LocalDate asOf) {
+        LocalDate to = asOf == null ? LocalDate.of(9999, 12, 31) : asOf;
+        BigDecimal b = jdbc.queryForObject("""
+                SELECT COALESCE(SUM(l.debit - l.credit), 0) FROM ledger_entry_line l
+                JOIN ledger_entry e ON e.id = l.entry_id AND e.deleted_at IS NULL
+                WHERE l.organization_id = ? AND l.account_id = ? AND l.deleted_at IS NULL AND e.entry_date >= ? AND e.entry_date <= ?
+                """, BigDecimal.class, orgId, accountId, carryForwardFloor(orgId, to), to);
+        return b == null ? ZERO : b.setScale(2, RoundingMode.HALF_UP);
     }
 
     /** Looks an account up by its code, for automatic postings that know the PCGE codes. */
@@ -85,7 +183,7 @@ public class LedgerPostingService {
                       UUID sourceId, String sourceLabel, UUID reversalOfId, List<PostingLine> lines,
                       boolean allowInactiveAccounts) {
         return write(orgId, journal, date, description, sourceType, sourceId, sourceLabel, reversalOfId, lines,
-                allowInactiveAccounts, allowInactiveAccounts);
+                allowInactiveAccounts, allowInactiveAccounts, LockPolicy.REJECT);
     }
 
     /**
@@ -95,12 +193,23 @@ public class LedgerPostingService {
      */
     LedgerEntry write(UUID orgId, LedgerJournal journal, LocalDate date, String description, String sourceType,
                       UUID sourceId, String sourceLabel, UUID reversalOfId, List<PostingLine> lines,
-                      boolean allowInactiveAccounts, boolean allowDeletedPartners) {
+                      boolean allowInactiveAccounts, boolean allowDeletedPartners, LockPolicy lockPolicy) {
         if (date == null) {
             throw new IllegalArgumentException("The entry date is required");
         }
         if (description == null || description.isBlank()) {
             throw new IllegalArgumentException("The description is required");
+        }
+        LocalDate lock = lockDate(orgId);
+        if (lock != null && !date.isAfter(lock)) {
+            if (lockPolicy != LockPolicy.SHIFT) {
+                throw new IllegalArgumentException(LOCKED);
+            }
+            String note = " (locked period, dated " + date + ")";
+            String base = description.trim();
+            if (base.length() + note.length() > 255) base = base.substring(0, 255 - note.length());
+            description = base + note;
+            date = lock.plusDays(1);
         }
         if (lines == null || lines.size() < 2) {
             throw new IllegalArgumentException("An entry needs at least 2 lines");

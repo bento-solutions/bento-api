@@ -44,6 +44,10 @@ public class LedgerEntryService {
     public static final String SOURCE_MANUAL = "MANUAL";
     public static final String SOURCE_REVERSAL = "REVERSAL";
 
+    /** Entries the closing actions post (phase 3 wave B): undone with their own action, not reversed by hand. */
+    public static final Set<String> CLOSING_SOURCES = Set.of("VAT_SETTLEMENT", "STOCK_CHANGE", "CUTOFF", "CUTOFF_REVERSAL",
+            "DEPRECIATION", "ASSET", "CASH", "YEAR_END");
+
     private final LedgerSetupService setup;
     private final LedgerPostingService posting;
     private final LedgerJournalRepository journalRepository;
@@ -166,7 +170,8 @@ public class LedgerEntryService {
         if (original.getReversedById() != null) {
             throw new IllegalArgumentException("This entry has already been reversed");
         }
-        if (original.getSourceType() != null && LedgerAutoPostingService.SOURCES.contains(original.getSourceType())) {
+        if (original.getSourceType() != null && (LedgerAutoPostingService.SOURCES.contains(original.getSourceType())
+                || CLOSING_SOURCES.contains(original.getSourceType()))) {
             throw new IllegalArgumentException("This entry was posted from a document: change or delete the document instead");
         }
         LedgerJournal journal = journalRepository.findByOrganizationIdAndId(orgId, original.getJournalId())
@@ -182,7 +187,7 @@ public class LedgerEntryService {
         LedgerEntry reversal;
         try {
             reversal = posting.write(orgId, journal, date, description, SOURCE_REVERSAL, original.getId(),
-                    original.getNumber(), original.getId(), lines, true, true);
+                    original.getNumber(), original.getId(), lines, true, true, LedgerPostingService.LockPolicy.REJECT);
             original.setReversedById(reversal.getId());
             entryRepository.saveAndFlush(original);
         } catch (DataIntegrityViolationException e) {

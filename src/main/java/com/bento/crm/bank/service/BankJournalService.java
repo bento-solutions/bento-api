@@ -45,6 +45,7 @@ public class BankJournalService {
     private final LedgerAutoPostingService ledger;
     private final LedgerPostingSetupService postingSetup;
     private final JdbcTemplate jdbc;
+    private final com.bento.crm.ledger.service.LedgerPostingService posting;
 
     private static UUID org() {
         return TenantContext.getCurrentOrganizationId();
@@ -147,10 +148,7 @@ public class BankJournalService {
         }
         BigDecimal ledgerBalance = BigDecimal.ZERO;
         for (UUID a : ledgerAccounts) {
-            BigDecimal b = jdbc.queryForObject("SELECT COALESCE(SUM(l.debit - l.credit), 0) FROM ledger_entry_line l"
-                    + " JOIN ledger_entry e ON e.id = l.entry_id AND e.deleted_at IS NULL"
-                    + " WHERE l.organization_id = ? AND l.account_id = ?", BigDecimal.class, orgId, a);
-            ledgerBalance = ledgerBalance.add(b == null ? BigDecimal.ZERO : b);
+            ledgerBalance = ledgerBalance.add(posting.balance(orgId, a, null));
         }
         BigDecimal st = (statement == null ? BigDecimal.ZERO : statement).setScale(2, RoundingMode.HALF_UP);
         BigDecimal lb = ledgerBalance.setScale(2, RoundingMode.HALF_UP);
@@ -209,6 +207,8 @@ public class BankJournalService {
         if (t.getValidatedAt() == null) {
             throw new IllegalArgumentException("This line is not validated");
         }
+        // Unvalidating reverses postings dated on the line's day: not in a locked period.
+        posting.checkNotLocked(orgId, t.getBookingDate());
         t.setValidatedAt(null);
         t.setValidatedBy(null);
         t = transactionRepository.saveAndFlush(t);

@@ -215,12 +215,14 @@ public class LedgerAutoPostingService {
             return false;
         }
         posting.write(orgId, journal, draft.date(), draft.description(), sourceType, sourceId, draft.label(), null,
-                draft.lines(), false, true);
+                draft.lines(), false, true, LedgerPostingService.LockPolicy.SHIFT);
         return true;
     }
 
     private boolean same(UUID orgId, LedgerEntry live, LedgerJournal journal, Draft draft) {
-        if (!live.getJournalId().equals(journal.getId()) || !live.getEntryDate().equals(draft.date())
+        // An entry moved past the lock date (or posted before the lock) still matches its document's date.
+        if (!live.getJournalId().equals(journal.getId())
+                || !posting.effectiveDate(orgId, live.getEntryDate()).equals(posting.effectiveDate(orgId, draft.date()))
                 || !Objects.equals(live.getSourceLabel(), cut(draft.label(), 160))) {
             return false;
         }
@@ -248,7 +250,7 @@ public class LedgerAutoPostingService {
                 .toList();
         LedgerEntry reversal = posting.write(orgId, journal, live.getEntryDate(),
                 "Reversal of " + live.getNumber() + ": " + live.getDescription(), LedgerEntryService.SOURCE_REVERSAL,
-                live.getId(), live.getNumber(), live.getId(), lines, true, true);
+                live.getId(), live.getNumber(), live.getId(), lines, true, true, LedgerPostingService.LockPolicy.SHIFT);
         live.setReversedById(reversal.getId());
         entryRepository.saveAndFlush(live);
     }
@@ -336,8 +338,12 @@ public class LedgerAutoPostingService {
                 BigDecimal net = qty.multiply(price);
                 UUID costCenter = uuid(line.get("costCenterId"), "cost center");
                 NetKey key;
+                UUID assetAccount = customer || advance ? null : fixedAssetAccount(orgId, line.get("fixedAssetId"));
                 if (advance) {
                     key = new NetKey(advanceAccount, partnerId, costCenter);
+                } else if (assetAccount != null) {
+                    // A bill line made into a fixed asset posts on the asset account (phase 3 wave B).
+                    key = new NetKey(assetAccount, null, costCenter);
                 } else {
                     UUID productGroup = productGroup(orgId, line, s, products);
                     LedgerPostingSetupService.GeneralRow g = s.general(businessGroup, productGroup);
@@ -416,6 +422,15 @@ public class LedgerAutoPostingService {
         deductedVat.forEach((a, v) -> lines.add(a, null, null, v.multiply(sign), "TVA"));
         if (!customer) lines.add(counter, partnerId, null, total.multiply(sign), description);
         return draft(customer ? "VT" : "AC", inv.getInvoiceDate(), description.trim(), number, lines);
+    }
+
+    /** The asset account of the fixed asset a bill line was made into, or null. */
+    private UUID fixedAssetAccount(UUID orgId, Object assetId) {
+        UUID id = uuidOrNull(assetId);
+        if (id == null) return null;
+        List<UUID> rows = jdbc.queryForList("SELECT asset_account_id FROM ledger_fixed_asset WHERE organization_id = ?"
+                + " AND id = ? AND deleted_at IS NULL", UUID.class, orgId, id);
+        return rows.isEmpty() ? null : rows.get(0);
     }
 
     private static BigDecimal sum(Map<?, BigDecimal> m) {
@@ -722,9 +737,10 @@ public class LedgerAutoPostingService {
     private record Doc(String sourceType, UUID id, String label) {}
 
     /**
-     * Posts every document dated on or after the start date that has no live entry. Each document
-     * goes in its own transaction, so one that cannot post is reported and the rest still post.
-     * Running it again posts nothing new.
+     * Brings every document dated on or after the start date in line with the current rules: posts
+     * the ones with no live entry, reverses and re-posts the ones whose live entry no longer matches,
+     * leaves the rest. Each document goes in its own transaction, so one that cannot post is
+     * reported and the rest still post. Running it again changes nothing.
      */
     public LedgerDtos.RepostResult repost(UUID orgId) {
         LocalDate start = perDocument.execute(st -> postingSetup.snapshot(orgId).startDate());

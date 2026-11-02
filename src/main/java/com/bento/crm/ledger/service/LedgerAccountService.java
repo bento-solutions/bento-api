@@ -37,6 +37,7 @@ public class LedgerAccountService {
     private final LedgerCostCenterRepository costCenterRepository;
     private final LedgerEntryLineRepository lineRepository;
     private final JdbcTemplate jdbc;
+    private final LedgerPostingService posting;
 
     private UUID org() {
         UUID orgId = TenantContext.getCurrentOrganizationId();
@@ -50,14 +51,15 @@ public class LedgerAccountService {
     public List<LedgerDtos.Account> accounts(boolean includeInactive) {
         UUID orgId = org();
         Map<UUID, BigDecimal> balances = new HashMap<>();
+        // From the last year-end carry-forward on, which already holds everything before it.
         jdbc.query("""
-                SELECT l.account_id, SUM(l.debit - l.credit) AS balance
+                SELECT l.account_id, COALESCE(SUM(l.debit - l.credit) FILTER (WHERE e.entry_date >= ?), 0) AS balance
                 FROM ledger_entry_line l JOIN ledger_entry e ON e.id = l.entry_id AND e.deleted_at IS NULL
                 WHERE l.organization_id = ? AND l.deleted_at IS NULL
                 GROUP BY l.account_id
                 """, rs -> {
             balances.put(rs.getObject(1, UUID.class), rs.getBigDecimal(2));
-        }, orgId);
+        }, posting.carryForwardFloor(orgId, null), orgId);
         return accountRepository.findAll(orgId, includeInactive).stream()
                 .map(a -> toDto(a, balances.containsKey(a.getId()), balances.getOrDefault(a.getId(), ZERO)))
                 .toList();
@@ -121,12 +123,7 @@ public class LedgerAccountService {
     }
 
     private BigDecimal balance(UUID orgId, UUID accountId) {
-        BigDecimal b = jdbc.queryForObject("""
-                SELECT COALESCE(SUM(l.debit - l.credit), 0)
-                FROM ledger_entry_line l JOIN ledger_entry e ON e.id = l.entry_id AND e.deleted_at IS NULL
-                WHERE l.organization_id = ? AND l.account_id = ? AND l.deleted_at IS NULL
-                """, BigDecimal.class, orgId, accountId);
-        return b == null ? ZERO : b.setScale(2);
+        return posting.balance(orgId, accountId, null);
     }
 
     private static LedgerDtos.Account toDto(LedgerAccount a, boolean used, BigDecimal balance) {
