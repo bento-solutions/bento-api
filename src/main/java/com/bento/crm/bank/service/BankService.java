@@ -101,7 +101,9 @@ public class BankService {
         BankAccount a = new BankAccount();
         a.setOrganizationId(org());
         apply(a, r, true);
-        return account(save(a).getId());
+        UUID id = save(a).getId();
+        ledger.bankOpening(a.getOrganizationId(), id);
+        return account(id);
     }
 
     @Transactional
@@ -109,6 +111,7 @@ public class BankService {
         BankAccount a = find(id);
         apply(a, r, false);
         save(a);
+        ledger.bankOpening(a.getOrganizationId(), id);
         return account(id);
     }
 
@@ -121,7 +124,8 @@ public class BankService {
             throw new IllegalStateException("This account has statement lines: close it instead");
         }
         a.setDeletedAt(Instant.now());
-        accountRepository.save(a);
+        accountRepository.saveAndFlush(a);
+        ledger.bankOpening(a.getOrganizationId(), id);
     }
 
     private BankAccount save(BankAccount a) {
