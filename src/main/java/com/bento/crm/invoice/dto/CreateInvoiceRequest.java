@@ -56,4 +56,15 @@ public class CreateInvoiceRequest {
     private BigDecimal total;
 
     private List<Map<String, Object>> lines;
+
+    /** INVOICE (default) or ADVANCE; credit notes are issued with POST /invoices/{id}/credit-note. */
+    private Invoice.Kind kind;
+
+    private UUID sourceProposalId;
+
+    /** A final invoice's deductions: {@code [{advanceInvoiceId, base?, vat?}]}; amounts default to what is left. */
+    private List<Map<String, Object>> advanceDeductions;
+
+    /** True: deduct every open advance of the same deal or proposal and partner, in full. */
+    private Boolean deductAdvances;
 }

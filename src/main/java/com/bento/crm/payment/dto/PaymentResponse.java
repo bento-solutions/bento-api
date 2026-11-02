@@ -28,6 +28,8 @@ public class PaymentResponse {
     private String notes;
     private UUID bankAccountId;
     private boolean cashRegister;
+    private boolean advance;
+    private LocalDate advanceAppliedOn;
     private UUID createdBy;
     private UUID updatedBy;
     private Instant createdAt;
@@ -46,6 +48,8 @@ public class PaymentResponse {
                 .notes(payment.getNotes())
                 .bankAccountId(payment.getBankAccountId())
                 .cashRegister(payment.isCashRegister())
+                .advance(payment.isAdvance())
+                .advanceAppliedOn(payment.getAdvanceAppliedOn())
                 .createdBy(payment.getCreatedBy())
                 .updatedBy(payment.getUpdatedBy())
                 .createdAt(payment.getCreatedAt())

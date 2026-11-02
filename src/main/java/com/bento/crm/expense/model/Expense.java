@@ -52,6 +52,10 @@ public class Expense extends BaseTenantEntity {
     @Column(length = 100)
     private String reference;
 
+    /** The VAT code of vatAmount (its recoverable account); null means TVA20. */
+    @Column(length = 20)
+    private String vatCode;
+
     /** Analytic cost center the expense line posts to. */
     @Column(columnDefinition = "uuid")
     private UUID costCenterId;

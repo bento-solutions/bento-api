@@ -46,6 +46,7 @@ public class InvoiceController {
     private final InvoiceTemplateService invoiceTemplateService;
     private final SupplierBillService supplierBillService;
     private final AgingService agingService;
+    private final com.bento.crm.ledger.service.VatDeterminationService vatDetermination;
 
     public InvoiceController(InvoiceService invoiceService,
                              PdfDocumentService pdfDocumentService,
@@ -53,7 +54,8 @@ public class InvoiceController {
                              OrganizationRepository organizationRepository,
                              InvoiceTemplateService invoiceTemplateService,
                              SupplierBillService supplierBillService,
-                             AgingService agingService) {
+                             AgingService agingService,
+                             com.bento.crm.ledger.service.VatDeterminationService vatDetermination) {
         this.invoiceService = invoiceService;
         this.pdfDocumentService = pdfDocumentService;
         this.partnerRepository = partnerRepository;
@@ -61,6 +63,58 @@ public class InvoiceController {
         this.invoiceTemplateService = invoiceTemplateService;
         this.supplierBillService = supplierBillService;
         this.agingService = agingService;
+        this.vatDetermination = vatDetermination;
+    }
+
+    /** The response with what was paid and credited, the balance due, and the VAT mentions. */
+    private InvoiceResponse dto(Invoice invoice, java.util.Map<UUID, java.math.BigDecimal> paid,
+                                java.util.Map<UUID, java.math.BigDecimal> credited, java.util.Map<String, String> mentions) {
+        InvoiceResponse dto = InvoiceResponse.fromEntity(invoice);
+        java.math.BigDecimal p = paid.getOrDefault(invoice.getId(), java.math.BigDecimal.ZERO);
+        java.math.BigDecimal c = credited.getOrDefault(invoice.getId(), java.math.BigDecimal.ZERO);
+        dto.setAmountPaid(p);
+        dto.setAmountCredited(c.setScale(2, java.math.RoundingMode.HALF_UP));
+        java.math.BigDecimal total = invoice.getTotal() == null ? java.math.BigDecimal.ZERO : invoice.getTotal();
+        java.math.BigDecimal due = invoice.getKind() == Invoice.Kind.CREDIT_NOTE || invoice.getStatus() == Invoice.Status.PAID
+                ? java.math.BigDecimal.ZERO : total.subtract(p).subtract(c).max(java.math.BigDecimal.ZERO);
+        dto.setBalanceDue(due.setScale(2, java.math.RoundingMode.HALF_UP));
+        dto.setVatBreakdown(com.bento.crm.invoice.service.InvoiceVat.breakdown(invoice, mentions));
+        return dto;
+    }
+
+    private InvoiceResponse dto(Invoice invoice) {
+        UUID orgId = invoice.getOrganizationId();
+        return dto(invoice, agingService.paidByInvoice(orgId), agingService.creditedByInvoice(orgId),
+                vatDetermination.mentions(orgId));
+    }
+
+    // Advance invoices and credit notes (phase 3)
+
+    @PostMapping("/advance")
+    @PreAuthorize("hasAuthority('INVOICES_CREATE')")
+    @Operation(summary = "Create an advance invoice", description = "A draft advance invoice (ACP) for a deal or proposal")
+    public ResponseEntity<InvoiceResponse> createAdvance(@RequestBody com.bento.crm.invoice.dto.AdvanceInvoiceRequest request) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(dto(invoiceService.createAdvance(request)));
+    }
+
+    @GetMapping("/advances/open")
+    @PreAuthorize("hasAuthority('INVOICES_READ')")
+    @Operation(summary = "Open advances", description = "Issued advance invoices with something left to deduct")
+    public ResponseEntity<java.util.List<com.bento.crm.invoice.service.InvoiceService.OpenAdvance>> openAdvances(
+            @RequestParam(required = false) UUID partnerId,
+            @RequestParam(required = false) UUID dealId,
+            @RequestParam(required = false) UUID proposalId,
+            @RequestParam(required = false) Invoice.InvoiceType type) {
+        return ResponseEntity.ok(invoiceService.openAdvances(com.bento.crm.common.context.TenantContext.getCurrentOrganizationId(),
+                type, partnerId, dealId, proposalId, null));
+    }
+
+    @PostMapping("/{id}/credit-note")
+    @PreAuthorize("hasAuthority('INVOICES_CREATE')")
+    @Operation(summary = "Issue a credit note", description = "A credit note (AV/AVF) against a sent invoice or bill")
+    public ResponseEntity<InvoiceResponse> creditNote(@PathVariable UUID id,
+                                                      @RequestBody(required = false) com.bento.crm.invoice.dto.CreditNoteRequest request) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(dto(invoiceService.issueCreditNote(id, request)));
     }
 
     @GetMapping("/aging")
@@ -91,17 +145,14 @@ public class InvoiceController {
     @Operation(summary = "Create invoice", description = "Create a new invoice")
     public ResponseEntity<InvoiceResponse> createInvoice(@Valid @RequestBody CreateInvoiceRequest request) {
         Invoice created = invoiceService.createInvoice(request);
-        return ResponseEntity.status(HttpStatus.CREATED).body(InvoiceResponse.fromEntity(created));
+        return ResponseEntity.status(HttpStatus.CREATED).body(dto(created));
     }
 
     @GetMapping("/{id}")
     @PreAuthorize("hasAuthority('INVOICES_READ')")
     @Operation(summary = "Get invoice by ID", description = "Retrieve invoice details")
     public ResponseEntity<InvoiceResponse> getInvoice(@PathVariable UUID id) {
-        Invoice invoice = invoiceService.getInvoice(id);
-        InvoiceResponse dto = InvoiceResponse.fromEntity(invoice);
-        dto.setAmountPaid(agingService.paidByInvoice(invoice.getOrganizationId()).getOrDefault(invoice.getId(), java.math.BigDecimal.ZERO));
-        return ResponseEntity.ok(dto);
+        return ResponseEntity.ok(dto(invoiceService.getInvoice(id)));
     }
 
     @GetMapping
@@ -114,15 +165,17 @@ public class InvoiceController {
             @RequestParam(required = false) UUID partnerId,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate fromDate,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate toDate,
+            @RequestParam(required = false) UUID dealId,
+            @RequestParam(required = false) UUID proposalId,
+            @RequestParam(required = false) Invoice.Kind kind,
             Pageable pageable) {
-        Page<Invoice> page = invoiceService.listInvoices(q, type, status, partnerId, fromDate, toDate, pageable);
-        java.util.Map<UUID, java.math.BigDecimal> paid =
-                agingService.paidByInvoice(com.bento.crm.common.context.TenantContext.getCurrentOrganizationId());
-        Page<InvoiceResponse> dtoPage = page.map(invoice -> {
-            InvoiceResponse dto = InvoiceResponse.fromEntity(invoice);
-            dto.setAmountPaid(paid.getOrDefault(invoice.getId(), java.math.BigDecimal.ZERO));
-            return dto;
-        });
+        Page<Invoice> page = invoiceService.listInvoices(q, type, status, partnerId, fromDate, toDate, dealId, proposalId,
+                kind, pageable);
+        UUID orgId = com.bento.crm.common.context.TenantContext.getCurrentOrganizationId();
+        java.util.Map<UUID, java.math.BigDecimal> paid = agingService.paidByInvoice(orgId);
+        java.util.Map<UUID, java.math.BigDecimal> credited = agingService.creditedByInvoice(orgId);
+        java.util.Map<String, String> mentions = vatDetermination.mentions(orgId);
+        Page<InvoiceResponse> dtoPage = page.map(invoice -> dto(invoice, paid, credited, mentions));
         return ResponseEntity.ok(PageResponse.fromPage(dtoPage));
     }
 
@@ -131,7 +184,7 @@ public class InvoiceController {
     @Operation(summary = "Update invoice", description = "Update invoice information")
     public ResponseEntity<InvoiceResponse> updateInvoice(@PathVariable UUID id, @Valid @RequestBody CreateInvoiceRequest request) {
         Invoice invoice = invoiceService.updateInvoice(id, request);
-        return ResponseEntity.ok(InvoiceResponse.fromEntity(invoice));
+        return ResponseEntity.ok(dto(invoice));
     }
 
     @DeleteMapping("/{id}")
@@ -183,7 +236,8 @@ public class InvoiceController {
         }
         Organization org = organizationRepository.findById(invoice.getOrganizationId()).orElse(null);
         byte[] pdf = pdfDocumentService.generateInvoicePdf(invoice, partner, org,
-                invoiceTemplateService.brandingFor(invoice, partner));
+                invoiceTemplateService.brandingFor(invoice, partner),
+                com.bento.crm.invoice.service.InvoiceVat.breakdown(invoice, vatDetermination.mentions(invoice.getOrganizationId())));
 
         String filename = "facture-" + (invoice.getInvoiceNumber() != null ? invoice.getInvoiceNumber() : invoice.getId().toString().substring(0, 8)) + ".pdf";
         return ResponseEntity.ok()

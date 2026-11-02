@@ -46,6 +46,17 @@ public class CreateProductRequest {
     @com.fasterxml.jackson.annotation.JsonIgnore
     private boolean productGroupIdSet;
 
+    /** VAT code; null means the product group's. Left out keeps it on an update. */
+    private String vatCode;
+
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    private boolean vatCodeSet;
+
+    public void setVatCode(String vatCode) {
+        this.vatCode = vatCode;
+        this.vatCodeSet = true;
+    }
+
     public void setProductGroupId(java.util.UUID id) {
         this.productGroupId = id;
         this.productGroupIdSet = true;

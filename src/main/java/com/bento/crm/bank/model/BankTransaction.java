@@ -70,6 +70,13 @@ public class BankTransaction extends BaseTenantEntity {
     @Column(nullable = false, length = 64)
     private String fingerprint;
 
+    /** When a person validated the line for the bank journal (null: still to validate). */
+    @Column(name = "validated_at")
+    private java.time.Instant validatedAt;
+
+    @Column(name = "validated_by", columnDefinition = "uuid")
+    private UUID validatedBy;
+
     public enum Status { UNMATCHED, MATCHED, IGNORED }
 
     public enum CategorySource { RULE, KEYWORD, AI, MANUAL, MATCH }

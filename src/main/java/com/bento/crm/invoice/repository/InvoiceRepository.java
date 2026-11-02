@@ -44,7 +44,7 @@ public interface InvoiceRepository extends JpaRepository<Invoice, UUID>, JpaSpec
     /** Posted invoices stay: the ledger keeps pointing at them. */
     @Query("SELECT i FROM Invoice i WHERE i.deletedAt IS NOT NULL AND i.deletedAt < :cutoff"
             + " AND NOT EXISTS (SELECT 1 FROM LedgerEntry e WHERE e.organizationId = i.organizationId"
-            + " AND e.sourceId = i.id AND e.sourceType IN ('INVOICE', 'BILL'))")
+            + " AND e.sourceId = i.id AND e.sourceType IN ('INVOICE', 'BILL', 'ADVANCE', 'CREDIT_NOTE'))")
     List<Invoice> findPurgeable(@Param("cutoff") Instant cutoff);
 
     /**
@@ -57,6 +57,7 @@ public interface InvoiceRepository extends JpaRepository<Invoice, UUID>, JpaSpec
                    i.updatedAt = :now, i.version = i.version + 1
             WHERE i.organizationId = :orgId
               AND i.status = com.bento.crm.invoice.model.Invoice.Status.SENT
+              AND i.kind <> com.bento.crm.invoice.model.Invoice.Kind.CREDIT_NOTE
               AND i.dueDate < :today AND i.deletedAt IS NULL
             """)
     int markOverdue(@Param("orgId") UUID orgId, @Param("today") LocalDate today, @Param("now") Instant now);
@@ -69,6 +70,7 @@ public interface InvoiceRepository extends JpaRepository<Invoice, UUID>, JpaSpec
               AND i.status IN (com.bento.crm.invoice.model.Invoice.Status.SENT,
                                com.bento.crm.invoice.model.Invoice.Status.PARTIALLY_PAID,
                                com.bento.crm.invoice.model.Invoice.Status.OVERDUE)
+              AND i.kind <> com.bento.crm.invoice.model.Invoice.Kind.CREDIT_NOTE
               AND i.dueDate IS NOT NULL AND i.deletedAt IS NULL
             """)
     List<Invoice> findReminderCandidates(@Param("orgId") UUID orgId);
@@ -88,6 +90,7 @@ public interface InvoiceRepository extends JpaRepository<Invoice, UUID>, JpaSpec
             SELECT i FROM Invoice i
             WHERE i.organizationId = :orgId AND i.type = :type AND i.deletedAt IS NULL
               AND i.status <> com.bento.crm.invoice.model.Invoice.Status.DRAFT
+              AND i.kind <> com.bento.crm.invoice.model.Invoice.Kind.CREDIT_NOTE
             """)
     List<Invoice> findIssuedByType(@Param("orgId") UUID orgId, @Param("type") Invoice.InvoiceType type);
 
@@ -97,6 +100,7 @@ public interface InvoiceRepository extends JpaRepository<Invoice, UUID>, JpaSpec
               AND i.status IN (com.bento.crm.invoice.model.Invoice.Status.SENT,
                                com.bento.crm.invoice.model.Invoice.Status.PARTIALLY_PAID,
                                com.bento.crm.invoice.model.Invoice.Status.OVERDUE)
+              AND i.kind <> com.bento.crm.invoice.model.Invoice.Kind.CREDIT_NOTE
               AND i.dueDate IS NOT NULL AND i.dueDate <= :horizon
             """)
     List<UUID> findOrganizationsWithBillsDueBy(@Param("horizon") LocalDate horizon);

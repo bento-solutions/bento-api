@@ -159,16 +159,16 @@ class StockTest extends IntegrationTestBase {
         // Saving it again after it was sent moves nothing.
         send(token, patch("/invoices/" + invoice), invoiceBody, 200);
         assertThat(level(token, product, main)).isEqualTo(6.0);
-        // Changing the quantity afterwards moves only the difference, both ways.
-        send(token, patch("/invoices/" + invoice), invoiceBody.replace("\"qty\": 4", "\"qty\": 7"), 200);
-        assertThat(level(token, product, main)).isEqualTo(3.0);
-        send(token, patch("/invoices/" + invoice), invoiceBody.replace("\"qty\": 4", "\"qty\": 5"), 200);
-        assertThat(level(token, product, main)).isEqualTo(5.0);
+        // Changing the quantity of a sent invoice is refused (phase 3: a credit note corrects it) and moves nothing.
+        send(token, patch("/invoices/" + invoice), invoiceBody.replace("\"qty\": 4", "\"qty\": 7"), 400);
+        assertThat(level(token, product, main)).isEqualTo(6.0);
 
         // Deleting the sent invoice puts the goods back; restoring it takes them out again.
         send(token, delete("/invoices/" + invoice), null, 204);
         assertThat(level(token, product, main)).isEqualTo(10.0);
         send(token, post("/invoices/" + invoice + "/restore"), null, 200);
+        assertThat(level(token, product, main)).isEqualTo(6.0);
+        send(token, post("/stock/issues"), "{\"productId\": \"" + product + "\", \"quantity\": 1}", 201);
         assertThat(level(token, product, main)).isEqualTo(5.0);
 
         // A manual issue or transfer above what is on hand is refused.

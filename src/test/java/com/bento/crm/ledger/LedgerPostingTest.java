@@ -151,7 +151,7 @@ class LedgerPostingTest extends IntegrationTestBase {
         s.get("businessGroups").forEach(g -> business.put(g.get("code").asText(), g.get("id").asText()));
         s.get("productGroups").forEach(g -> product.put(g.get("code").asText(), g.get("id").asText()));
         assertThat(business).containsOnlyKeys("MAROC", "EXPORT");
-        assertThat(product).containsOnlyKeys("GOODS", "SERVICES");
+        assertThat(product).containsOnlyKeys("GOODS", "SERVICES", "TRANSPORT");
         assertThat(s.get("businessGroups").get(0).get("code").asText()).isEqualTo("MAROC");
         assertThat(s.get("businessGroups").get(0).get("isDefault").asBoolean()).isTrue();
         assertThat(s.get("productGroups").get(0).get("code").asText()).isEqualTo("SERVICES");
@@ -162,11 +162,12 @@ class LedgerPostingTest extends IntegrationTestBase {
             general.put(key, r.get("salesAccountCode").asText() + "/" + r.get("purchaseAccountCode").asText());
             generalIds.put(key, r.get("id").asText());
         }
-        assertThat(general).hasSize(4)
+        assertThat(general).hasSize(6)
                 .containsEntry(business.get("MAROC") + "x" + product.get("GOODS"), "7111/6111")
                 .containsEntry(business.get("MAROC") + "x" + product.get("SERVICES"), "7124/6125")
                 .containsEntry(business.get("EXPORT") + "x" + product.get("GOODS"), "7121/6111")
-                .containsEntry(business.get("EXPORT") + "x" + product.get("SERVICES"), "7127/6125");
+                .containsEntry(business.get("EXPORT") + "x" + product.get("SERVICES"), "7127/6125")
+                .containsEntry(business.get("MAROC") + "x" + product.get("TRANSPORT"), "7124/6125");
         Map<String, JsonNode> vat = new HashMap<>();
         s.get("vatSetup").forEach(v -> vat.put(v.get("code").asText(), v));
         assertThat(vat).containsOnlyKeys("TVA20", "TVA14", "TVA10", "TVA7", "TVA0", "EXONERE", "EXPORT");
@@ -240,7 +241,7 @@ class LedgerPostingTest extends IntegrationTestBase {
         JsonNode withUe = json(post("/ledger/posting-setup/business-groups"), token, "{\"code\": \"UE\", \"name\": \"Union européenne\"}", 201);
         String ue = null;
         for (JsonNode g : withUe.get("businessGroups")) if (g.get("code").asText().equals("UE")) ue = g.get("id").asText();
-        assertThat(withUe.get("generalSetup")).hasSize(6);
+        assertThat(withUe.get("generalSetup")).hasSize(9);
         for (JsonNode r : withUe.get("generalSetup")) {
             if (r.get("businessGroupId").asText().equals(ue)) {
                 boolean goods = r.get("productGroupId").asText().equals(product.get("GOODS"));
@@ -250,7 +251,7 @@ class LedgerPostingTest extends IntegrationTestBase {
         detail(post("/ledger/posting-setup/business-groups"), token, "{\"code\": \"UE\", \"name\": \"Again\"}", 400);
         detail(post("/ledger/posting-setup/business-groups"), token, "{\"code\": \"bad code!\", \"name\": \"x\"}", 400);
         JsonNode withSoft = json(post("/ledger/posting-setup/product-groups"), token, "{\"code\": \"SOFT\", \"name\": \"Logiciels\"}", 201);
-        assertThat(withSoft.get("generalSetup")).hasSize(9);
+        assertThat(withSoft.get("generalSetup")).hasSize(12);
         String soft = null;
         for (JsonNode g : withSoft.get("productGroups")) if (g.get("code").asText().equals("SOFT")) soft = g.get("id").asText();
         String softExport = null;
@@ -270,7 +271,7 @@ class LedgerPostingTest extends IntegrationTestBase {
         detail(post("/products"), token, "{\"sku\": \"SW-2\", \"name\": \"Bad\", \"unitPrice\": 1, \"productGroupId\": \""
                 + UUID.randomUUID() + "\"}", 400);
         JsonNode noUe = json(delete("/ledger/posting-setup/business-groups/" + ue), token, null, 200);
-        assertThat(noUe.get("generalSetup")).hasSize(6);
+        assertThat(noUe.get("generalSetup")).hasSize(8);
 
         // Accounts on the setup rows: inactive accounts refused.
         json(post("/ledger/accounts"), token, "{\"code\": \"71271\", \"name\": \"Export logiciels\"}", 201);
@@ -380,39 +381,32 @@ class LedgerPostingTest extends IntegrationTestBase {
         json(patch("/invoices/" + id), token, sameBooks, 200);
         assertThat(live(token, "INVOICE", id).get("id").asText()).isEqualTo(first);
 
-        // An amount edit reverses the entry and posts the new one.
+        // Phase 3: a sent customer invoice is locked; its amounts and its status back to draft are refused.
         String newLines = line(3, 500, "0.2", null);
-        json(patch("/invoices/" + id), token, invoiceBody("CUSTOMER", customer, "SENT", today(), "FA-100", newLines), 200);
-        JsonNode second = live(token, "INVOICE", id);
-        assertThat(second.get("id").asText()).isNotEqualTo(first);
-        assertThat(byAccount(second).get("3421")).isEqualByComparingTo("1800");
+        assertThat(detail(patch("/invoices/" + id), token, invoiceBody("CUSTOMER", customer, "SENT", today(), "FA-100", newLines), 400))
+                .contains("credit note");
+        detail(patch("/invoices/" + id), token, invoiceBody("CUSTOMER", customer, "DRAFT", today(), "FA-100", lines), 400);
+        assertThat(live(token, "INVOICE", id).get("id").asText()).isEqualTo(first);
+
+        // Automatic entries are corrected through their document, not reversed by hand.
+        assertThat(detail(post("/ledger/entries/" + first + "/reverse"), token, "{}", 400))
+                .contains("document");
+
+        // Deleted: reversal only; restored: posted again.
+        json(delete("/invoices/" + id), token, null, 204);
+        assertThat(live(token, "INVOICE", id)).isNull();
+        assertThat(balance(orgId, "3421", customer)).isEqualByComparingTo("0");
         JsonNode firstNow = json(get("/ledger/entries/" + first), token, null, 200);
         assertThat(firstNow.has("reversedById")).isTrue();
         JsonNode reversal = json(get("/ledger/entries/" + firstNow.get("reversedById").asText()), token, null, 200);
         assertThat(reversal.get("sourceType").asText()).isEqualTo("REVERSAL");
         assertThat(byAccount(reversal).get("3421")).isEqualByComparingTo("-1750");
-        assertThat(entriesOf(token, "INVOICE", id)).hasSize(2);
-        assertThat(balance(orgId, "3421", customer)).isEqualByComparingTo("1800");
-
-        // Automatic entries are corrected through their document, not reversed by hand.
-        assertThat(detail(post("/ledger/entries/" + second.get("id").asText() + "/reverse"), token, "{}", 400))
-                .contains("document");
-
-        // Back to draft: reversal only.
-        json(patch("/invoices/" + id), token, invoiceBody("CUSTOMER", customer, "DRAFT", today(), "FA-100", newLines), 200);
-        assertThat(live(token, "INVOICE", id)).isNull();
-        assertThat(balance(orgId, "3421", customer)).isEqualByComparingTo("0");
-
-        // Sent again, then deleted: reversal only; restored: posted again.
-        json(patch("/invoices/" + id), token, invoiceBody("CUSTOMER", customer, "SENT", today(), "FA-100", newLines), 200);
-        assertThat(balance(orgId, "3421", customer)).isEqualByComparingTo("1800");
-        json(delete("/invoices/" + id), token, null, 204);
-        assertThat(live(token, "INVOICE", id)).isNull();
-        assertThat(balance(orgId, "3421", customer)).isEqualByComparingTo("0");
         json(post("/invoices/" + id + "/restore"), token, null, 200);
-        assertThat(live(token, "INVOICE", id)).isNotNull();
-        assertThat(balance(orgId, "3421", customer)).isEqualByComparingTo("1800");
-        assertThat(entriesOf(token, "INVOICE", id)).hasSize(4);
+        JsonNode second = live(token, "INVOICE", id);
+        assertThat(second.get("id").asText()).isNotEqualTo(first);
+        assertThat(byAccount(second).get("3421")).isEqualByComparingTo("1750");
+        assertThat(balance(orgId, "3421", customer)).isEqualByComparingTo("1750");
+        assertThat(entriesOf(token, "INVOICE", id)).hasSize(2);
         assertTrialBalanceBalances(token);
 
         // Another organization sees none of it.
@@ -658,6 +652,8 @@ class LedgerPostingTest extends IntegrationTestBase {
     void bankLinesPostOnceAndMatchedLinesDoNotDoublePost() throws Exception {
         String token = signUpAndLogin();
         UUID orgId = orgIdOf(token);
+        // Phase 2 behaviour: lines post as they are imported.
+        json(put("/ledger/posting-setup/bank-posting-mode"), token, "{\"mode\": \"ON_IMPORT\"}", 200);
         String bank = json(post("/bank/accounts"), token, "{\"name\": \"Attijari\", \"accountNumber\": \"" + RIB + "\"}", 201)
                 .get("id").asText();
         String customer = partner(token, "CUSTOMER", "Atlas", null);

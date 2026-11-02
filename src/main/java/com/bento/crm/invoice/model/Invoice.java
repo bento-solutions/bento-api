@@ -93,11 +93,42 @@ public class Invoice extends BaseTenantEntity {
     /** Supplier bills: the day the organization plans to pay it. */
     private LocalDate scheduledPaymentDate;
 
+    /** INVOICE, ADVANCE (facture d'acompte) or CREDIT_NOTE (avoir). */
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    @Builder.Default
+    private Kind kind = Kind.INVOICE;
+
+    /** The proposal (quote) an advance or final invoice comes from. */
+    @Column(columnDefinition = "uuid")
+    private UUID sourceProposalId;
+
+    /** A credit note: the invoice it credits. */
+    @Column(columnDefinition = "uuid")
+    private UUID creditedInvoiceId;
+
+    /** A credit note: why it was issued. */
+    @Column(columnDefinition = "text")
+    private String creditReason;
+
+    /**
+     * A final invoice: the advances it deducts, as {@code {advanceInvoiceId, base, vat, vatCode,
+     * number, date}}. Subtotal and tax are net of them.
+     */
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(columnDefinition = "jsonb", nullable = false)
+    @Builder.Default
+    private List<Map<String, Object>> advanceDeductions = new ArrayList<>();
+
     public enum InvoiceType {
         CUSTOMER, VENDOR
     }
 
     public enum Status {
-        DRAFT, SENT, PARTIALLY_PAID, PAID, OVERDUE
+        DRAFT, SENT, PARTIALLY_PAID, PAID, OVERDUE, CREDITED
+    }
+
+    public enum Kind {
+        INVOICE, ADVANCE, CREDIT_NOTE
     }
 }

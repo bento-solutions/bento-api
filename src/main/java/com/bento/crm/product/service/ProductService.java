@@ -22,6 +22,7 @@ public class ProductService {
 
     private final ProductRepository productRepository;
     private final com.bento.crm.ledger.service.LedgerPostingSetupService postingSetup;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     @Transactional
     public Product createProduct(CreateProductRequest request) {
@@ -83,6 +84,15 @@ public class ProductService {
         if (request.isProductGroupIdSet() || p.getId() == null) {
             postingSetup.checkProductGroup(p.getOrganizationId(), request.getProductGroupId());
             p.setProductGroupId(request.getProductGroupId());
+        }
+        if (request.isVatCodeSet() || p.getId() == null) {
+            p.setVatCode(postingSetup.vatCode(p.getOrganizationId(), request.getVatCode()));
+        }
+        if (p.getVatCode() != null) {
+            // The rate follows the code.
+            java.util.List<BigDecimal> rates = jdbc.queryForList("SELECT rate FROM ledger_vat_setup WHERE organization_id = ?"
+                    + " AND code = ?", BigDecimal.class, p.getOrganizationId(), p.getVatCode());
+            if (!rates.isEmpty()) p.setTaxRate(rates.get(0).divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP));
         }
     }
 
