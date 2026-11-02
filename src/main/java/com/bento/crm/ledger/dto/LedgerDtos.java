@@ -115,19 +115,24 @@ public final class LedgerDtos {
                                List<GeneralSetupRow> generalSetup, List<VatSetupRow> vatSetup,
                                List<BankAccountRow> bankAccounts, UUID cashAccountId, String cashAccountCode,
                                List<CategoryRow> bankCategories, List<CategoryRow> expenseCategories,
-                               LocalDate startDate) {}
+                               LocalDate startDate, String bankPostingMode) {}
 
     public record PartnerGroup(UUID id, String code, String name, String side, UUID accountId, String accountCode,
                                @JsonProperty("isDefault") boolean isDefault) {}
 
-    public record Group(UUID id, String code, String name, @JsonProperty("isDefault") boolean isDefault) {}
+    /**
+     * A business or product posting group. Product groups carry {@code vatCode}; business groups
+     * carry {@code vatRule} (STANDARD or EXEMPT) and {@code exemptVatCode}.
+     */
+    public record Group(UUID id, String code, String name, @JsonProperty("isDefault") boolean isDefault,
+                        String vatCode, String vatRule, String exemptVatCode) {}
 
     public record GeneralSetupRow(UUID id, UUID businessGroupId, UUID productGroupId, UUID salesAccountId,
                                   String salesAccountCode, UUID purchaseAccountId, String purchaseAccountCode) {}
 
     public record VatSetupRow(UUID id, String code, String name, BigDecimal rate, UUID collectedAccountId,
                               String collectedAccountCode, UUID recoverableAccountId, String recoverableAccountCode,
-                              boolean exempt) {}
+                              boolean exempt, String mention) {}
 
     public record BankAccountRow(UUID bankAccountId, String bankAccountName, UUID accountId, String accountCode) {}
 
@@ -141,11 +146,68 @@ public final class LedgerDtos {
 
     public record GroupCreate(@NotBlank @Size(max = 20) String code, @NotBlank @Size(max = 160) String name) {}
 
-    public record GroupUpdate(@Size(min = 1, max = 160) String name, @JsonProperty("isDefault") Boolean isDefault) {}
+    /**
+     * Partial update of a business or product group. {@code vatCode} applies to product groups,
+     * {@code vatRule} and {@code exemptVatCode} to business groups. A class rather than a record so
+     * an explicit {@code "vatCode": null} (back to no code) differs from leaving it out.
+     */
+    @Getter
+    public static final class GroupUpdate {
+        @Size(min = 1, max = 160)
+        private String name;
+        private Boolean isDefault;
+        private String vatCode;
+        @JsonIgnore
+        private boolean vatCodePresent;
+        private String vatRule;
+        private String exemptVatCode;
+        @JsonIgnore
+        private boolean exemptVatCodePresent;
+
+        public GroupUpdate() {}
+
+        public GroupUpdate(String name, Boolean isDefault) {
+            this.name = name;
+            this.isDefault = isDefault;
+        }
+
+        @JsonSetter("name")
+        public void setName(String name) { this.name = name; }
+
+        @JsonSetter("isDefault")
+        public void setIsDefault(Boolean isDefault) { this.isDefault = isDefault; }
+
+        public Boolean isDefault() { return isDefault; }
+
+        public String name() { return name; }
+
+        @JsonSetter("vatCode")
+        public void setVatCode(String vatCode) {
+            this.vatCode = vatCode;
+            this.vatCodePresent = true;
+        }
+
+        @JsonSetter("vatRule")
+        public void setVatRule(String vatRule) { this.vatRule = vatRule; }
+
+        @JsonSetter("exemptVatCode")
+        public void setExemptVatCode(String exemptVatCode) {
+            this.exemptVatCode = exemptVatCode;
+            this.exemptVatCodePresent = true;
+        }
+    }
 
     public record GeneralSetupUpdate(UUID salesAccountId, UUID purchaseAccountId) {}
 
-    public record VatSetupUpdate(UUID collectedAccountId, UUID recoverableAccountId) {}
+    /** {@code mention}: an empty string clears it; left out keeps it. */
+    public record VatSetupUpdate(UUID collectedAccountId, UUID recoverableAccountId, @Size(max = 500) String mention) {}
+
+    public record BankPostingModeUpdate(@NotBlank String mode) {}
+
+    // VAT determination (phase 3)
+
+    /** {@code rate} is a percentage, like the VAT setup's (20 for TVA20). */
+    public record VatDetermination(String vatCode, BigDecimal rate, boolean exempt, String mention) {}
 
     public record AccountAssignment(@NotNull UUID accountId) {}
 

@@ -28,6 +28,8 @@ public class PartnerLedgerResponse {
     private List<ClosedInvoice> closedInvoices;
     private List<Transaction> transactions;
     private Totals totals;
+    /** Open advances (unapplied advance payments, paid advance invoices not yet deducted). */
+    private List<com.bento.crm.invoice.dto.AgingReport.Advance> advances;
 
     @Data
     @NoArgsConstructor
@@ -83,9 +85,13 @@ public class PartnerLedgerResponse {
         private BigDecimal totalOverdue;
         /** Net of the signed transaction list, i.e. what the ledger closes at. */
         private BigDecimal balance;
+        private BigDecimal totalCredited;
+        private BigDecimal totalAdvances;
+        /** totalOpen - totalAdvances. */
+        private BigDecimal netBalance;
     }
 
     public enum TransactionType {
-        INVOICE, PAYMENT
+        INVOICE, PAYMENT, CREDIT_NOTE
     }
 }

@@ -33,6 +33,33 @@ public class BankController {
 
     private final BankService bank;
     private final CashService cash;
+    private final com.bento.crm.bank.service.BankJournalService journal;
+
+    // Bank journal: lines post once validated (phase 3)
+
+    @GetMapping("/journal")
+    @PreAuthorize(READ)
+    public BankDtos.JournalPage journal(
+            @RequestParam(required = false) UUID bankAccountId,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "50") int size) {
+        return journal.journal(bankAccountId, status, from, to, Math.max(0, page), Math.min(Math.max(size, 1), 200));
+    }
+
+    @PostMapping("/journal/validate")
+    @PreAuthorize(WRITE)
+    public BankDtos.ValidateResult validate(@RequestBody BankDtos.ValidateRequest r) {
+        return journal.validate(r);
+    }
+
+    @PostMapping("/journal/{transactionId}/unvalidate")
+    @PreAuthorize(WRITE)
+    public BankDtos.JournalLine unvalidate(@PathVariable UUID transactionId) {
+        return journal.unvalidate(transactionId);
+    }
 
     @GetMapping("/dashboard")
     @PreAuthorize(READ)

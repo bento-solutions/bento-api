@@ -33,6 +33,23 @@ public class LedgerController {
     private final LedgerReportService reports;
     private final LedgerPostingSetupService postingSetup;
     private final LedgerAutoPostingService autoPosting;
+    private final com.bento.crm.ledger.service.VatDeterminationService vatDetermination;
+    private final com.bento.crm.bank.service.BankJournalService bankJournal;
+
+    /** The VAT code a line would get for this partner, product and product group (phase 3). */
+    @GetMapping("/vat-determination")
+    @PreAuthorize("hasAuthority('LEDGER_READ') or hasAuthority('INVOICES_READ')")
+    public VatDetermination vatDetermination(@RequestParam(required = false) UUID partnerId,
+                                             @RequestParam(required = false) UUID productId,
+                                             @RequestParam(required = false) UUID productGroupId) {
+        return vatDetermination.determine(partnerId, productId, productGroupId);
+    }
+
+    @PutMapping("/posting-setup/bank-posting-mode")
+    @PreAuthorize("hasAuthority('LEDGER_WRITE')")
+    public PostingSetup updateBankPostingMode(@Valid @RequestBody BankPostingModeUpdate request) {
+        return bankJournal.setMode(request.mode());
+    }
 
     // Accounts
 

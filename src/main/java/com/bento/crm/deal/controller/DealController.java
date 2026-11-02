@@ -23,9 +23,35 @@ import java.util.UUID;
 public class DealController {
 
     private final DealService dealService;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
 
-    public DealController(DealService dealService) {
+    public DealController(DealService dealService, org.springframework.jdbc.core.JdbcTemplate jdbc) {
         this.dealService = dealService;
+        this.jdbc = jdbc;
+    }
+
+    /** Fills advanceTotal and advancePaid from the deals' issued advance invoices. */
+    private <C extends java.util.Collection<DealResponse>> C withAdvances(C deals) {
+        if (deals.isEmpty()) return deals;
+        java.util.Map<UUID, Object[]> byDeal = new java.util.HashMap<>();
+        java.util.List<UUID> ids = deals.stream().map(DealResponse::getId).toList();
+        UUID orgId = deals.iterator().next().getOrganizationId();
+        jdbc.query("SELECT deal_id, COALESCE(SUM(total), 0), bool_and(status = 'PAID') FROM invoice"
+                + " WHERE organization_id = ? AND deal_id = ANY(?) AND kind = 'ADVANCE' AND deleted_at IS NULL"
+                + " AND status NOT IN ('DRAFT', 'CREDITED') GROUP BY deal_id", rs -> {
+            byDeal.put(rs.getObject(1, UUID.class), new Object[]{rs.getBigDecimal(2), rs.getBoolean(3)});
+        }, orgId, ids.toArray(new UUID[0]));
+        for (DealResponse d : deals) {
+            Object[] a = byDeal.get(d.getId());
+            d.setAdvanceTotal(a == null ? java.math.BigDecimal.ZERO.setScale(2) : (java.math.BigDecimal) a[0]);
+            d.setAdvancePaid(a != null && (Boolean) a[1]);
+        }
+        return deals;
+    }
+
+    private DealResponse withAdvances(DealResponse d) {
+        withAdvances(java.util.List.of(d));
+        return d;
     }
 
     @PostMapping
@@ -41,7 +67,7 @@ public class DealController {
     @Operation(summary = "Get deal by ID", description = "Retrieve deal details")
     public ResponseEntity<DealResponse> getDeal(@PathVariable UUID id) {
         Deal deal = dealService.getDeal(id);
-        return ResponseEntity.ok(DealResponse.fromEntity(deal));
+        return ResponseEntity.ok(withAdvances(DealResponse.fromEntity(deal)));
     }
 
     @GetMapping
@@ -55,6 +81,7 @@ public class DealController {
             Pageable pageable) {
         Page<Deal> page = dealService.listDeals(q, stage, partnerId, salesPersonUserId, pageable);
         Page<DealResponse> dtoPage = page.map(DealResponse::fromEntity);
+        withAdvances(dtoPage.getContent());
         return ResponseEntity.ok(PageResponse.fromPage(dtoPage));
     }
 

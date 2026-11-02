@@ -159,6 +159,9 @@ public class ReconciliationService {
                 if (inv.getStatus() == Invoice.Status.DRAFT) {
                     throw new IllegalArgumentException("This invoice is still a draft");
                 }
+                if (inv.getKind() == Invoice.Kind.CREDIT_NOTE) {
+                    throw new IllegalArgumentException("A bank line cannot settle a credit note");
+                }
                 if (inv.getPartnerId() == null) {
                     throw new IllegalArgumentException("This invoice has no customer or supplier");
                 }
@@ -168,10 +171,11 @@ public class ReconciliationService {
                             + outstanding.toPlainString() + ")");
                 }
                 // The payment posts on this line's bank account; the line itself then posts nothing.
+                // Posted once the line is linked to it (and, on validation, once the line is validated).
                 Payment p = paymentService.createPayment(new CreatePaymentRequest(inv.getPartnerId(), inv.getId(),
                         t.getBookingDate(), abs, Payment.Method.BANK_TRANSFER,
                         t.getReference() != null ? t.getReference() : cut(t.getDescription(), 100),
-                        "Bank statement: " + cut(t.getDescription(), 200), t.getBankAccountId(), false));
+                        "Bank statement: " + cut(t.getDescription(), 200), t.getBankAccountId(), false), false);
                 t.setInvoiceId(inv.getId());
                 t.setPaymentId(p.getId());
                 t.setPaymentCreated(true);
@@ -216,10 +220,47 @@ public class ReconciliationService {
         BankTransaction saved = transactionRepository.saveAndFlush(t);
         // A matched line posts nothing itself (its category entry, if any, is reversed) ...
         ledger.bankLine(saved);
+        // ... a payment the match created posts now (or when the line is validated) ...
+        if (saved.isPaymentCreated() && saved.getPaymentId() != null) {
+            paymentRepository.findByOrganizationIdAndId(orgId, saved.getPaymentId()).ifPresent(ledger::payment);
+        }
         // ... and a matched expense now posts on the line's bank account.
         if (saved.getExpenseId() != null) {
             expenseRepository.findForOrganization(orgId, saved.getExpenseId()).ifPresent(ledger::expense);
         }
+        return saved;
+    }
+
+    /**
+     * Matches a line as an advance from a customer (money in) or to a supplier (money out): an
+     * advance payment with no invoice, posted on 4421 or 3411, applied to an invoice later.
+     */
+    @Transactional
+    public BankTransaction matchAdvance(UUID orgId, UUID id, UUID partnerId) {
+        BankTransaction t = transaction(orgId, id);
+        if (t.getStatus() != BankTransaction.Status.UNMATCHED) {
+            throw new IllegalStateException("This line is already matched or set aside");
+        }
+        if (partnerId == null) {
+            throw new IllegalArgumentException("Choose the customer or supplier of the advance");
+        }
+        Boolean known = jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM partner WHERE organization_id = ? AND id = ?"
+                + " AND deleted_at IS NULL)", Boolean.class, orgId, partnerId);
+        if (!Boolean.TRUE.equals(known)) {
+            throw new IllegalArgumentException("Unknown partner");
+        }
+        boolean in = t.getAmount().signum() > 0;
+        Payment p = paymentService.createPayment(new CreatePaymentRequest(partnerId, null, t.getBookingDate(),
+                t.getAmount().abs(), Payment.Method.BANK_TRANSFER,
+                t.getReference() != null ? t.getReference() : cut(t.getDescription(), 100),
+                "Bank statement: " + cut(t.getDescription(), 200), t.getBankAccountId(), false, true), false);
+        t.setPaymentId(p.getId());
+        t.setPaymentCreated(true);
+        setMatchCategory(t, in ? "SALES" : "SUPPLIERS");
+        t.setStatus(BankTransaction.Status.MATCHED);
+        BankTransaction saved = transactionRepository.saveAndFlush(t);
+        ledger.bankLine(saved);
+        ledger.payment(p);
         return saved;
     }
 
@@ -299,9 +340,11 @@ public class ReconciliationService {
                 SELECT * FROM (
                   SELECT i.id, i.invoice_number, i.total, i.due_date, COALESCE(pa.name, i.customer_name) AS partner_name,
                          i.total - COALESCE((SELECT SUM(p.amount) FROM payment p
-                                             WHERE p.invoice_id = i.id AND p.deleted_at IS NULL), 0) AS outstanding
+                                             WHERE p.invoice_id = i.id AND p.deleted_at IS NULL), 0)
+                                 - COALESCE((SELECT SUM(c.total) FROM invoice c WHERE c.credited_invoice_id = i.id
+                                             AND c.kind = 'CREDIT_NOTE' AND c.deleted_at IS NULL), 0) AS outstanding
                   FROM invoice i LEFT JOIN partner pa ON pa.id = i.partner_id
-                  WHERE i.organization_id = ? AND i.deleted_at IS NULL AND i.type = ?
+                  WHERE i.organization_id = ? AND i.deleted_at IS NULL AND i.type = ? AND i.kind <> 'CREDIT_NOTE'
                     AND i.status IN ('SENT', 'PARTIALLY_PAID', 'OVERDUE') AND i.total IS NOT NULL
                 ) x WHERE outstanding > 0
                 """, orgId, type));
@@ -311,7 +354,8 @@ public class ReconciliationService {
         BigDecimal paid = jdbc.queryForObject(
                 "SELECT COALESCE(SUM(amount), 0) FROM payment WHERE invoice_id = ? AND deleted_at IS NULL",
                 BigDecimal.class, inv.getId());
-        return (inv.getTotal() == null ? BigDecimal.ZERO : inv.getTotal()).subtract(paid);
+        BigDecimal credited = paymentService.creditedAmount(inv.getOrganizationId(), inv.getId());
+        return (inv.getTotal() == null ? BigDecimal.ZERO : inv.getTotal()).subtract(paid).subtract(credited);
     }
 
     private static void setMatchCategory(BankTransaction t, String category) {

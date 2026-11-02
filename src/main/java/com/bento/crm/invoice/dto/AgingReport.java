@@ -24,7 +24,18 @@ public record AgingReport(
         BigDecimal pending,
         BigDecimal late,
         List<Bucket> buckets,
-        List<PartnerRow> partners) {
+        List<PartnerRow> partners,
+        List<Advance> advances,
+        BigDecimal advancesTotal,
+        BigDecimal netBalance) {
+
+    /**
+     * Money received from customers (paid to suppliers) ahead of the invoice: an advance payment
+     * not yet applied (kind PAYMENT), or a paid advance invoice not yet deducted (kind ADVANCE_INVOICE).
+     */
+    public record Advance(String kind, UUID id, UUID partnerId, String partnerName, String number, LocalDate date,
+                          BigDecimal amount) {
+    }
 
     public record Bucket(String key, BigDecimal amount, int count) {
     }

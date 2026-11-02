@@ -59,6 +59,17 @@ public class Payment extends BaseTenantEntity {
     @Builder.Default
     private boolean cashRegister = false;
 
+    /**
+     * An advance: money received (4421) or paid (3411) before the invoice. Applied to an invoice
+     * later, an OD entry moves it to the partner's account.
+     */
+    @Column(nullable = false)
+    @Builder.Default
+    private boolean advance = false;
+
+    /** When an advance was applied to its invoice (the date of the OD entry). */
+    private LocalDate advanceAppliedOn;
+
     public enum Method {
         BANK_TRANSFER, CHECK, CASH, CARD, DIRECT_DEBIT, OTHER
     }

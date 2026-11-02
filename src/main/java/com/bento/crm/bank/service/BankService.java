@@ -317,7 +317,11 @@ public class BankService {
     }
 
     public BankDtos.Transaction match(UUID id, BankDtos.MatchRequest r) {
-        reconciliation.match(org(), id, r.kind(), r.id());
+        if (Boolean.TRUE.equals(r.advance())) {
+            reconciliation.matchAdvance(org(), id, r.partnerId());
+        } else {
+            reconciliation.match(org(), id, r.kind(), r.id());
+        }
         return transaction(id);
     }
 
@@ -411,6 +415,7 @@ public class BankService {
                 source == null ? null : BankTransaction.CategorySource.valueOf(source),
                 BankTransaction.Status.valueOf(rs.getString("status")), rs.getObject("invoice_id", UUID.class),
                 rs.getString("invoice_number"), rs.getObject("payment_id", UUID.class), rs.getObject("expense_id", UUID.class),
-                rs.getBoolean("payment_created"), rs.getString("match_label"));
+                rs.getBoolean("payment_created"), rs.getString("match_label"),
+                rs.getTimestamp("validated_at") == null ? null : rs.getTimestamp("validated_at").toInstant());
     }
 }

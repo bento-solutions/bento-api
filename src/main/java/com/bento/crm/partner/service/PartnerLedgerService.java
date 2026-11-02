@@ -28,6 +28,7 @@ public class PartnerLedgerService {
     private final PartnerService partnerService;
     private final InvoiceRepository invoiceRepository;
     private final PaymentRepository paymentRepository;
+    private final com.bento.crm.invoice.service.AgingService agingService;
 
     @Transactional(readOnly = true)
     public PartnerLedgerResponse getLedger(UUID partnerId) {
@@ -52,12 +53,27 @@ public class PartnerLedgerService {
         BigDecimal totalInvoiced = BigDecimal.ZERO;
         BigDecimal totalOpen = BigDecimal.ZERO;
         BigDecimal totalOverdue = BigDecimal.ZERO;
+        BigDecimal totalCredited = BigDecimal.ZERO;
+        Map<UUID, BigDecimal> creditedByInvoice = agingService.creditedByInvoice(orgId);
 
         for (Invoice invoice : invoices) {
             BigDecimal total = nz(invoice.getTotal());
-            BigDecimal paid = nz(paidByInvoice.get(invoice.getId()));
-            BigDecimal remaining = total.subtract(paid);
             LocalDate issued = issueDate(invoice);
+            if (invoice.getKind() == Invoice.Kind.CREDIT_NOTE) {
+                // A credit note lowers what is owed, like a payment.
+                if (invoice.getStatus() != Invoice.Status.DRAFT) {
+                    totalCredited = totalCredited.add(total);
+                    transactions.add(PartnerLedgerResponse.Transaction.builder()
+                            .date(issued)
+                            .type(PartnerLedgerResponse.TransactionType.CREDIT_NOTE)
+                            .documentNumber(documentNumber(invoice))
+                            .amount(signedAmount(total, true, payable))
+                            .build());
+                }
+                continue;
+            }
+            BigDecimal paid = nz(paidByInvoice.get(invoice.getId()));
+            BigDecimal remaining = total.subtract(paid).subtract(nz(creditedByInvoice.get(invoice.getId())));
 
             totalInvoiced = totalInvoiced.add(total);
 
@@ -68,7 +84,7 @@ public class PartnerLedgerService {
                     .amount(signedAmount(total, false, payable))
                     .build());
 
-            if (remaining.compareTo(BigDecimal.ZERO) > 0) {
+            if (remaining.compareTo(BigDecimal.ZERO) > 0 && invoice.getStatus() != Invoice.Status.CREDITED) {
                 boolean overdue = invoice.getDueDate() != null && invoice.getDueDate().isBefore(today);
                 totalOpen = totalOpen.add(remaining);
                 if (overdue) {
@@ -122,7 +138,13 @@ public class PartnerLedgerService {
                 .map(PartnerLedgerResponse.Transaction::getAmount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
+        List<com.bento.crm.invoice.dto.AgingReport.Advance> advances = agingService.advances(orgId,
+                payable ? Invoice.InvoiceType.VENDOR : Invoice.InvoiceType.CUSTOMER, partnerId);
+        BigDecimal totalAdvances = advances.stream().map(com.bento.crm.invoice.dto.AgingReport.Advance::amount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
         return PartnerLedgerResponse.builder()
+                .advances(advances)
                 .partnerId(partnerId)
                 .partnerType(partner.getType())
                 .openInvoices(open)
@@ -134,6 +156,9 @@ public class PartnerLedgerService {
                         .totalOpen(totalOpen)
                         .totalOverdue(totalOverdue)
                         .balance(balance)
+                        .totalCredited(totalCredited)
+                        .totalAdvances(totalAdvances)
+                        .netBalance(totalOpen.subtract(totalAdvances))
                         .build())
                 .build();
     }

@@ -37,6 +37,7 @@ public class AgingService {
     private final PaymentRepository paymentRepository;
     private final PartnerRepository partnerRepository;
     private final BillingCalendar billingCalendar;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     /** What has been paid against each invoice of the organization, from recorded payments. */
     @Transactional(readOnly = true)
@@ -48,12 +49,25 @@ public class AgingService {
         return paid;
     }
 
+    /** What has been credited on each invoice of the organization, from its live credit notes. */
+    @Transactional(readOnly = true)
+    public Map<UUID, BigDecimal> creditedByInvoice(UUID orgId) {
+        Map<UUID, BigDecimal> credited = new HashMap<>();
+        jdbc.query("SELECT credited_invoice_id, SUM(total) FROM invoice WHERE organization_id = ? AND kind = 'CREDIT_NOTE'"
+                + " AND credited_invoice_id IS NOT NULL AND deleted_at IS NULL GROUP BY credited_invoice_id", rs -> {
+            credited.put(rs.getObject(1, UUID.class), rs.getBigDecimal(2));
+        }, orgId);
+        return credited;
+    }
+
     @Transactional(readOnly = true)
     public AgingReport report(Invoice.InvoiceType type) {
         UUID orgId = TenantContext.getCurrentOrganizationId();
         LocalDate today = billingCalendar.today(orgId);
 
         Map<UUID, BigDecimal> paidByInvoice = paidByInvoice(orgId);
+        // Credit notes lower what their invoice still owes (credit notes themselves are not listed).
+        Map<UUID, BigDecimal> creditedByInvoice = creditedByInvoice(orgId);
 
         BigDecimal invoiced = BigDecimal.ZERO;
         BigDecimal paid = BigDecimal.ZERO;
@@ -63,8 +77,9 @@ public class AgingService {
 
         for (Invoice invoice : invoiceRepository.findIssuedByType(orgId, type)) {
             BigDecimal total = invoice.getTotal() != null ? invoice.getTotal() : BigDecimal.ZERO;
-            BigDecimal settled = paidByInvoice.getOrDefault(invoice.getId(), BigDecimal.ZERO);
-            if (invoice.getStatus() == Invoice.Status.PAID) {
+            BigDecimal settled = paidByInvoice.getOrDefault(invoice.getId(), BigDecimal.ZERO)
+                    .add(creditedByInvoice.getOrDefault(invoice.getId(), BigDecimal.ZERO));
+            if (invoice.getStatus() == Invoice.Status.PAID || invoice.getStatus() == Invoice.Status.CREDITED) {
                 // A PAID status settles the invoice even when the payment was not recorded.
                 settled = total;
             }
@@ -126,7 +141,51 @@ public class AgingService {
         });
         rows.sort(Comparator.comparing(AgingReport.PartnerRow::total).reversed());
 
-        return new AgingReport(type, today, scale(invoiced), scale(paid), scale(pending), scale(late), buckets, rows);
+        List<AgingReport.Advance> advances = advances(orgId, type, null);
+        BigDecimal advancesTotal = advances.stream().map(AgingReport.Advance::amount).reduce(BigDecimal.ZERO, BigDecimal::add);
+        return new AgingReport(type, today, scale(invoiced), scale(paid), scale(pending), scale(late), buckets, rows,
+                advances, scale(advancesTotal), scale(pending.add(late).subtract(advancesTotal)));
+    }
+
+    /**
+     * Open advances of one side (and partner, when given): unapplied advance payments, and paid
+     * advance invoices with an amount (incl. VAT) not yet deducted on a final invoice.
+     */
+    @Transactional(readOnly = true)
+    public List<AgingReport.Advance> advances(UUID orgId, Invoice.InvoiceType type, UUID partnerId) {
+        List<AgingReport.Advance> out = new ArrayList<>();
+        boolean vendor = type == Invoice.InvoiceType.VENDOR;
+        jdbc.query("""
+                SELECT p.id, p.partner_id, COALESCE(NULLIF(pa.company_name, ''), pa.name), p.reference, p.payment_date, p.amount
+                FROM payment p JOIN partner pa ON pa.id = p.partner_id
+                WHERE p.organization_id = ? AND p.deleted_at IS NULL AND p.advance AND p.invoice_id IS NULL
+                  AND (CAST(? AS uuid) IS NULL OR p.partner_id = CAST(? AS uuid))
+                  AND COALESCE((SELECT b.amount < 0 FROM bank_transaction b WHERE b.payment_id = p.id AND b.deleted_at IS NULL LIMIT 1),
+                               pa.type = 'VENDOR') = ?
+                ORDER BY p.payment_date
+                """, rs -> {
+            out.add(new AgingReport.Advance("PAYMENT", rs.getObject(1, UUID.class), rs.getObject(2, UUID.class),
+                    rs.getString(3), rs.getString(4), rs.getObject(5, LocalDate.class), scale(rs.getBigDecimal(6))));
+        }, orgId, partnerId, partnerId, vendor);
+        jdbc.query("""
+                SELECT i.id, i.partner_id, COALESCE(NULLIF(pa.company_name, ''), pa.name, i.customer_name), i.invoice_number,
+                       i.invoice_date,
+                       i.total - COALESCE((SELECT SUM((d->>'base')::numeric + (d->>'vat')::numeric)
+                                           FROM invoice f, jsonb_array_elements(f.advance_deductions) d
+                                           WHERE f.organization_id = i.organization_id AND f.deleted_at IS NULL
+                                             AND f.kind = 'INVOICE' AND d->>'advanceInvoiceId' = i.id::text), 0) AS open
+                FROM invoice i LEFT JOIN partner pa ON pa.id = i.partner_id
+                WHERE i.organization_id = ? AND i.deleted_at IS NULL AND i.kind = 'ADVANCE' AND i.status = 'PAID'
+                  AND i.type = ? AND (CAST(? AS uuid) IS NULL OR i.partner_id = CAST(? AS uuid))
+                ORDER BY i.invoice_date
+                """, rs -> {
+            BigDecimal open = rs.getBigDecimal(6);
+            if (open != null && open.signum() > 0) {
+                out.add(new AgingReport.Advance("ADVANCE_INVOICE", rs.getObject(1, UUID.class), rs.getObject(2, UUID.class),
+                        rs.getString(3), rs.getString(4), rs.getObject(5, LocalDate.class), scale(open)));
+            }
+        }, orgId, type.name(), partnerId, partnerId);
+        return out;
     }
 
     static int bucketOf(int daysLate) {

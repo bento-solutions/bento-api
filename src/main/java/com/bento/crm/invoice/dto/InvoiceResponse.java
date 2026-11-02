@@ -45,6 +45,29 @@ public class InvoiceResponse {
     private LocalDate scheduledPaymentDate;
     /** Sum of recorded payments against this invoice; set by the controller, not the entity. */
     private BigDecimal amountPaid;
+    /** Sum of the credit notes issued against this invoice; set by the controller. */
+    private BigDecimal amountCredited;
+    /** total - amountPaid - amountCredited (never below 0); set by the controller. */
+    private BigDecimal balanceDue;
+    private Invoice.Kind kind;
+    private UUID sourceProposalId;
+    private UUID creditedInvoiceId;
+    private String creditReason;
+    private List<Map<String, Object>> advanceDeductions;
+    /** VAT per code, net of the advance deductions; mentions filled by the controller. */
+    private List<VatBreakdownRow> vatBreakdown;
+
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class VatBreakdownRow {
+        private String vatCode;
+        /** Percentage, like the VAT setup's rate (20). */
+        private BigDecimal rate;
+        private BigDecimal base;
+        private BigDecimal vat;
+        private String mention;
+    }
     private UUID createdBy;
     private UUID updatedBy;
     // These were previously converted with LocalDateTime.from(Instant), which throws
@@ -79,6 +102,13 @@ public class InvoiceResponse {
                 .reminderCount(invoice.getReminderCount())
                 .lastReminderAt(invoice.getLastReminderAt())
                 .scheduledPaymentDate(invoice.getScheduledPaymentDate())
+                .kind(invoice.getKind() == null ? Invoice.Kind.INVOICE : invoice.getKind())
+                .sourceProposalId(invoice.getSourceProposalId())
+                .creditedInvoiceId(invoice.getCreditedInvoiceId())
+                .creditReason(invoice.getCreditReason())
+                .advanceDeductions(invoice.getAdvanceDeductions() == null || invoice.getAdvanceDeductions().isEmpty()
+                        ? null : invoice.getAdvanceDeductions())
+                .vatBreakdown(com.bento.crm.invoice.service.InvoiceVat.breakdown(invoice, java.util.Map.of()))
                 .createdBy(invoice.getCreatedBy())
                 .updatedBy(invoice.getUpdatedBy())
                 .createdAt(invoice.getCreatedAt())

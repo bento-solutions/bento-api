@@ -44,18 +44,38 @@ public class LedgerPostingSetupService {
 
     public record PartnerGroupRow(UUID id, String code, String name, String side, UUID accountId, boolean isDefault) {}
 
-    public record GroupRow(UUID id, String code, String name, boolean isDefault) {}
+    /** A business or product group; vatCode is a product group's, vatRule and exemptVatCode a business group's. */
+    public record GroupRow(UUID id, String code, String name, boolean isDefault, String vatCode, String vatRule,
+                           String exemptVatCode) {}
 
     public record GeneralRow(UUID id, UUID businessGroupId, UUID productGroupId, UUID salesAccountId,
                              UUID purchaseAccountId) {}
 
     public record VatRow(UUID id, String code, String name, BigDecimal rate, UUID collectedAccountId,
-                         UUID recoverableAccountId, boolean exempt) {}
+                         UUID recoverableAccountId, boolean exempt, String mention) {}
 
     /** Everything a posting needs, read once per document. */
     public record Snapshot(LocalDate startDate, UUID cashAccountId, List<PartnerGroupRow> partnerGroups,
                            List<GroupRow> businessGroups, List<GroupRow> productGroups, List<GeneralRow> general,
-                           List<VatRow> vat, Map<String, UUID> bankCategories, Map<String, UUID> expenseCategories) {
+                           List<VatRow> vat, Map<String, UUID> bankCategories, Map<String, UUID> expenseCategories,
+                           String bankPostingMode) {
+
+        public static final String ON_VALIDATION = "ON_VALIDATION";
+        public static final String ON_IMPORT = "ON_IMPORT";
+
+        /** Bank lines (and what they settle) wait for a person to validate them. */
+        public boolean postOnValidation() {
+            return !ON_IMPORT.equals(bankPostingMode);
+        }
+
+        /** The group row (business or product) with this id, or null. */
+        public GroupRow businessGroupRow(UUID id) {
+            return businessGroups.stream().filter(g -> g.id().equals(id)).findFirst().orElse(null);
+        }
+
+        public GroupRow productGroupRow(UUID id) {
+            return productGroups.stream().filter(g -> g.id().equals(id)).findFirst().orElse(null);
+        }
 
         /** The partner group's account, or the side's default group's when null or unknown. */
         public UUID partnerAccount(String side, UUID groupId) {
@@ -135,16 +155,21 @@ public class LedgerPostingSetupService {
     public Snapshot snapshot(UUID orgId) {
         setup.ensure(orgId);
         Map<String, Object> settings = jdbc.queryForMap(
-                "SELECT start_date, cash_account_id FROM ledger_settings WHERE organization_id = ?", orgId);
+                "SELECT start_date, cash_account_id, bank_posting_mode FROM ledger_settings WHERE organization_id = ?", orgId);
         LocalDate start = ((java.sql.Date) settings.get("start_date")).toLocalDate();
         UUID cash = (UUID) settings.get("cash_account_id");
+        String bankPostingMode = (String) settings.get("bank_posting_mode");
         List<PartnerGroupRow> partnerGroups = jdbc.query(
                 "SELECT id, code, name, side, account_id, is_default FROM ledger_partner_group WHERE organization_id = ?"
                         + " ORDER BY side, is_default DESC, code",
                 (rs, i) -> new PartnerGroupRow(rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3),
                         rs.getString(4), rs.getObject(5, UUID.class), rs.getBoolean(6)), orgId);
-        List<GroupRow> business = groups(orgId, "ledger_business_group");
-        List<GroupRow> product = groups(orgId, "ledger_product_group");
+        List<GroupRow> business = jdbc.query("SELECT id, code, name, is_default, NULL, vat_rule, exempt_vat_code"
+                        + " FROM ledger_business_group WHERE organization_id = ? ORDER BY is_default DESC, code",
+                LedgerPostingSetupService::groupRow, orgId);
+        List<GroupRow> product = jdbc.query("SELECT id, code, name, is_default, vat_code, NULL, NULL"
+                        + " FROM ledger_product_group WHERE organization_id = ? ORDER BY is_default DESC, code",
+                LedgerPostingSetupService::groupRow, orgId);
         List<GeneralRow> general = jdbc.query("""
                 SELECT g.id, g.business_group_id, g.product_group_id, g.sales_account_id, g.purchase_account_id
                 FROM ledger_general_setup g
@@ -154,19 +179,18 @@ public class LedgerPostingSetupService {
                 """, (rs, i) -> new GeneralRow(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class),
                 rs.getObject(3, UUID.class), rs.getObject(4, UUID.class), rs.getObject(5, UUID.class)), orgId);
         List<VatRow> vat = jdbc.query("""
-                SELECT id, code, name, rate, collected_account_id, recoverable_account_id, exempt
+                SELECT id, code, name, rate, collected_account_id, recoverable_account_id, exempt, mention
                 FROM ledger_vat_setup WHERE organization_id = ? ORDER BY exempt, rate DESC, code
                 """, (rs, i) -> new VatRow(rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3),
-                rs.getBigDecimal(4), rs.getObject(5, UUID.class), rs.getObject(6, UUID.class), rs.getBoolean(7)), orgId);
+                rs.getBigDecimal(4), rs.getObject(5, UUID.class), rs.getObject(6, UUID.class), rs.getBoolean(7),
+                rs.getString(8)), orgId);
         return new Snapshot(start, cash, partnerGroups, business, product, general, vat, categories(orgId, "BANK"),
-                categories(orgId, "EXPENSE"));
+                categories(orgId, "EXPENSE"), bankPostingMode == null ? Snapshot.ON_VALIDATION : bankPostingMode);
     }
 
-    private List<GroupRow> groups(UUID orgId, String table) {
-        return jdbc.query("SELECT id, code, name, is_default FROM " + table + " WHERE organization_id = ?"
-                        + " ORDER BY is_default DESC, code",
-                (rs, i) -> new GroupRow(rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3), rs.getBoolean(4)),
-                orgId);
+    private static GroupRow groupRow(java.sql.ResultSet rs, int i) throws java.sql.SQLException {
+        return new GroupRow(rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3), rs.getBoolean(4),
+                rs.getString(5), rs.getString(6), rs.getString(7));
     }
 
     private Map<String, UUID> categories(UUID orgId, String kind) {
@@ -271,9 +295,10 @@ public class LedgerPostingSetupService {
                         codes.get(g.accountId()), g.isDefault()))
                 .toList();
         List<LedgerDtos.Group> business = s.businessGroups().stream()
-                .map(g -> new LedgerDtos.Group(g.id(), g.code(), g.name(), g.isDefault())).toList();
+                .map(g -> new LedgerDtos.Group(g.id(), g.code(), g.name(), g.isDefault(), null,
+                        g.vatRule() == null ? "STANDARD" : g.vatRule(), g.exemptVatCode())).toList();
         List<LedgerDtos.Group> product = s.productGroups().stream()
-                .map(g -> new LedgerDtos.Group(g.id(), g.code(), g.name(), g.isDefault())).toList();
+                .map(g -> new LedgerDtos.Group(g.id(), g.code(), g.name(), g.isDefault(), g.vatCode(), null, null)).toList();
         List<LedgerDtos.GeneralSetupRow> general = s.general().stream()
                 .map(r -> new LedgerDtos.GeneralSetupRow(r.id(), r.businessGroupId(), r.productGroupId(),
                         r.salesAccountId(), codes.get(r.salesAccountId()), r.purchaseAccountId(),
@@ -282,7 +307,7 @@ public class LedgerPostingSetupService {
         List<LedgerDtos.VatSetupRow> vat = s.vat().stream()
                 .map(r -> new LedgerDtos.VatSetupRow(r.id(), r.code(), r.name(), r.rate(), r.collectedAccountId(),
                         codes.get(r.collectedAccountId()), r.recoverableAccountId(), codes.get(r.recoverableAccountId()),
-                        r.exempt()))
+                        r.exempt(), r.mention()))
                 .toList();
         List<LedgerDtos.BankAccountRow> banks = jdbc.query("""
                 SELECT b.id, b.name, b.ledger_account_id FROM bank_account b
@@ -301,7 +326,7 @@ public class LedgerPostingSetupService {
         expenseCategories.sort((x, y) -> Integer.compare(order(com.bento.crm.expense.model.Expense.CATEGORIES, x.category()),
                 order(com.bento.crm.expense.model.Expense.CATEGORIES, y.category())));
         return new LedgerDtos.PostingSetup(partnerGroups, business, product, general, vat, banks, s.cashAccountId(),
-                codes.get(s.cashAccountId()), bankCategories, expenseCategories, s.startDate());
+                codes.get(s.cashAccountId()), bankCategories, expenseCategories, s.startDate(), s.bankPostingMode());
     }
 
     private static int order(List<String> known, String value) {
@@ -441,12 +466,49 @@ public class LedgerPostingSetupService {
 
     @Transactional
     public LedgerDtos.PostingSetup updateBusinessGroup(UUID id, LedgerDtos.GroupUpdate r) {
+        UUID orgId = org();
+        row(orgId, "ledger_business_group", id, "Business group not found");
+        String rule = r.getVatRule() == null ? null : r.getVatRule().trim().toUpperCase(Locale.ROOT);
+        if (rule != null && !rule.equals("STANDARD") && !rule.equals("EXEMPT")) {
+            throw new IllegalArgumentException("The VAT rule is STANDARD or EXEMPT");
+        }
+        if (r.isExemptVatCodePresent()) {
+            String code = vatCode(orgId, r.getExemptVatCode());
+            jdbc.update("UPDATE ledger_business_group SET exempt_vat_code = ?, updated_at = now() WHERE id = ?", code, id);
+        }
+        if (rule != null) {
+            jdbc.update("UPDATE ledger_business_group SET vat_rule = ?, updated_at = now() WHERE id = ?", rule, id);
+        }
+        String effectiveRule = jdbc.queryForObject("SELECT vat_rule FROM ledger_business_group WHERE id = ?", String.class, id);
+        String exemptCode = jdbc.queryForObject("SELECT exempt_vat_code FROM ledger_business_group WHERE id = ?", String.class, id);
+        if ("EXEMPT".equals(effectiveRule) && exemptCode == null) {
+            throw new IllegalArgumentException("An exempt business group needs the VAT code its documents use (exemptVatCode)");
+        }
         return updateGroup(id, r, "ledger_business_group", "Business group not found");
     }
 
     @Transactional
     public LedgerDtos.PostingSetup updateProductGroup(UUID id, LedgerDtos.GroupUpdate r) {
+        UUID orgId = org();
+        row(orgId, "ledger_product_group", id, "Product group not found");
+        if (r.isVatCodePresent()) {
+            jdbc.update("UPDATE ledger_product_group SET vat_code = ?, updated_at = now() WHERE id = ?",
+                    vatCode(orgId, r.getVatCode()), id);
+        }
         return updateGroup(id, r, "ledger_product_group", "Product group not found");
+    }
+
+    /** A VAT code of the organization's VAT setup (upper-cased), or null for blank: 400 when unknown. */
+    public String vatCode(UUID orgId, String code) {
+        if (code == null || code.isBlank()) return null;
+        setup.ensure(orgId);
+        String c = code.trim().toUpperCase(Locale.ROOT);
+        Boolean known = jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM ledger_vat_setup WHERE organization_id = ? AND code = ?)",
+                Boolean.class, orgId, c);
+        if (!Boolean.TRUE.equals(known)) {
+            throw new IllegalArgumentException("Unknown VAT code: " + code);
+        }
+        return c;
     }
 
     private LedgerDtos.PostingSetup updateGroup(UUID id, LedgerDtos.GroupUpdate r, String table, String notFound) {
@@ -533,8 +595,13 @@ public class LedgerPostingSetupService {
     public LedgerDtos.PostingSetup updateVat(UUID id, LedgerDtos.VatSetupUpdate r) {
         UUID orgId = org();
         row(orgId, "ledger_vat_setup", id, "VAT setup row not found");
-        if (r.collectedAccountId() == null && r.recoverableAccountId() == null) {
-            throw new IllegalArgumentException("Give the collected or the recoverable VAT account");
+        if (r.collectedAccountId() == null && r.recoverableAccountId() == null && r.mention() == null) {
+            throw new IllegalArgumentException("Give the collected or the recoverable VAT account, or the mention");
+        }
+        if (r.mention() != null) {
+            String mention = r.mention().trim();
+            jdbc.update("UPDATE ledger_vat_setup SET mention = ?, updated_at = now() WHERE id = ?",
+                    mention.isEmpty() ? null : mention, id);
         }
         if (r.collectedAccountId() != null) {
             jdbc.update("UPDATE ledger_vat_setup SET collected_account_id = ?, updated_at = now() WHERE id = ?",
@@ -605,7 +672,7 @@ public class LedgerPostingSetupService {
         }
         jdbc.queryForList("SELECT start_date FROM ledger_settings WHERE organization_id = ? FOR UPDATE", orgId);
         Boolean posted = jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM ledger_entry WHERE organization_id = ?"
-                + " AND source_type IN ('INVOICE', 'BILL', 'PAYMENT', 'EXPENSE', 'BANK_LINE') AND deleted_at IS NULL)",
+                + " AND source_type IN ('INVOICE', 'BILL', 'PAYMENT', 'EXPENSE', 'BANK_LINE', 'ADVANCE', 'CREDIT_NOTE', 'ADVANCE_APPLY') AND deleted_at IS NULL)",
                 Boolean.class, orgId);
         LocalDate current = jdbc.queryForObject("SELECT start_date FROM ledger_settings WHERE organization_id = ?",
                 LocalDate.class, orgId);
@@ -615,6 +682,19 @@ public class LedgerPostingSetupService {
         jdbc.update("UPDATE ledger_settings SET start_date = ?, updated_at = now() WHERE organization_id = ?",
                 r.startDate(), orgId);
         return view(orgId);
+    }
+
+    /** Stores the bank posting mode; the caller re-posts what the change affects. */
+    @Transactional
+    public void setBankPostingMode(UUID orgId, String mode) {
+        setup.ensure(orgId);
+        jdbc.update("UPDATE ledger_settings SET bank_posting_mode = ?, updated_at = now() WHERE organization_id = ?", mode, orgId);
+    }
+
+    /** The current setup of the organization in context. */
+    @Transactional
+    public LedgerDtos.PostingSetup current() {
+        return view(org());
     }
 
     // Assignments on partners and products

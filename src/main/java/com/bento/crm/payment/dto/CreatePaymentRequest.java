@@ -40,6 +40,15 @@ public class CreatePaymentRequest {
     /** Paid through the cash register; null follows the method (CASH = cash register). */
     private Boolean cashRegister;
 
+    /** An advance (no invoice yet): posts on 4421 (customer) or 3411 (supplier). Left out keeps it on an update. */
+    private Boolean advance;
+
+    public CreatePaymentRequest(UUID partnerId, UUID invoiceId, LocalDate paymentDate, BigDecimal amount,
+                                Payment.Method method, String reference, String notes, UUID bankAccountId,
+                                Boolean cashRegister) {
+        this(partnerId, invoiceId, paymentDate, amount, method, reference, notes, bankAccountId, cashRegister, null);
+    }
+
     public CreatePaymentRequest(UUID partnerId, UUID invoiceId, LocalDate paymentDate, BigDecimal amount,
                                 Payment.Method method, String reference, String notes) {
         this(partnerId, invoiceId, paymentDate, amount, method, reference, notes, null, null);

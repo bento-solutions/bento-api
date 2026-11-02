@@ -40,12 +40,14 @@ public class LedgerSetupService {
             new Seed("1199", "Résultat net de l'exercice (déficitaire)"),
             new Seed("1481", "Emprunts auprès des établissements de crédit"),
             new Seed("3111", "Marchandises"),
+            new Seed("3411", "Fournisseurs débiteurs, avances et acomptes versés"),
             new Seed("3421", "Clients"),
             new Seed("3453", "Acomptes sur impôts sur les résultats"),
             new Seed("3481", "Créances sur les entreprises du groupe et associés"),
             new Seed("34552", "État, TVA récupérable sur charges"),
             new Seed("4411", "Fournisseurs"),
             new Seed("4417", "Fournisseurs, factures non parvenues"),
+            new Seed("4421", "Clients, avances et acomptes reçus"),
             new Seed("4455", "État, TVA facturée"),
             new Seed("44551", "État, TVA facturée 20 %"),
             new Seed("44552", "État, TVA facturée 14 %"),
@@ -171,6 +173,7 @@ public class LedgerSetupService {
             ps.setString(4, j.kind());
         });
         seedPostingSetup(orgId);
+        seedPhase3(orgId);
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
@@ -226,6 +229,48 @@ public class LedgerSetupService {
         }
         seedCategories(orgId, "BANK", BANK_CATEGORIES);
         seedCategories(orgId, "EXPENSE", EXPENSE_CATEGORIES);
+    }
+
+    /** The posting-setup version this code seeds; ledger_settings.setup_version says what an organization has. */
+    static final int SETUP_VERSION = 3;
+
+    static final String EXPORT_MENTION = "Exonéré de TVA, article 92-I-1° du CGI (exportation)";
+    static final String EXEMPT_MENTION = "Exonéré de TVA (article 91 du CGI)";
+
+    /**
+     * Phase 3 seeds, once per organization (new or already seeded by phase 2): the VAT mentions,
+     * the VAT code of each product group, the TRANSPORT product group (TVA14, accounts copied from
+     * SERVICES) and the EXPORT business group's exemption. Only the call that moves the version
+     * seeds, so a value a person changed afterwards is never put back.
+     */
+    private void seedPhase3(UUID orgId) {
+        int moved = jdbc.update("UPDATE ledger_settings SET setup_version = ?, updated_at = now()"
+                + " WHERE organization_id = ? AND setup_version < ?", SETUP_VERSION, orgId, SETUP_VERSION);
+        if (moved == 0) {
+            return;
+        }
+        jdbc.update("UPDATE ledger_vat_setup SET mention = ? WHERE organization_id = ? AND code = 'EXPORT' AND mention IS NULL",
+                EXPORT_MENTION, orgId);
+        jdbc.update("UPDATE ledger_vat_setup SET mention = ? WHERE organization_id = ? AND code = 'EXONERE' AND mention IS NULL",
+                EXEMPT_MENTION, orgId);
+        jdbc.update("UPDATE ledger_product_group SET vat_code = 'TVA20' WHERE organization_id = ?"
+                + " AND code IN ('GOODS', 'SERVICES') AND vat_code IS NULL", orgId);
+        int transport = jdbc.update("INSERT INTO ledger_product_group (organization_id, code, name, is_default, vat_code)"
+                + " VALUES (?, 'TRANSPORT', 'Transport', FALSE, 'TVA14') ON CONFLICT DO NOTHING", orgId);
+        if (transport > 0) {
+            jdbc.update("""
+                    INSERT INTO ledger_general_setup (organization_id, business_group_id, product_group_id, sales_account_id, purchase_account_id)
+                    SELECT g.organization_id, g.business_group_id, t.id, g.sales_account_id, g.purchase_account_id
+                    FROM ledger_general_setup g
+                    JOIN ledger_product_group s ON s.id = g.product_group_id AND s.code = 'SERVICES'
+                    JOIN ledger_product_group t ON t.organization_id = g.organization_id AND t.code = 'TRANSPORT'
+                    WHERE g.organization_id = ?
+                    ON CONFLICT DO NOTHING
+                    """, orgId);
+        }
+        jdbc.update("UPDATE ledger_business_group SET vat_rule = 'EXEMPT', exempt_vat_code = 'EXPORT' WHERE organization_id = ?"
+                + " AND code = 'EXPORT' AND exempt_vat_code IS NULL"
+                + " AND EXISTS (SELECT 1 FROM ledger_vat_setup v WHERE v.organization_id = ? AND v.code = 'EXPORT')", orgId, orgId);
     }
 
     private void seedCategories(UUID orgId, String kind, Map<String, String> categories) {

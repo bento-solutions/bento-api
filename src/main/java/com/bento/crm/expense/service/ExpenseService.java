@@ -29,6 +29,7 @@ public class ExpenseService {
     private final PartnerRepository partnerRepository;
     private final com.bento.crm.ledger.service.LedgerAutoPostingService ledger;
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
+    private final com.bento.crm.ledger.service.LedgerPostingSetupService postingSetup;
 
     @Transactional(readOnly = true)
     public Page<Expense> list(LocalDate from, LocalDate to, String category, Pageable pageable) {
@@ -107,6 +108,8 @@ public class ExpenseService {
             }
         }
         e.setCostCenterId(r.costCenterId());
+        // Null with a VAT amount posts as TVA20, as before phase 3.
+        e.setVatCode(postingSetup.vatCode(e.getOrganizationId(), r.vatCode()));
     }
 
     private static String blankToNull(String s) {

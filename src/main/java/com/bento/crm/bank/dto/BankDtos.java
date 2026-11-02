@@ -36,12 +36,40 @@ public final class BankDtos {
                               String reference, BigDecimal amount, BigDecimal balanceAfter, String category,
                               BankTransaction.CategorySource categorySource, BankTransaction.Status status, UUID invoiceId,
                               String invoiceNumber, UUID paymentId, UUID expenseId, boolean paymentCreated,
-                              String matchLabel) {}
+                              String matchLabel, Instant validatedAt) {}
 
     public record Candidate(String kind, UUID id, String label, String partnerName, LocalDate date, BigDecimal amount,
                             BigDecimal outstanding, int score, String reason) {}
 
-    public record MatchRequest(String kind, UUID id) {}
+    /** {@code {kind, id}} matches an invoice, payment or expense; {@code {partnerId, advance: true}} records an advance. */
+    public record MatchRequest(String kind, UUID id, UUID partnerId, Boolean advance) {
+        public MatchRequest(String kind, UUID id) {
+            this(kind, id, null, null);
+        }
+    }
+
+    // Bank journal (phase 3)
+
+    public record JournalLine(UUID id, UUID bankAccountId, LocalDate date, String description, BigDecimal amount,
+                              BankTransaction.Status status, String category, UUID partnerId, String partnerName,
+                              UUID invoiceId, String invoiceNumber, UUID paymentId, UUID expenseId, Boolean advance,
+                              String proposedAccountCode, String proposedAccountName, Instant validatedAt,
+                              UUID validatedBy) {}
+
+    public record JournalSummary(long toValidate, BigDecimal statementBalance, BigDecimal ledgerBalance,
+                                 BigDecimal difference) {}
+
+    /** A PageResponse (same fields) plus the bank account's summary. */
+    public record JournalPage(List<JournalLine> content, int page, int size,
+                              @com.fasterxml.jackson.annotation.JsonProperty("total_elements") long totalElements,
+                              @com.fasterxml.jackson.annotation.JsonProperty("total_pages") int totalPages,
+                              JournalSummary summary) {}
+
+    public record ValidateRequest(UUID bankAccountId, List<UUID> transactionIds, LocalDate upTo) {}
+
+    public record ValidateWarning(UUID transactionId, String message) {}
+
+    public record ValidateResult(int validated, int posted, List<ValidateWarning> warnings) {}
 
     public record CategoryRequest(String category, Boolean remember, String containsText) {}
 

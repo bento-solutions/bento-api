@@ -19,6 +19,21 @@ public class InvoiceSpecification {
             UUID partnerId,
             LocalDate fromDate,
             LocalDate toDate) {
+        return filter(organizationId, q, type, status, partnerId, fromDate, toDate, null, null, null);
+    }
+
+    /** The same, plus the deal, the source proposal and the kind (INVOICE, ADVANCE, CREDIT_NOTE). */
+    public static Specification<Invoice> filter(
+            UUID organizationId,
+            String q,
+            Invoice.InvoiceType type,
+            Invoice.Status status,
+            UUID partnerId,
+            LocalDate fromDate,
+            LocalDate toDate,
+            UUID dealId,
+            UUID proposalId,
+            Invoice.Kind kind) {
         return (root, query, cb) -> {
             List<Predicate> predicates = new ArrayList<>();
 
@@ -58,6 +73,16 @@ public class InvoiceSpecification {
             }
             if (toDate != null) {
                 predicates.add(cb.lessThanOrEqualTo(root.get("invoiceDate"), toDate));
+            }
+
+            if (dealId != null) {
+                predicates.add(cb.equal(root.get("dealId"), dealId));
+            }
+            if (proposalId != null) {
+                predicates.add(cb.equal(root.get("sourceProposalId"), proposalId));
+            }
+            if (kind != null) {
+                predicates.add(cb.equal(root.get("kind"), kind));
             }
 
             return cb.and(predicates.toArray(new Predicate[0]));

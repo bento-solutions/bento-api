@@ -35,6 +35,22 @@ public class PaymentController {
         return ResponseEntity.status(HttpStatus.CREATED).body(PaymentResponse.fromEntity(payment));
     }
 
+    @GetMapping("/advances/open")
+    @PreAuthorize("hasAuthority('PAYMENTS_READ')")
+    @Operation(summary = "Open advance payments", description = "Advance payments not yet applied to an invoice")
+    public ResponseEntity<List<PaymentResponse>> openAdvances(@RequestParam(required = false) UUID partnerId) {
+        return ResponseEntity.ok(paymentService.openAdvances(partnerId).stream().map(PaymentResponse::fromEntity).toList());
+    }
+
+    public record ApplyRequest(UUID invoiceId) {}
+
+    @PostMapping("/{id}/apply")
+    @PreAuthorize("hasAuthority('PAYMENTS_WRITE')")
+    @Operation(summary = "Apply an advance", description = "Links an advance payment to an invoice and moves it to the partner's account")
+    public ResponseEntity<PaymentResponse> apply(@PathVariable UUID id, @RequestBody ApplyRequest request) {
+        return ResponseEntity.ok(PaymentResponse.fromEntity(paymentService.applyAdvance(id, request == null ? null : request.invoiceId())));
+    }
+
     @GetMapping("/{id}")
     @PreAuthorize("hasAuthority('PAYMENTS_READ')")
     @Operation(summary = "Get payment")

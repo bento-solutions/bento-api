@@ -50,6 +50,9 @@ public class DealResponse {
     private String warehouseAddress;
     private String transportationService;
     private List<OrderLineDto> orderLines;
+    /** Advance invoices issued on the deal: their total (incl. VAT), and whether they are all paid. */
+    private boolean advancePaid;
+    private java.math.BigDecimal advanceTotal;
     private UUID createdBy;
     private UUID updatedBy;
     private LocalDateTime createdAt;

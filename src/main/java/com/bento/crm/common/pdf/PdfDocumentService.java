@@ -49,6 +49,15 @@ public class PdfDocumentService {
      * per rate, the amount in words, bank details and a footer.
      */
     public byte[] generateInvoicePdf(Invoice invoice, Partner partner, Organization org, InvoiceBranding branding) {
+        return generateInvoicePdf(invoice, partner, org, branding, null);
+    }
+
+    /**
+     * With the invoice's VAT breakdown per code (phase 3): one VAT row per rate, the exemption
+     * mentions under the totals, and the advances a final invoice deducts.
+     */
+    public byte[] generateInvoicePdf(Invoice invoice, Partner partner, Organization org, InvoiceBranding branding,
+                                     List<com.bento.crm.invoice.dto.InvoiceResponse.VatBreakdownRow> vatRows) {
         try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             String issuer = branding != null && branding.legalName() != null ? branding.legalName()
                     : (org != null && org.getName() != null ? org.getName() : "Bento CRM");
@@ -91,7 +100,11 @@ public class PdfDocumentService {
             rightCell.setBorder(Rectangle.NO_BORDER);
             rightCell.setHorizontalAlignment(Element.ALIGN_RIGHT);
 
-            Paragraph docType = new Paragraph(invoice.getType() == Invoice.InvoiceType.VENDOR ? "FACTURE FOURNISSEUR" : "FACTURE", titleFont);
+            boolean vendorDoc = invoice.getType() == Invoice.InvoiceType.VENDOR;
+            String title = invoice.getKind() == Invoice.Kind.ADVANCE ? (vendorDoc ? "FACTURE D'ACOMPTE FOURNISSEUR" : "FACTURE D'ACOMPTE")
+                    : invoice.getKind() == Invoice.Kind.CREDIT_NOTE ? (vendorDoc ? "AVOIR FOURNISSEUR" : "AVOIR")
+                    : vendorDoc ? "FACTURE FOURNISSEUR" : "FACTURE";
+            Paragraph docType = new Paragraph(title, titleFont);
             docType.setAlignment(Element.ALIGN_RIGHT);
             rightCell.addElement(docType);
 
@@ -191,7 +204,22 @@ public class PdfDocumentService {
 
             PdfPCell vatCell = new PdfPCell();
             vatCell.setBorder(Rectangle.NO_BORDER);
-            if (!baseByRate.isEmpty()) {
+            List<String> mentions = new java.util.ArrayList<>();
+            if (vatRows != null && !vatRows.isEmpty()) {
+                PdfPTable vatTable = new PdfPTable(3);
+                vatTable.setWidthPercentage(95);
+                vatTable.setHorizontalAlignment(Element.ALIGN_LEFT);
+                addTableHeader(vatTable, "Taux TVA", Element.ALIGN_LEFT, headerBg);
+                addTableHeader(vatTable, "Base HT", Element.ALIGN_RIGHT, headerBg);
+                addTableHeader(vatTable, "Montant TVA", Element.ALIGN_RIGHT, headerBg);
+                for (var r : vatRows) {
+                    addTableCell(vatTable, r.getRate().stripTrailingZeros().toPlainString() + "%", Element.ALIGN_LEFT, FONT_BODY);
+                    addTableCell(vatTable, formatNumber(r.getBase()), Element.ALIGN_RIGHT, FONT_BODY);
+                    addTableCell(vatTable, formatNumber(r.getVat()), Element.ALIGN_RIGHT, FONT_BODY);
+                    if (r.getMention() != null && !mentions.contains(r.getMention())) mentions.add(r.getMention());
+                }
+                vatCell.addElement(vatTable);
+            } else if (!baseByRate.isEmpty()) {
                 PdfPTable vatTable = new PdfPTable(3);
                 vatTable.setWidthPercentage(95);
                 vatTable.setHorizontalAlignment(Element.ALIGN_LEFT);
@@ -211,12 +239,32 @@ public class PdfDocumentService {
             totalsCell.setBorder(Rectangle.NO_BORDER);
             PdfPTable totalsTable = new PdfPTable(2);
             totalsTable.setWidthPercentage(100);
-            addTotalRow(totalsTable, "Total HT :", formatNumber(subtotal) + " MAD", false);
-            addTotalRow(totalsTable, "Total TVA :", formatNumber(tax) + " MAD", false);
-            addTotalRow(totalsTable, "Total TTC :", formatNumber(grandTotal) + " MAD", true);
+            List<Map<String, Object>> deductions = invoice.getAdvanceDeductions();
+            if (deductions != null && !deductions.isEmpty()) {
+                BigDecimal linesHt = subtotal;
+                for (Map<String, Object> d : deductions) linesHt = linesHt.add(toBigDecimal(d.get("base"), BigDecimal.ZERO));
+                addTotalRow(totalsTable, "Total HT :", formatNumber(linesHt) + " MAD", false);
+                for (Map<String, Object> d : deductions) {
+                    String when = d.get("date") == null ? "" : " du " + formatDate(java.time.LocalDate.parse(d.get("date").toString()));
+                    addTotalRow(totalsTable, "Acompte n° " + d.get("number") + when + " HT :",
+                            "-" + formatNumber(toBigDecimal(d.get("base"), BigDecimal.ZERO)) + " MAD", false);
+                    addTotalRow(totalsTable, "Acompte n° " + d.get("number") + " TVA :",
+                            "-" + formatNumber(toBigDecimal(d.get("vat"), BigDecimal.ZERO)) + " MAD", false);
+                }
+                addTotalRow(totalsTable, "Net HT :", formatNumber(subtotal) + " MAD", false);
+                addTotalRow(totalsTable, "Total TVA :", formatNumber(tax) + " MAD", false);
+                addTotalRow(totalsTable, "Net à payer TTC :", formatNumber(grandTotal) + " MAD", true);
+            } else {
+                addTotalRow(totalsTable, "Total HT :", formatNumber(subtotal) + " MAD", false);
+                addTotalRow(totalsTable, "Total TVA :", formatNumber(tax) + " MAD", false);
+                addTotalRow(totalsTable, "Total TTC :", formatNumber(grandTotal) + " MAD", true);
+            }
             totalsCell.addElement(totalsTable);
             bottom.addCell(totalsCell);
             document.add(bottom);
+            for (String mention : mentions) {
+                document.add(new Paragraph(mention, FONT_BODY));
+            }
 
             document.add(new Paragraph(" "));
             document.add(new Paragraph("Arrêtée la présente facture à la somme de : " + AmountInWords.dirhams(grandTotal) + ".", FONT_BODY_BOLD));

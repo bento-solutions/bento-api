@@ -68,7 +68,15 @@ public class LedgerAutoPostingService {
     public static final String BANK_LINE = "BANK_LINE";
     /** A bank account's opening balance, in the opening (AN) journal. */
     public static final String BANK_OPENING = "BANK_OPENING";
-    public static final Set<String> SOURCES = Set.of(INVOICE, BILL, PAYMENT, EXPENSE, BANK_LINE, BANK_OPENING);
+    /** An advance invoice (customer or supplier side). */
+    public static final String ADVANCE = "ADVANCE";
+    /** A credit note (customer or supplier side). */
+    public static final String CREDIT_NOTE = "CREDIT_NOTE";
+    /** An advance payment applied to its invoice: OD entry from 4421 to the receivable (or payable to 3411). */
+    public static final String ADVANCE_APPLY = "ADVANCE_APPLY";
+    public static final Set<String> SOURCES = Set.of(INVOICE, BILL, PAYMENT, EXPENSE, BANK_LINE, BANK_OPENING, ADVANCE,
+            CREDIT_NOTE, ADVANCE_APPLY);
+    private static final List<String> INVOICE_SOURCES = List.of(INVOICE, BILL, ADVANCE, CREDIT_NOTE);
 
     private static final BigDecimal DEFAULT_VAT = new BigDecimal("0.20");
     private static final BigDecimal HUNDRED = new BigDecimal("100");
@@ -111,23 +119,37 @@ public class LedgerAutoPostingService {
 
     // Entry points, called by the services that change the documents
 
-    /** A customer invoice (VT) or a supplier bill (AC). */
+    /** A customer invoice (VT) or a supplier bill (AC), an advance invoice or a credit note. */
     @Transactional
     public void invoice(Invoice invoice) {
         if (invoice == null || invoice.getId() == null) return;
         UUID orgId = invoice.getOrganizationId();
         Snapshot s = postingSetup.snapshot(orgId);
-        boolean customer = invoice.getType() != Invoice.InvoiceType.VENDOR;
-        // A document that changed type leaves nothing behind under its old one.
-        sync(orgId, customer ? BILL : INVOICE, invoice.getId(), null, s);
-        sync(orgId, customer ? INVOICE : BILL, invoice.getId(), invoiceDraft(invoice, s), s);
+        String want = invoiceSource(invoice);
+        // A document that changed type or kind leaves nothing behind under its old one.
+        for (String t : INVOICE_SOURCES) {
+            if (!t.equals(want)) sync(orgId, t, invoice.getId(), null, s);
+        }
+        sync(orgId, want, invoice.getId(), invoiceDraft(invoice, s), s);
     }
 
+    /** The source type a document posts under. */
+    public static String invoiceSource(Invoice invoice) {
+        Invoice.Kind kind = invoice.getKind() == null ? Invoice.Kind.INVOICE : invoice.getKind();
+        return switch (kind) {
+            case ADVANCE -> ADVANCE;
+            case CREDIT_NOTE -> CREDIT_NOTE;
+            default -> invoice.getType() == Invoice.InvoiceType.VENDOR ? BILL : INVOICE;
+        };
+    }
+
+    /** A payment, and, for an advance applied to its invoice, the OD entry that moves it. */
     @Transactional
     public void payment(Payment payment) {
         if (payment == null || payment.getId() == null) return;
         Snapshot s = postingSetup.snapshot(payment.getOrganizationId());
         sync(payment.getOrganizationId(), PAYMENT, payment.getId(), paymentDraft(payment, s), s);
+        sync(payment.getOrganizationId(), ADVANCE_APPLY, payment.getId(), advanceApplyDraft(payment, s), s);
     }
 
     @Transactional
@@ -289,17 +311,21 @@ public class LedgerAutoPostingService {
         BigDecimal total = money(inv.getTotal());
         if (total.signum() == 0) return null;
         boolean customer = inv.getType() != Invoice.InvoiceType.VENDOR;
+        Invoice.Kind kind = inv.getKind() == null ? Invoice.Kind.INVOICE : inv.getKind();
+        boolean advance = kind == Invoice.Kind.ADVANCE;
+        boolean creditNote = kind == Invoice.Kind.CREDIT_NOTE;
         PartnerInfo p = partner(orgId, inv.getPartnerId());
         UUID partnerId = p == null ? null : p.id();
         UUID counter = customer
                 ? s.partnerAccount(LedgerPostingSetupService.CUSTOMER, p == null ? null : p.customerGroupId())
                 : s.partnerAccount(LedgerPostingSetupService.SUPPLIER, p == null ? null : p.supplierGroupId());
         UUID businessGroup = s.businessGroup(p == null ? null : p.businessGroupId());
+        // Advances received (4421) or paid (3411), on the partner.
+        UUID advanceAccount = postingSetup.accountByCode(orgId, customer ? "4421" : "3411");
 
-        // Net amounts per (account, cost center) and per VAT rate, from the lines.
-        record NetKey(UUID account, UUID costCenter) {}
+        // Net amounts per (account, partner, cost center) from the lines; an advance invoice's lines go to 4421 / 3411.
+        record NetKey(UUID account, UUID partner, UUID costCenter) {}
         Map<NetKey, BigDecimal> nets = new LinkedHashMap<>();
-        Map<BigDecimal, BigDecimal> netByRate = new LinkedHashMap<>();
         Map<UUID, Map<String, Object>> products = new HashMap<>();
         if (inv.getLines() != null) {
             for (Map<String, Object> line : inv.getLines()) {
@@ -307,34 +333,59 @@ public class LedgerAutoPostingService {
                 BigDecimal qty = decimal(line.get("qty"));
                 BigDecimal price = decimal(first(line, "unitPrice", "unit_price"));
                 if (qty == null || price == null) continue;
-                BigDecimal net = money(qty.multiply(price));
-                BigDecimal rate = rate(first(line, "vatRate", "vat_rate", "taxRate"));
-                UUID productGroup = productGroup(orgId, line, s, products);
-                LedgerPostingSetupService.GeneralRow g = s.general(businessGroup, productGroup);
+                BigDecimal net = qty.multiply(price);
                 UUID costCenter = uuid(line.get("costCenterId"), "cost center");
-                nets.merge(new NetKey(customer ? g.salesAccountId() : g.purchaseAccountId(), costCenter), net, BigDecimal::add);
-                netByRate.merge(rate.stripTrailingZeros(), net, BigDecimal::add);
+                NetKey key;
+                if (advance) {
+                    key = new NetKey(advanceAccount, partnerId, costCenter);
+                } else {
+                    UUID productGroup = productGroup(orgId, line, s, products);
+                    LedgerPostingSetupService.GeneralRow g = s.general(businessGroup, productGroup);
+                    key = new NetKey(customer ? g.salesAccountId() : g.purchaseAccountId(), null, costCenter);
+                }
+                nets.merge(key, net, BigDecimal::add);
             }
         }
+        nets.replaceAll((k, v) -> money(v));
 
-        // VAT per account; the document's own VAT total wins, the difference going to the largest rate.
+        // VAT per account, from the lines' codes (exempt codes have a 0 rate and post nothing).
         Map<UUID, BigDecimal> vat = new LinkedHashMap<>();
-        netByRate.forEach((rate, net) -> {
-            BigDecimal amount = money(net.multiply(rate));
-            if (amount.signum() == 0) return;
-            vat.merge(vatAccount(orgId, s, rate, customer), amount, BigDecimal::add);
-        });
-        BigDecimal tax = inv.getTax() != null ? money(inv.getTax()) : vat.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal vatDiff = tax.subtract(vat.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add));
+        for (VatDeterminationService.BreakdownRow r : VatDeterminationService.breakdown(inv.getLines(), Map.of())) {
+            if (r.vat().signum() == 0) continue;
+            vat.merge(vatAccount(orgId, s, r.vatCode(), r.rate().movePointLeft(2), customer), r.vat(), BigDecimal::add);
+        }
+
+        // Advances deducted on a final invoice: their base back from 4421 / 3411, their VAT off the VAT account.
+        BigDecimal deductedBase = BigDecimal.ZERO;
+        Map<UUID, BigDecimal> deductedVat = new LinkedHashMap<>();
+        if (!advance && inv.getAdvanceDeductions() != null) {
+            for (Map<String, Object> d : inv.getAdvanceDeductions()) {
+                BigDecimal b = money(decimal(d.get("base")));
+                BigDecimal v = money(decimal(d.get("vat")));
+                deductedBase = deductedBase.add(b);
+                if (v.signum() != 0) {
+                    Object code = d.get("vatCode");
+                    BigDecimal rate = b.signum() == 0 ? DEFAULT_VAT : v.divide(b, 4, RoundingMode.HALF_UP);
+                    deductedVat.merge(vatAccount(orgId, s, code == null ? null : code.toString(), rate, customer), v,
+                            BigDecimal::add);
+                }
+            }
+        }
+        BigDecimal netVat = sum(vat).subtract(sum(deductedVat));
+
+        // The document's own VAT total wins, the difference going to the largest VAT account.
+        BigDecimal tax = inv.getTax() != null ? money(inv.getTax()) : netVat;
+        BigDecimal vatDiff = tax.subtract(netVat);
         if (vatDiff.signum() != 0) {
-            UUID target = vat.isEmpty() ? vatAccount(orgId, s, guessRate(tax, total), customer) : largest(vat);
+            UUID target = vat.isEmpty() ? vatAccount(orgId, s, null, guessRate(tax, total), customer) : largest(vat);
             vat.merge(target, vatDiff, BigDecimal::add);
         }
         // Net amounts make up the rest of the total.
-        BigDecimal netTarget = total.subtract(tax);
+        BigDecimal netTarget = total.subtract(tax).add(deductedBase);
         if (nets.isEmpty()) {
             LedgerPostingSetupService.GeneralRow g = s.general(businessGroup, s.productGroup(null));
-            nets.put(new NetKey(customer ? g.salesAccountId() : g.purchaseAccountId(), null), netTarget);
+            nets.put(advance ? new NetKey(advanceAccount, partnerId, null)
+                    : new NetKey(customer ? g.salesAccountId() : g.purchaseAccountId(), null, null), netTarget);
         } else {
             BigDecimal netDiff = netTarget.subtract(nets.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add));
             if (netDiff.signum() != 0) {
@@ -344,17 +395,31 @@ public class LedgerAutoPostingService {
             }
         }
 
-        int sign = customer ? 1 : -1;
+        // Customer: the receivable is a debit. A supplier bill mirrors it, and a credit note mirrors its kind.
+        BigDecimal sign = BigDecimal.valueOf((customer ? 1 : -1) * (creditNote ? -1 : 1));
         String number = inv.getInvoiceNumber();
         String who = p == null ? inv.getCustomerName() : p.name();
-        String description = (customer ? "Invoice " : "Supplier bill ") + (number == null ? "" : number)
-                + (who == null ? "" : " - " + who);
+        String what = switch (kind) {
+            case ADVANCE -> customer ? "Advance invoice " : "Supplier advance invoice ";
+            case CREDIT_NOTE -> customer ? "Credit note " : "Supplier credit note ";
+            default -> customer ? "Invoice " : "Supplier bill ";
+        };
+        String description = what + (number == null ? "" : number) + (who == null ? "" : " - " + who);
         Lines lines = new Lines();
-        if (customer) lines.add(counter, partnerId, null, total.multiply(BigDecimal.valueOf(sign)), description);
-        nets.forEach((k, v) -> lines.add(k.account(), null, k.costCenter(), v.multiply(BigDecimal.valueOf(-sign)), null));
-        vat.forEach((a, v) -> lines.add(a, null, null, v.multiply(BigDecimal.valueOf(-sign)), "TVA"));
-        if (!customer) lines.add(counter, partnerId, null, total.multiply(BigDecimal.valueOf(sign)), description);
+        if (customer) lines.add(counter, partnerId, null, total.multiply(sign), description);
+        if (deductedBase.signum() != 0) {
+            lines.add(advanceAccount, partnerId, null, deductedBase.multiply(sign), "Acomptes déduits");
+        }
+        nets.forEach((k, v) -> lines.add(k.account(), k.partner(), k.costCenter(), v.multiply(sign.negate()),
+                advance ? "Acompte" : null));
+        vat.forEach((a, v) -> lines.add(a, null, null, v.multiply(sign.negate()), "TVA"));
+        deductedVat.forEach((a, v) -> lines.add(a, null, null, v.multiply(sign), "TVA"));
+        if (!customer) lines.add(counter, partnerId, null, total.multiply(sign), description);
         return draft(customer ? "VT" : "AC", inv.getInvoiceDate(), description.trim(), number, lines);
+    }
+
+    private static BigDecimal sum(Map<?, BigDecimal> m) {
+        return m.values().stream().reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
     /** The line's product group: its own override, else its product's, else GOODS for stocked products. */
@@ -386,8 +451,10 @@ public class LedgerAutoPostingService {
                 : s.productGroupByCode("SERVICES");
     }
 
-    private UUID vatAccount(UUID orgId, Snapshot s, BigDecimal rate, boolean collected) {
-        LedgerPostingSetupService.VatRow row = s.vatFor(rate);
+    /** The VAT account of a code (else of a rate, else TVA20's): collected on sales, recoverable on purchases. */
+    private UUID vatAccount(UUID orgId, Snapshot s, String code, BigDecimal rate, boolean collected) {
+        LedgerPostingSetupService.VatRow row = code == null ? null : s.vatByCode(code);
+        if (row == null && rate != null) row = s.vatFor(rate);
         if (row == null) row = s.vatByCode("TVA20");
         if (row == null) return postingSetup.accountByCode(orgId, collected ? "4455" : "34552");
         return collected ? row.collectedAccountId() : row.recoverableAccountId();
@@ -414,6 +481,9 @@ public class LedgerAutoPostingService {
         BigDecimal amount = money(pay.getAmount());
         if (amount.signum() <= 0) return null;
         UUID orgId = pay.getOrganizationId();
+        BankLink link = bankLink(orgId, pay.getId());
+        // Created by matching a bank line still to validate: posts once the line is validated.
+        if (link != null && link.created() && !link.validated() && s.postOnValidation()) return null;
         PartnerInfo p = partner(orgId, pay.getPartnerId());
         String invoiceType = null;
         String invoiceNumber = null;
@@ -425,9 +495,10 @@ public class LedgerAutoPostingService {
                 invoiceNumber = (String) rows.get(0).get("invoice_number");
             }
         }
-        boolean supplier = invoiceType != null ? invoiceType.equals("VENDOR") : p != null && "VENDOR".equals(p.type());
+        boolean supplier = paymentIsSupplier(invoiceType, link, p);
         UUID partnerId = p == null ? null : p.id();
-        UUID counter = supplier
+        UUID counter = pay.isAdvance() ? postingSetup.accountByCode(orgId, supplier ? "3411" : "4421")
+                : supplier
                 ? s.partnerAccount(LedgerPostingSetupService.SUPPLIER, p == null ? null : p.supplierGroupId())
                 : s.partnerAccount(LedgerPostingSetupService.CUSTOMER, p == null ? null : p.customerGroupId());
         boolean cash = pay.isCashRegister();
@@ -435,7 +506,8 @@ public class LedgerAutoPostingService {
         UUID bankAccountId = pay.getBankAccountId() != null ? pay.getBankAccountId() : postingSetup.defaultBankAccountId(orgId);
         UUID money = cash ? s.cashAccountId() : postingSetup.bankLedgerAccount(orgId, bankAccountId);
         String who = p == null ? "" : p.name();
-        String description = (supplier ? "Payment to " : "Payment received from ") + who
+        String description = (pay.isAdvance() ? (supplier ? "Advance paid to " : "Advance received from ")
+                : supplier ? "Payment to " : "Payment received from ") + who
                 + (invoiceNumber == null ? "" : " - " + invoiceNumber);
         String label = pay.getReference() != null && !pay.getReference().isBlank() ? pay.getReference().trim()
                 : invoiceNumber != null ? invoiceNumber : "Payment";
@@ -448,6 +520,60 @@ public class LedgerAutoPostingService {
             lines.add(counter, partnerId, null, amount.negate(), description);
         }
         return draft(cash ? "CA" : "BQ", pay.getPaymentDate(), description.trim(), label, lines);
+    }
+
+    /** The bank line a payment is matched to: whether matching created the payment, whether it is validated, its sign. */
+    private record BankLink(boolean created, boolean validated, int sign) {}
+
+    private BankLink bankLink(UUID orgId, UUID paymentId) {
+        List<BankLink> rows = jdbc.query("SELECT payment_created, validated_at IS NOT NULL, amount FROM bank_transaction"
+                + " WHERE organization_id = ? AND payment_id = ? AND deleted_at IS NULL ORDER BY created_at LIMIT 1",
+                (rs, i) -> new BankLink(rs.getBoolean(1), rs.getBoolean(2), rs.getBigDecimal(3).signum()), orgId, paymentId);
+        return rows.isEmpty() ? null : rows.get(0);
+    }
+
+    /** A payment is the supplier side when its invoice is a bill, else when its bank line went out, else by the partner. */
+    private static boolean paymentIsSupplier(String invoiceType, BankLink link, PartnerInfo p) {
+        if (invoiceType != null) return invoiceType.equals("VENDOR");
+        if (link != null && link.sign() != 0) return link.sign() < 0;
+        return p != null && "VENDOR".equals(p.type());
+    }
+
+    /**
+     * An advance payment applied to an invoice: OD entry on the day it was applied, from 4421 to the
+     * customer's receivable, or from the supplier's payable to 3411.
+     */
+    Draft advanceApplyDraft(Payment pay, Snapshot s) {
+        if (pay.getDeletedAt() != null || !pay.isAdvance() || pay.getInvoiceId() == null || pay.getAdvanceAppliedOn() == null
+                || pay.getAmount() == null || pay.getPartnerId() == null) {
+            return null;
+        }
+        BigDecimal amount = money(pay.getAmount());
+        if (amount.signum() <= 0) return null;
+        UUID orgId = pay.getOrganizationId();
+        BankLink link = bankLink(orgId, pay.getId());
+        if (link != null && link.created() && !link.validated() && s.postOnValidation()) return null;
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT type, invoice_number FROM invoice WHERE organization_id = ? AND id = ?", orgId, pay.getInvoiceId());
+        if (rows.isEmpty()) return null;
+        String number = (String) rows.get(0).get("invoice_number");
+        boolean supplier = "VENDOR".equals(rows.get(0).get("type"));
+        PartnerInfo p = partner(orgId, pay.getPartnerId());
+        UUID partnerId = p == null ? null : p.id();
+        UUID advanceAccount = postingSetup.accountByCode(orgId, supplier ? "3411" : "4421");
+        UUID counter = supplier
+                ? s.partnerAccount(LedgerPostingSetupService.SUPPLIER, p == null ? null : p.supplierGroupId())
+                : s.partnerAccount(LedgerPostingSetupService.CUSTOMER, p == null ? null : p.customerGroupId());
+        String description = "Advance applied to " + (number == null ? "invoice" : number) + (p == null ? "" : " - " + p.name());
+        Lines lines = new Lines();
+        if (supplier) {
+            lines.add(counter, partnerId, null, amount, description);
+            lines.add(advanceAccount, partnerId, null, amount.negate(), description);
+        } else {
+            lines.add(advanceAccount, partnerId, null, amount, description);
+            lines.add(counter, partnerId, null, amount.negate(), description);
+        }
+        return draft("OD", pay.getAdvanceAppliedOn(), description, number, lines);
     }
 
     Draft expenseDraft(Expense e, Snapshot s) {
@@ -464,6 +590,13 @@ public class LedgerAutoPostingService {
         // Matched to a bank line: paid through that line's account. Otherwise by payment method.
         List<UUID> matched = jdbc.queryForList("SELECT bank_account_id FROM bank_transaction WHERE organization_id = ?"
                 + " AND expense_id = ? AND status = 'MATCHED' AND deleted_at IS NULL LIMIT 1", UUID.class, orgId, e.getId());
+        if (!matched.isEmpty() && s.postOnValidation()) {
+            Boolean validated = jdbc.queryForObject("SELECT bool_and(validated_at IS NOT NULL) FROM bank_transaction"
+                    + " WHERE organization_id = ? AND expense_id = ? AND status = 'MATCHED' AND deleted_at IS NULL",
+                    Boolean.class, orgId, e.getId());
+            // Matched to a bank line still to validate: posts once the line is validated.
+            if (!Boolean.TRUE.equals(validated)) return null;
+        }
         boolean cash = matched.isEmpty() && e.getPaymentMethod() == Payment.Method.CASH;
         UUID money = cash ? s.cashAccountId() : postingSetup.bankLedgerAccount(orgId,
                 matched.isEmpty() ? postingSetup.defaultBankAccountId(orgId) : matched.get(0));
@@ -473,7 +606,8 @@ public class LedgerAutoPostingService {
         String description = "Expense " + category + ": " + what;
         Lines lines = new Lines();
         lines.add(account, null, e.getCostCenterId(), amount.subtract(vatAmount), null);
-        LedgerPostingSetupService.VatRow vatRow = s.vatByCode("TVA20");
+        LedgerPostingSetupService.VatRow vatRow = e.getVatCode() != null && s.vatByCode(e.getVatCode()) != null
+                ? s.vatByCode(e.getVatCode()) : s.vatByCode("TVA20");
         lines.add(vatRow == null ? postingSetup.accountByCode(orgId, "34552") : vatRow.recoverableAccountId(), null, null,
                 vatAmount, "TVA");
         lines.add(money, null, null, amount.negate(), null);
@@ -485,18 +619,12 @@ public class LedgerAutoPostingService {
                 || t.getBookingDate() == null) {
             return null;
         }
+        // Waits for a person to validate it, unless the organization posts on import.
+        if (t.getValidatedAt() == null && s.postOnValidation()) return null;
         BigDecimal amount = money(t.getAmount());
         if (amount.signum() == 0) return null;
         UUID orgId = t.getOrganizationId();
-        String category = t.getCategory() == null ? "OTHER" : t.getCategory();
-        UUID account;
-        if (category.equals("TAXES") && TVA.matcher(StatementText.norm(t.getDescription())).find()) {
-            account = postingSetup.accountByCode(orgId, "4456");
-        } else {
-            account = s.bankCategories().get(category);
-            if (account == null) account = s.bankCategories().get("OTHER");
-            if (account == null) account = postingSetup.accountByCode(orgId, "4497");
-        }
+        UUID account = categoryAccount(orgId, t, s);
         UUID bank = postingSetup.bankLedgerAccount(orgId, t.getBankAccountId());
         String description = "Bank: " + (t.getDescription() == null ? "" : t.getDescription());
         Lines lines = new Lines();
@@ -504,6 +632,63 @@ public class LedgerAutoPostingService {
         lines.add(account, null, null, amount.negate(), null);
         return draft("BQ", t.getBookingDate(), description, cut(t.getReference() != null ? t.getReference()
                 : t.getDescription(), 160), lines);
+    }
+
+    /** The account an unmatched bank line posts against: its category's (TVA taxes to 4456), else 4497. */
+    private UUID categoryAccount(UUID orgId, BankTransaction t, Snapshot s) {
+        String category = t.getCategory() == null ? "OTHER" : t.getCategory();
+        if (category.equals("TAXES") && TVA.matcher(StatementText.norm(t.getDescription())).find()) {
+            return postingSetup.accountByCode(orgId, "4456");
+        }
+        UUID account = s.bankCategories().get(category);
+        if (account == null) account = s.bankCategories().get("OTHER");
+        if (account == null) account = postingSetup.accountByCode(orgId, "4497");
+        return account;
+    }
+
+    /**
+     * The account a bank line hits when it posts, for the bank journal: the partner's account (or
+     * 4421 / 3411 for an advance) when it pays through a payment, the expense's category account
+     * when matched to an expense, the category's account (or 4497) when unmatched; null when set aside.
+     */
+    @Transactional
+    public UUID proposedAccount(BankTransaction t) {
+        if (t == null || t.getDeletedAt() != null || t.getStatus() == BankTransaction.Status.IGNORED) return null;
+        UUID orgId = t.getOrganizationId();
+        Snapshot s = postingSetup.snapshot(orgId);
+        if (t.getStatus() == BankTransaction.Status.UNMATCHED) {
+            return categoryAccount(orgId, t, s);
+        }
+        if (t.getPaymentId() != null) {
+            Payment pay = paymentRepository.findByOrganizationIdAndId(orgId, t.getPaymentId()).orElse(null);
+            if (pay == null) return null;
+            String invoiceType = null;
+            if (pay.getInvoiceId() != null) {
+                List<String> types = jdbc.queryForList("SELECT type FROM invoice WHERE organization_id = ? AND id = ?",
+                        String.class, orgId, pay.getInvoiceId());
+                invoiceType = types.isEmpty() ? null : types.get(0);
+            }
+            PartnerInfo p = partner(orgId, pay.getPartnerId());
+            boolean supplier = paymentIsSupplier(invoiceType, new BankLink(true, true, t.getAmount().signum()), p);
+            if (pay.isAdvance()) return postingSetup.accountByCode(orgId, supplier ? "3411" : "4421");
+            return supplier
+                    ? s.partnerAccount(LedgerPostingSetupService.SUPPLIER, p == null ? null : p.supplierGroupId())
+                    : s.partnerAccount(LedgerPostingSetupService.CUSTOMER, p == null ? null : p.customerGroupId());
+        }
+        if (t.getExpenseId() != null) {
+            Expense e = expenseRepository.findForOrganization(orgId, t.getExpenseId()).orElse(null);
+            if (e == null) return null;
+            String category = e.getCategory() == null ? "OTHER" : e.getCategory().trim().toUpperCase(Locale.ROOT);
+            UUID account = s.expenseCategories().get(category);
+            if (account == null) account = s.expenseCategories().get("OTHER");
+            return account != null ? account : postingSetup.accountByCode(orgId, "6125");
+        }
+        return null;
+    }
+
+    /** Whether the document has a live entry, after a validation. */
+    public boolean hasLive(UUID orgId, String sourceType, UUID sourceId) {
+        return entryRepository.findLive(orgId, sourceType, sourceId).isPresent();
     }
 
     /**
@@ -545,10 +730,13 @@ public class LedgerAutoPostingService {
         LocalDate start = perDocument.execute(st -> postingSetup.snapshot(orgId).startDate());
         List<Doc> docs = new ArrayList<>();
         jdbc.query("""
-                SELECT id, type, invoice_number FROM invoice WHERE organization_id = ? AND deleted_at IS NULL
+                SELECT id, type, invoice_number, kind FROM invoice WHERE organization_id = ? AND deleted_at IS NULL
                   AND status <> 'DRAFT' AND invoice_date >= ? ORDER BY invoice_date, created_at
                 """, rs -> {
-            docs.add(new Doc("VENDOR".equals(rs.getString(2)) ? BILL : INVOICE, rs.getObject(1, UUID.class), rs.getString(3)));
+            String kind = rs.getString(4);
+            String type = "ADVANCE".equals(kind) ? ADVANCE : "CREDIT_NOTE".equals(kind) ? CREDIT_NOTE
+                    : "VENDOR".equals(rs.getString(2)) ? BILL : INVOICE;
+            docs.add(new Doc(type, rs.getObject(1, UUID.class), rs.getString(3)));
         }, orgId, start);
         jdbc.query("SELECT id, reference FROM payment WHERE organization_id = ? AND deleted_at IS NULL AND payment_date >= ?"
                 + " ORDER BY payment_date, created_at", rs -> {
@@ -590,10 +778,11 @@ public class LedgerAutoPostingService {
     private boolean repostOne(UUID orgId, Doc d) {
         Snapshot s = postingSetup.snapshot(orgId);
         return switch (d.sourceType()) {
-            case INVOICE, BILL -> invoiceRepository.findByOrganizationIdAndId(orgId, d.id())
+            case INVOICE, BILL, ADVANCE, CREDIT_NOTE -> invoiceRepository.findByOrganizationIdAndId(orgId, d.id())
                     .map(i -> sync(orgId, d.sourceType(), i.getId(), invoiceDraft(i, s), s)).orElse(false);
             case PAYMENT -> paymentRepository.findByOrganizationIdAndId(orgId, d.id())
-                    .map(p -> sync(orgId, PAYMENT, p.getId(), paymentDraft(p, s), s)).orElse(false);
+                    .map(p -> sync(orgId, PAYMENT, p.getId(), paymentDraft(p, s), s)
+                            | sync(orgId, ADVANCE_APPLY, p.getId(), advanceApplyDraft(p, s), s)).orElse(false);
             case EXPENSE -> expenseRepository.findForOrganization(orgId, d.id())
                     .map(e -> sync(orgId, EXPENSE, e.getId(), expenseDraft(e, s), s)).orElse(false);
             case BANK_OPENING -> sync(orgId, BANK_OPENING, d.id(), bankOpeningDraft(orgId, d.id(), s), s);

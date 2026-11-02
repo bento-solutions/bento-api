@@ -55,6 +55,10 @@ public class Product extends BaseTenantEntity {
     @Column(columnDefinition = "uuid")
     private UUID productGroupId;
 
+    /** VAT code (TVA20, TVA14...); null means the product group's. taxRate follows it on save. */
+    @Column(length = 20)
+    private String vatCode;
+
     /** At or below this quantity in a warehouse, managers get a low-stock alert. */
     @Column(precision = 15, scale = 3)
     private BigDecimal reorderLevel;
