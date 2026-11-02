@@ -33,4 +33,15 @@ public class CreatePaymentRequest {
     private String reference;
 
     private String notes;
+
+    /** The bank account the money went through; null picks the organization's main account. */
+    private UUID bankAccountId;
+
+    /** Paid through the cash register; null follows the method (CASH = cash register). */
+    private Boolean cashRegister;
+
+    public CreatePaymentRequest(UUID partnerId, UUID invoiceId, LocalDate paymentDate, BigDecimal amount,
+                                Payment.Method method, String reference, String notes) {
+        this(partnerId, invoiceId, paymentDate, amount, method, reference, notes, null, null);
+    }
 }

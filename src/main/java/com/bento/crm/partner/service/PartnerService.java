@@ -38,6 +38,7 @@ public class PartnerService {
     private final BrandRepository brandRepository;
     private final BusinessTypeRepository businessTypeRepository;
     private final ApplicationEventPublisher eventPublisher;
+    private final com.bento.crm.ledger.service.LedgerPostingSetupService postingSetup;
 
     @Transactional
     public Partner createPartner(CreatePartnerRequest request) {
@@ -92,6 +93,11 @@ public class PartnerService {
                 .sourceUrl(blankToNull(request.getSourceUrl()))
                 .build();
         partner.setOrganizationId(orgId);
+        postingSetup.checkPartnerGroups(orgId, request.getCustomerGroupId(), request.getSupplierGroupId(),
+                request.getBusinessGroupId());
+        partner.setCustomerGroupId(request.getCustomerGroupId());
+        partner.setSupplierGroupId(request.getSupplierGroupId());
+        partner.setBusinessGroupId(request.getBusinessGroupId());
 
         Partner saved = partnerRepository.save(partner);
         notifyIfAssigned(orgId, null, saved);
@@ -268,6 +274,13 @@ public class PartnerService {
         partner.setProductInterests(request.getProductInterests() != null ? request.getProductInterests() : List.<Map<String, Object>>of());
         partner.setCampaigns(request.getCampaigns() != null ? request.getCampaigns() : List.<Map<String, Object>>of());
         partner.setNotes(request.getNotes());
+        postingSetup.checkPartnerGroups(partner.getOrganizationId(),
+                request.isCustomerGroupIdSet() ? request.getCustomerGroupId() : null,
+                request.isSupplierGroupIdSet() ? request.getSupplierGroupId() : null,
+                request.isBusinessGroupIdSet() ? request.getBusinessGroupId() : null);
+        if (request.isCustomerGroupIdSet()) partner.setCustomerGroupId(request.getCustomerGroupId());
+        if (request.isSupplierGroupIdSet()) partner.setSupplierGroupId(request.getSupplierGroupId());
+        if (request.isBusinessGroupIdSet()) partner.setBusinessGroupId(request.getBusinessGroupId());
 
         Partner saved = partnerRepository.save(partner);
         notifyIfAssigned(saved.getOrganizationId(), previousAssignee, saved);

@@ -27,6 +27,8 @@ public class ExpenseService {
 
     private final ExpenseRepository repository;
     private final PartnerRepository partnerRepository;
+    private final com.bento.crm.ledger.service.LedgerAutoPostingService ledger;
+    private final org.springframework.jdbc.core.JdbcTemplate jdbc;
 
     @Transactional(readOnly = true)
     public Page<Expense> list(LocalDate from, LocalDate to, String category, Pageable pageable) {
@@ -39,14 +41,18 @@ public class ExpenseService {
         Expense e = new Expense();
         e.setOrganizationId(TenantContext.getCurrentOrganizationId());
         apply(e, r);
-        return repository.save(e);
+        Expense saved = repository.save(e);
+        ledger.expense(saved);
+        return saved;
     }
 
     @Transactional
     public Expense update(UUID id, ExpenseRequest r) {
         Expense e = get(id);
         apply(e, r);
-        return repository.save(e);
+        Expense saved = repository.save(e);
+        ledger.expense(saved);
+        return saved;
     }
 
     @Transactional
@@ -54,6 +60,7 @@ public class ExpenseService {
         Expense e = get(id);
         e.setDeletedAt(Instant.now());
         repository.save(e);
+        ledger.expense(e);
     }
 
     @Transactional(readOnly = true)
@@ -92,6 +99,14 @@ public class ExpenseService {
         e.setVendorPartnerId(r.vendorPartnerId());
         e.setVendorName(blankToNull(r.vendorName()));
         e.setReference(blankToNull(r.reference()));
+        if (r.costCenterId() != null) {
+            Boolean known = jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM ledger_cost_center WHERE organization_id = ?"
+                    + " AND id = ? AND deleted_at IS NULL)", Boolean.class, e.getOrganizationId(), r.costCenterId());
+            if (!Boolean.TRUE.equals(known)) {
+                throw new IllegalArgumentException("Unknown cost center");
+            }
+        }
+        e.setCostCenterId(r.costCenterId());
     }
 
     private static String blankToNull(String s) {

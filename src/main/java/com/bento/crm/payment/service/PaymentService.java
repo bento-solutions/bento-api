@@ -26,14 +26,16 @@ public class PaymentService {
     private final PaymentRepository paymentRepository;
     private final InvoiceRepository invoiceRepository;
     private final org.springframework.jdbc.core.JdbcTemplate jdbc;
+    private final com.bento.crm.ledger.service.LedgerAutoPostingService ledger;
 
     @Transactional
     public Payment createPayment(CreatePaymentRequest request) {
         Payment payment = new Payment();
-        applyRequest(payment, request);
         payment.setOrganizationId(TenantContext.getCurrentOrganizationId());
+        applyRequest(payment, request);
         Payment saved = paymentRepository.save(payment);
         syncInvoiceStatus(saved.getInvoiceId());
+        ledger.payment(saved);
         return saved;
     }
 
@@ -63,6 +65,7 @@ public class PaymentService {
         UUID previousInvoiceId = payment.getInvoiceId();
         applyRequest(payment, request);
         Payment saved = paymentRepository.save(payment);
+        ledger.payment(saved);
         syncInvoiceStatus(saved.getInvoiceId());
         // Reallocating a payment leaves the invoice it used to settle short, so that one has to
         // be re-evaluated too.
@@ -80,6 +83,7 @@ public class PaymentService {
         paymentRepository.save(payment);
         paymentRepository.flush();
         syncInvoiceStatus(invoiceId);
+        ledger.payment(payment);
     }
 
     @Transactional
@@ -91,6 +95,7 @@ public class PaymentService {
         Payment saved = paymentRepository.save(payment);
         paymentRepository.flush();
         syncInvoiceStatus(saved.getInvoiceId());
+        ledger.payment(saved);
         return saved;
     }
 
@@ -99,7 +104,54 @@ public class PaymentService {
         return paymentRepository.findDeletedByOrganizationId(orgId, pageable);
     }
 
+    /**
+     * Sets payment.bankAccountId / cashRegister from the request: an explicit bank account wins,
+     * then an explicit cashRegister, then the method (CASH = cash register, else the main bank
+     * account). An edit that says neither and keeps the method keeps the payment's account.
+     */
+    private void applyTreasury(Payment payment, CreatePaymentRequest request, boolean isNew, Payment.Method before) {
+        UUID orgId = payment.getOrganizationId();
+        if (request.getBankAccountId() != null) {
+            Boolean known = jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM bank_account WHERE organization_id = ?"
+                    + " AND id = ? AND deleted_at IS NULL)", Boolean.class, orgId, request.getBankAccountId());
+            if (!Boolean.TRUE.equals(known)) {
+                throw new IllegalArgumentException("Unknown bank account");
+            }
+            payment.setBankAccountId(request.getBankAccountId());
+            payment.setCashRegister(false);
+            return;
+        }
+        if (request.getCashRegister() != null) {
+            payment.setCashRegister(request.getCashRegister());
+            if (request.getCashRegister()) {
+                payment.setBankAccountId(null);
+            } else if (payment.getBankAccountId() == null) {
+                payment.setBankAccountId(mainBankAccount(orgId));
+            }
+            return;
+        }
+        if (isNew || before != payment.getMethod()) {
+            boolean cash = payment.getMethod() == Payment.Method.CASH;
+            payment.setCashRegister(cash);
+            payment.setBankAccountId(cash ? null : payment.getBankAccountId() != null && !isNew
+                    ? payment.getBankAccountId() : mainBankAccount(orgId));
+        }
+    }
+
+    private UUID mainBankAccount(UUID orgId) {
+        java.util.List<UUID> ids = jdbc.queryForList("SELECT id FROM bank_account WHERE organization_id = ?"
+                + " AND deleted_at IS NULL ORDER BY is_active DESC, created_at LIMIT 1", UUID.class, orgId);
+        return ids.isEmpty() ? null : ids.get(0);
+    }
+
     private void applyRequest(Payment payment, CreatePaymentRequest request) {
+        boolean isNew = payment.getId() == null;
+        Payment.Method before = payment.getMethod();
+        applyFields(payment, request);
+        applyTreasury(payment, request, isNew, before);
+    }
+
+    private void applyFields(Payment payment, CreatePaymentRequest request) {
         payment.setPartnerId(request.getPartnerId());
         payment.setInvoiceId(request.getInvoiceId());
         payment.setPaymentDate(request.getPaymentDate());

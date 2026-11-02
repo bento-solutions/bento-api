@@ -62,6 +62,7 @@ public class BankService {
     private final DriveService driveService;
     private final InboundDocumentRepository documentRepository;
     private final JdbcTemplate jdbc;
+    private final com.bento.crm.ledger.service.LedgerAutoPostingService ledger;
 
     private static UUID org() {
         return TenantContext.getCurrentOrganizationId();
@@ -241,7 +242,16 @@ public class BankService {
         if (matched != null && matched > 0) {
             throw new IllegalStateException("Unmatch this statement's lines before removing it");
         }
+        List<UUID> removed = jdbc.queryForList("SELECT id FROM bank_transaction WHERE import_id = ? AND deleted_at IS NULL",
+                UUID.class, id);
         jdbc.update("UPDATE bank_transaction SET deleted_at = now() WHERE import_id = ? AND deleted_at IS NULL", id);
+        // The removed lines take their postings with them.
+        for (UUID lineId : removed) {
+            transactionRepository.findById(lineId).ifPresent(t -> {
+                if (t.getDeletedAt() == null) t.setDeletedAt(Instant.now());
+                ledger.bankLine(t);
+            });
+        }
         imp.setDeletedAt(Instant.now());
         importRepository.save(imp);
     }
@@ -325,7 +335,7 @@ public class BankService {
         String category = BankCategories.validate(r.category());
         t.setCategory(category);
         t.setCategorySource(category == null ? null : BankTransaction.CategorySource.MANUAL);
-        transactionRepository.save(t);
+        ledger.bankLine(transactionRepository.save(t));
         if (Boolean.TRUE.equals(r.remember()) && category != null) {
             String text = r.containsText() == null || r.containsText().isBlank() ? t.getDescription() : r.containsText().trim();
             createRule(new BankDtos.RuleRequest(text.length() > 120 ? text.substring(0, 120) : text,
@@ -341,7 +351,7 @@ public class BankService {
         UUID orgId = org();
         List<BankTransaction> open = transactionRepository.all(orgId).stream().filter(t -> t.getCategory() == null).toList();
         int n = categorizer.categorize(orgId, open, true);
-        transactionRepository.saveAll(open);
+        ledger.bankLines(transactionRepository.saveAll(open));
         return n;
     }
 
@@ -377,7 +387,7 @@ public class BankService {
                 changed.add(t);
             }
         }
-        transactionRepository.saveAll(changed);
+        ledger.bankLines(transactionRepository.saveAll(changed));
         return BankDtos.Rule.of(rule);
     }
 

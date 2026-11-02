@@ -62,6 +62,13 @@ public class LedgerEntryService {
     @Transactional
     public PageResponse<LedgerDtos.Entry> list(UUID journalId, LocalDate from, LocalDate to, UUID accountId,
                                                UUID partnerId, UUID costCenterId, String q, Pageable pageable) {
+        return list(journalId, from, to, accountId, partnerId, costCenterId, q, null, null, pageable);
+    }
+
+    @Transactional
+    public PageResponse<LedgerDtos.Entry> list(UUID journalId, LocalDate from, LocalDate to, UUID accountId,
+                                               UUID partnerId, UUID costCenterId, String q, String sourceType,
+                                               UUID sourceId, Pageable pageable) {
         UUID orgId = org();
         StringBuilder where = new StringBuilder(" FROM ledger_entry e WHERE e.organization_id = ? AND e.deleted_at IS NULL");
         List<Object> params = new ArrayList<>();
@@ -69,6 +76,14 @@ public class LedgerEntryService {
         if (journalId != null) {
             where.append(" AND e.journal_id = ?");
             params.add(journalId);
+        }
+        if (sourceType != null && !sourceType.isBlank()) {
+            where.append(" AND e.source_type = ?");
+            params.add(sourceType.trim().toUpperCase(java.util.Locale.ROOT));
+        }
+        if (sourceId != null) {
+            where.append(" AND e.source_id = ?");
+            params.add(sourceId);
         }
         if (from != null) {
             where.append(" AND e.entry_date >= ?");
@@ -151,6 +166,9 @@ public class LedgerEntryService {
         if (original.getReversedById() != null) {
             throw new IllegalArgumentException("This entry has already been reversed");
         }
+        if (original.getSourceType() != null && LedgerAutoPostingService.SOURCES.contains(original.getSourceType())) {
+            throw new IllegalArgumentException("This entry was posted from a document: change or delete the document instead");
+        }
         LedgerJournal journal = journalRepository.findByOrganizationIdAndId(orgId, original.getJournalId())
                 .orElseThrow(() -> new ResourceNotFoundException("Journal not found"));
         List<LedgerPostingService.PostingLine> lines = lineRepository
@@ -164,7 +182,7 @@ public class LedgerEntryService {
         LedgerEntry reversal;
         try {
             reversal = posting.write(orgId, journal, date, description, SOURCE_REVERSAL, original.getId(),
-                    original.getNumber(), original.getId(), lines, true);
+                    original.getNumber(), original.getId(), lines, true, true);
             original.setReversedById(reversal.getId());
             entryRepository.saveAndFlush(original);
         } catch (DataIntegrityViolationException e) {
@@ -172,6 +190,14 @@ public class LedgerEntryService {
             throw new IllegalArgumentException("This entry has already been reversed");
         }
         return toDtos(orgId, List.of(reversal)).get(0);
+    }
+
+    /** The live entry a document posted, for its "View journal entry" link. */
+    @Transactional
+    public LedgerDtos.Entry forSource(String sourceType, UUID sourceId, LedgerAutoPostingService auto) {
+        UUID orgId = org();
+        String type = sourceType == null ? "" : sourceType.trim().toUpperCase(java.util.Locale.ROOT);
+        return toDtos(orgId, List.of(auto.live(orgId, type, sourceId))).get(0);
     }
 
     private static String truncate(String s) {

@@ -98,7 +98,7 @@ class LedgerTest extends IntegrationTestBase {
         }
 
         JsonNode accounts = json(get("/ledger/accounts"), token, null, 200);
-        assertThat(accounts.size()).isEqualTo(35);
+        assertThat(accounts.size()).isEqualTo(43);
         assertThat(accounts.get(0).get("code").asText()).isEqualTo("1111");
         JsonNode bank = null;
         JsonNode loan = null;
@@ -128,7 +128,7 @@ class LedgerTest extends IntegrationTestBase {
         json(get("/ledger/accounts"), token, null, 200);
         json(get("/ledger/cost-centers"), token, null, 200);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ledger_account WHERE organization_id = ?", Integer.class, orgId))
-                .isEqualTo(35);
+                .isEqualTo(43);
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ledger_journal WHERE organization_id = ?", Integer.class, orgId))
                 .isEqualTo(6);
     }

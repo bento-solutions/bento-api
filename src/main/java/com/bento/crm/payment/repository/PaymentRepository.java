@@ -46,7 +46,10 @@ public interface PaymentRepository extends JpaRepository<Payment, UUID> {
     @Query("SELECT p FROM Payment p WHERE p.organizationId = :orgId AND p.deletedAt IS NOT NULL ORDER BY p.deletedAt DESC")
     Page<Payment> findDeletedByOrganizationId(@Param("orgId") UUID orgId, Pageable pageable);
 
-    @Query("SELECT p FROM Payment p WHERE p.deletedAt IS NOT NULL AND p.deletedAt < :cutoff")
+    /** Posted payments stay: the ledger keeps pointing at them. */
+    @Query("SELECT p FROM Payment p WHERE p.deletedAt IS NOT NULL AND p.deletedAt < :cutoff"
+            + " AND NOT EXISTS (SELECT 1 FROM LedgerEntry e WHERE e.organizationId = p.organizationId"
+            + " AND e.sourceId = p.id AND e.sourceType = 'PAYMENT')")
     List<Payment> findPurgeable(@Param("cutoff") Instant cutoff);
 
     /** Settled-to-date per invoice across the organization, for the aging report. */

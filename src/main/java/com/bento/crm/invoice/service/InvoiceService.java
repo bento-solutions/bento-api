@@ -30,6 +30,7 @@ public class InvoiceService {
     private final BusinessNumberService businessNumberService;
     private final InvoiceMailer invoiceMailer;
     private final org.springframework.context.ApplicationEventPublisher eventPublisher;
+    private final com.bento.crm.ledger.service.LedgerAutoPostingService ledger;
 
     /** Moroccan standard VAT, applied when the client sends lines but no tax breakdown. */
     static final BigDecimal DEFAULT_VAT_RATE = new BigDecimal("0.20");
@@ -45,7 +46,9 @@ public class InvoiceService {
         Invoice invoice = new Invoice();
         invoice.setOrganizationId(organizationId);
         applyRequest(invoice, request);
-        return issued(invoiceRepository.save(invoice));
+        Invoice saved = invoiceRepository.save(invoice);
+        ledger.invoice(saved);
+        return issued(saved);
     }
 
     public Invoice getInvoice(UUID id) {
@@ -84,6 +87,8 @@ public class InvoiceService {
         boolean wasOut = isOut(invoice);
         applyRequest(invoice, request);
         Invoice saved = invoiceRepository.save(invoice);
+        // Issuing posts the invoice; an edit reverses and re-posts it; back to draft reverses it.
+        ledger.invoice(saved);
         // Only the change from draft to sent issues stock; later edits only adjust it to the new
         // quantities, and moving a sent invoice back to draft puts its goods back.
         if (!wasOut) return issued(saved);
@@ -177,6 +182,9 @@ public class InvoiceService {
             }
             if (rate == null) {
                 rate = DEFAULT_VAT_RATE;
+            } else if (rate.compareTo(BigDecimal.ONE) > 0) {
+                // A percentage (20) rather than a fraction (0.20).
+                rate = rate.movePointLeft(2);
             }
             totalTax = totalTax.add(lineSubtotal.multiply(rate));
             computedFromLines = true;
@@ -258,6 +266,7 @@ public class InvoiceService {
         }
         invoice.setDeletedAt(Instant.now());
         invoiceRepository.save(invoice);
+        ledger.invoice(invoice);
         if (isOut(invoice)) {
             eventPublisher.publishEvent(new com.bento.crm.stock.event.StockEvents.InvoiceCancelled(invoice.getOrganizationId(), invoice.getId()));
         }
@@ -271,6 +280,7 @@ public class InvoiceService {
         boolean wasDeleted = invoice.getDeletedAt() != null;
         invoice.setDeletedAt(null);
         Invoice saved = invoiceRepository.save(invoice);
+        ledger.invoice(saved);
         // A restored sent invoice takes its goods out again (they went back when it was deleted).
         return wasDeleted ? issued(saved) : saved;
     }

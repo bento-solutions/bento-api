@@ -26,6 +26,8 @@ public class PaymentResponse {
     private Payment.Method method;
     private String reference;
     private String notes;
+    private UUID bankAccountId;
+    private boolean cashRegister;
     private UUID createdBy;
     private UUID updatedBy;
     private Instant createdAt;
@@ -42,6 +44,8 @@ public class PaymentResponse {
                 .method(payment.getMethod())
                 .reference(payment.getReference())
                 .notes(payment.getNotes())
+                .bankAccountId(payment.getBankAccountId())
+                .cashRegister(payment.isCashRegister())
                 .createdBy(payment.getCreatedBy())
                 .updatedBy(payment.getUpdatedBy())
                 .createdAt(payment.getCreatedAt())

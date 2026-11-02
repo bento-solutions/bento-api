@@ -84,6 +84,18 @@ public class LedgerPostingService {
     LedgerEntry write(UUID orgId, LedgerJournal journal, LocalDate date, String description, String sourceType,
                       UUID sourceId, String sourceLabel, UUID reversalOfId, List<PostingLine> lines,
                       boolean allowInactiveAccounts) {
+        return write(orgId, journal, date, description, sourceType, sourceId, sourceLabel, reversalOfId, lines,
+                allowInactiveAccounts, allowInactiveAccounts);
+    }
+
+    /**
+     * Automatic postings and reversals pass {@code allowDeletedPartners}: a document whose
+     * customer was since moved to the bin still posts (and unposts) on that customer, which still
+     * exists until the purge.
+     */
+    LedgerEntry write(UUID orgId, LedgerJournal journal, LocalDate date, String description, String sourceType,
+                      UUID sourceId, String sourceLabel, UUID reversalOfId, List<PostingLine> lines,
+                      boolean allowInactiveAccounts, boolean allowDeletedPartners) {
         if (date == null) {
             throw new IllegalArgumentException("The entry date is required");
         }
@@ -137,7 +149,7 @@ public class LedgerPostingService {
                 partnerIds.add(line.partnerId());
             }
         }
-        Set<UUID> knownPartners = knownPartners(orgId, partnerIds);
+        Set<UUID> knownPartners = knownPartners(orgId, partnerIds, allowDeletedPartners);
 
         for (int i = 0; i < lines.size(); i++) {
             PostingLine line = lines.get(i);
@@ -168,10 +180,11 @@ public class LedgerPostingService {
         entry.setJournalId(journal.getId());
         entry.setNumber(nextNumber(orgId, journal, date.getYear()));
         entry.setEntryDate(date);
-        entry.setDescription(description.trim());
+        String desc = description.trim();
+        entry.setDescription(desc.length() > 255 ? desc.substring(0, 255) : desc);
         entry.setSourceType(sourceType);
         entry.setSourceId(sourceId);
-        entry.setSourceLabel(sourceLabel);
+        entry.setSourceLabel(sourceLabel == null || sourceLabel.length() <= 160 ? sourceLabel : sourceLabel.substring(0, 160));
         entry.setReversalOfId(reversalOfId);
         entry.setTotalDebit(totalDebit);
         entry.setTotalCredit(totalCredit);
@@ -187,7 +200,8 @@ public class LedgerPostingService {
             row.setAccountId(line.accountId());
             row.setPartnerId(line.partnerId());
             row.setCostCenterId(line.costCenterId());
-            row.setLabel(line.label() == null || line.label().isBlank() ? entry.getDescription() : line.label().trim());
+            String label = line.label() == null || line.label().isBlank() ? entry.getDescription() : line.label().trim();
+            row.setLabel(label.length() > 255 ? label.substring(0, 255) : label);
             row.setDebit(amounts.get(i)[0]);
             row.setCredit(amounts.get(i)[1]);
             rows.add(row);
@@ -207,14 +221,15 @@ public class LedgerPostingService {
         }
     }
 
-    private Set<UUID> knownPartners(UUID orgId, Set<UUID> ids) {
+    private Set<UUID> knownPartners(UUID orgId, Set<UUID> ids, boolean includeDeleted) {
         if (ids.isEmpty()) {
             return Set.of();
         }
         Set<UUID> found = new HashSet<>();
         for (UUID id : ids) {
             Boolean exists = jdbc.queryForObject(
-                    "SELECT EXISTS (SELECT 1 FROM partner WHERE organization_id = ? AND id = ? AND deleted_at IS NULL)",
+                    "SELECT EXISTS (SELECT 1 FROM partner WHERE organization_id = ? AND id = ?"
+                            + (includeDeleted ? "" : " AND deleted_at IS NULL") + ")",
                     Boolean.class, orgId, id);
             if (Boolean.TRUE.equals(exists)) {
                 found.add(id);

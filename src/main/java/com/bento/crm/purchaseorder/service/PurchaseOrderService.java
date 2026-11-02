@@ -78,7 +78,7 @@ public class PurchaseOrderService {
         po.setDeliveryDate(request.getDeliveryDate());
         po.setSentVia(request.getSentVia());
         po.setNotes(request.getNotes());
-        po.setLines(request.getLines() != null ? request.getLines() : new ArrayList<>());
+        po.setLines(withVatRates(request.getLines()));
         po.setSubtotal(request.getSubtotal());
         po.setTax(request.getTax());
         po.setTotal(request.getTotal());
@@ -100,12 +100,59 @@ public class PurchaseOrderService {
         }
         if (po.getSubtotal() != null) {
             if (po.getTax() == null) {
-                po.setTax(po.getSubtotal().multiply(DEFAULT_VAT_RATE).setScale(2, RoundingMode.HALF_UP));
+                BigDecimal fromLineRates = taxOfLines(po.getLines());
+                po.setTax(fromLines != null && fromLineRates != null ? fromLineRates
+                        : po.getSubtotal().multiply(DEFAULT_VAT_RATE).setScale(2, RoundingMode.HALF_UP));
             }
             if (po.getTotal() == null || fromLines != null || po.getTotal().compareTo(po.getSubtotal()) == 0) {
                 po.setTotal(po.getSubtotal().add(po.getTax()));
             }
         }
+    }
+
+    /** Every order line carries its VAT rate as a percentage, 20 unless given. */
+    static List<Map<String, Object>> withVatRates(List<Map<String, Object>> lines) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (lines == null) {
+            return out;
+        }
+        for (Map<String, Object> line : lines) {
+            if (line == null) continue;
+            Map<String, Object> copy = new java.util.LinkedHashMap<>(line);
+            Object rate = copy.get("vatRate");
+            if (rate == null || (rate instanceof String s && s.isBlank())) {
+                copy.put("vatRate", DEFAULT_VAT_PERCENT);
+            }
+            out.add(copy);
+        }
+        return out;
+    }
+
+    static final int DEFAULT_VAT_PERCENT = 20;
+
+    /** A line's VAT rate as a fraction: 20 and 0.20 both mean 20 %. */
+    static BigDecimal vatFraction(Object raw) {
+        BigDecimal r = toDecimal(raw);
+        if (r == null) return DEFAULT_VAT_RATE;
+        return r.compareTo(BigDecimal.ONE) > 0 ? r.movePointLeft(2) : r;
+    }
+
+    private static BigDecimal taxOfLines(List<Map<String, Object>> lines) {
+        if (lines == null || lines.isEmpty()) {
+            return null;
+        }
+        BigDecimal tax = BigDecimal.ZERO;
+        boolean any = false;
+        for (Map<String, Object> line : lines) {
+            BigDecimal qty = toDecimal(line.get("qty"));
+            BigDecimal unitPrice = toDecimal(line.get("unitPrice"));
+            if (unitPrice == null) unitPrice = toDecimal(line.get("unit_price"));
+            if (unitPrice == null) unitPrice = toDecimal(line.get("cost"));
+            if (qty == null || unitPrice == null) continue;
+            tax = tax.add(qty.multiply(unitPrice).multiply(vatFraction(line.get("vatRate"))));
+            any = true;
+        }
+        return any ? tax.setScale(2, RoundingMode.HALF_UP) : null;
     }
 
     private static BigDecimal sumOfLines(List<Map<String, Object>> lines) {

@@ -2,7 +2,10 @@ package com.bento.crm.ledger.controller;
 
 import com.bento.crm.common.dto.PageResponse;
 import com.bento.crm.ledger.dto.LedgerDtos.*;
+import com.bento.crm.common.context.TenantContext;
 import com.bento.crm.ledger.service.LedgerAccountService;
+import com.bento.crm.ledger.service.LedgerAutoPostingService;
+import com.bento.crm.ledger.service.LedgerPostingSetupService;
 import com.bento.crm.ledger.service.LedgerEntryService;
 import com.bento.crm.ledger.service.LedgerReportService;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -28,6 +31,8 @@ public class LedgerController {
     private final LedgerAccountService accounts;
     private final LedgerEntryService entries;
     private final LedgerReportService reports;
+    private final LedgerPostingSetupService postingSetup;
+    private final LedgerAutoPostingService autoPosting;
 
     // Accounts
 
@@ -103,8 +108,17 @@ public class LedgerController {
             @RequestParam(required = false) UUID partnerId,
             @RequestParam(required = false) UUID costCenterId,
             @RequestParam(required = false) String q,
+            @RequestParam(required = false) String sourceType,
+            @RequestParam(required = false) UUID sourceId,
             Pageable pageable) {
-        return entries.list(journalId, from, to, accountId, partnerId, costCenterId, q, pageable);
+        return entries.list(journalId, from, to, accountId, partnerId, costCenterId, q, sourceType, sourceId, pageable);
+    }
+
+    /** The live entry a document (INVOICE, BILL, PAYMENT, EXPENSE, BANK_LINE) posted; 404 when none. */
+    @GetMapping("/source/{sourceType}/{sourceId}")
+    @PreAuthorize("hasAuthority('LEDGER_READ')")
+    public Entry sourceEntry(@PathVariable String sourceType, @PathVariable UUID sourceId) {
+        return entries.forSource(sourceType, sourceId, autoPosting);
     }
 
     @GetMapping("/entries/{id}")
@@ -148,5 +162,117 @@ public class LedgerController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
             @RequestParam(required = false) Integer accountClass) {
         return reports.trialBalance(from, to, accountClass);
+    }
+
+    // Posting setup
+
+    @GetMapping("/posting-setup")
+    @PreAuthorize("hasAuthority('LEDGER_READ')")
+    public PostingSetup postingSetup() {
+        return postingSetup.get();
+    }
+
+    @PostMapping("/posting-setup/partner-groups")
+    @PreAuthorize("hasAuthority('LEDGER_WRITE')")
+    public ResponseEntity<PostingSetup> createPartnerGroup(@Valid @RequestBody PartnerGroupCreate request) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(postingSetup.createPartnerGroup(request));
+    }
+
+    @PutMapping("/posting-setup/partner-groups/{id}")
+    @PreAuthorize("hasAuthority('LEDGER_WRITE')")
+    public PostingSetup updatePartnerGroup(@PathVariable UUID id, @Valid @RequestBody PartnerGroupUpdate request) {
+        return postingSetup.updatePartnerGroup(id, request);
+    }
+
+    @DeleteMapping("/posting-setup/partner-groups/{id}")
+    @PreAuthorize("hasAuthority('LEDGER_WRITE')")
+    public PostingSetup deletePartnerGroup(@PathVariable UUID id) {
+        return postingSetup.deletePartnerGroup(id);
+    }
+
+    @PostMapping("/posting-setup/business-groups")
+    @PreAuthorize("hasAuthority('LEDGER_WRITE')")
+    public ResponseEntity<PostingSetup> createBusinessGroup(@Valid @RequestBody GroupCreate request) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(postingSetup.createBusinessGroup(request));
+    }
+
+    @PutMapping("/posting-setup/business-groups/{id}")
+    @PreAuthorize("hasAuthority('LEDGER_WRITE')")
+    public PostingSetup updateBusinessGroup(@PathVariable UUID id, @Valid @RequestBody GroupUpdate request) {
+        return postingSetup.updateBusinessGroup(id, request);
+    }
+
+    @DeleteMapping("/posting-setup/business-groups/{id}")
+    @PreAuthorize("hasAuthority('LEDGER_WRITE')")
+    public PostingSetup deleteBusinessGroup(@PathVariable UUID id) {
+        return postingSetup.deleteBusinessGroup(id);
+    }
+
+    @PostMapping("/posting-setup/product-groups")
+    @PreAuthorize("hasAuthority('LEDGER_WRITE')")
+    public ResponseEntity<PostingSetup> createProductGroup(@Valid @RequestBody GroupCreate request) {
+        return ResponseEntity.status(HttpStatus.CREATED).body(postingSetup.createProductGroup(request));
+    }
+
+    @PutMapping("/posting-setup/product-groups/{id}")
+    @PreAuthorize("hasAuthority('LEDGER_WRITE')")
+    public PostingSetup updateProductGroup(@PathVariable UUID id, @Valid @RequestBody GroupUpdate request) {
+        return postingSetup.updateProductGroup(id, request);
+    }
+
+    @DeleteMapping("/posting-setup/product-groups/{id}")
+    @PreAuthorize("hasAuthority('LEDGER_WRITE')")
+    public PostingSetup deleteProductGroup(@PathVariable UUID id) {
+        return postingSetup.deleteProductGroup(id);
+    }
+
+    @PutMapping("/posting-setup/general/{id}")
+    @PreAuthorize("hasAuthority('LEDGER_WRITE')")
+    public PostingSetup updateGeneral(@PathVariable UUID id, @Valid @RequestBody GeneralSetupUpdate request) {
+        return postingSetup.updateGeneral(id, request);
+    }
+
+    @PutMapping("/posting-setup/vat/{id}")
+    @PreAuthorize("hasAuthority('LEDGER_WRITE')")
+    public PostingSetup updateVat(@PathVariable UUID id, @Valid @RequestBody VatSetupUpdate request) {
+        return postingSetup.updateVat(id, request);
+    }
+
+    @PutMapping("/posting-setup/bank/{bankAccountId}")
+    @PreAuthorize("hasAuthority('LEDGER_WRITE')")
+    public PostingSetup updateBank(@PathVariable UUID bankAccountId, @Valid @RequestBody AccountAssignment request) {
+        return postingSetup.updateBank(bankAccountId, request);
+    }
+
+    @PutMapping("/posting-setup/cash")
+    @PreAuthorize("hasAuthority('LEDGER_WRITE')")
+    public PostingSetup updateCash(@Valid @RequestBody AccountAssignment request) {
+        return postingSetup.updateCash(request);
+    }
+
+    @PutMapping("/posting-setup/bank-categories/{category}")
+    @PreAuthorize("hasAuthority('LEDGER_WRITE')")
+    public PostingSetup updateBankCategory(@PathVariable String category, @Valid @RequestBody AccountAssignment request) {
+        return postingSetup.updateBankCategory(category, request);
+    }
+
+    @PutMapping("/posting-setup/expense-categories/{category}")
+    @PreAuthorize("hasAuthority('LEDGER_WRITE')")
+    public PostingSetup updateExpenseCategory(@PathVariable String category,
+                                              @Valid @RequestBody AccountAssignment request) {
+        return postingSetup.updateExpenseCategory(category, request);
+    }
+
+    @PutMapping("/posting-setup/start-date")
+    @PreAuthorize("hasAuthority('LEDGER_WRITE')")
+    public PostingSetup updateStartDate(@Valid @RequestBody StartDateUpdate request) {
+        return postingSetup.updateStartDate(request);
+    }
+
+    /** Posts every document on or after the start date that has no entry yet. Idempotent. */
+    @PostMapping("/repost")
+    @PreAuthorize("hasAuthority('LEDGER_CLOSE')")
+    public RepostResult repost() {
+        return autoPosting.repost(TenantContext.getCurrentOrganizationId());
     }
 }

@@ -47,6 +47,7 @@ public class ReconciliationService {
     private final PaymentService paymentService;
     private final BankCategorizer categorizer;
     private final JdbcTemplate jdbc;
+    private final com.bento.crm.ledger.service.LedgerAutoPostingService ledger;
 
     public BankTransaction transaction(UUID orgId, UUID id) {
         return transactionRepository.find(orgId, id).orElseThrow(() -> new ResourceNotFoundException("Bank line not found"));
@@ -166,10 +167,11 @@ public class ReconciliationService {
                     throw new IllegalArgumentException("This line is more than what is still owed on the invoice ("
                             + outstanding.toPlainString() + ")");
                 }
+                // The payment posts on this line's bank account; the line itself then posts nothing.
                 Payment p = paymentService.createPayment(new CreatePaymentRequest(inv.getPartnerId(), inv.getId(),
                         t.getBookingDate(), abs, Payment.Method.BANK_TRANSFER,
                         t.getReference() != null ? t.getReference() : cut(t.getDescription(), 100),
-                        "Bank statement: " + cut(t.getDescription(), 200)));
+                        "Bank statement: " + cut(t.getDescription(), 200), t.getBankAccountId(), false));
                 t.setInvoiceId(inv.getId());
                 t.setPaymentId(p.getId());
                 t.setPaymentCreated(true);
@@ -187,6 +189,12 @@ public class ReconciliationService {
                 t.setPaymentId(p.getId());
                 t.setInvoiceId(p.getInvoiceId());
                 t.setPaymentCreated(false);
+                if (p.isCashRegister() || !t.getBankAccountId().equals(p.getBankAccountId())) {
+                    // The money went through this line's account: the payment re-posts there.
+                    p.setBankAccountId(t.getBankAccountId());
+                    p.setCashRegister(false);
+                    ledger.payment(paymentRepository.save(p));
+                }
                 setMatchCategory(t, t.getAmount().signum() > 0 ? "SALES" : "SUPPLIERS");
             }
             case "EXPENSE" -> {
@@ -205,7 +213,14 @@ public class ReconciliationService {
             default -> throw new IllegalArgumentException("Match to an INVOICE, a PAYMENT or an EXPENSE");
         }
         t.setStatus(BankTransaction.Status.MATCHED);
-        return transactionRepository.save(t);
+        BankTransaction saved = transactionRepository.saveAndFlush(t);
+        // A matched line posts nothing itself (its category entry, if any, is reversed) ...
+        ledger.bankLine(saved);
+        // ... and a matched expense now posts on the line's bank account.
+        if (saved.getExpenseId() != null) {
+            expenseRepository.findForOrganization(orgId, saved.getExpenseId()).ifPresent(ledger::expense);
+        }
+        return saved;
     }
 
     @Transactional
@@ -219,6 +234,7 @@ public class ReconciliationService {
             paymentRepository.findByOrganizationIdAndId(orgId, t.getPaymentId())
                     .ifPresent(p -> paymentService.deletePayment(p.getId()));
         }
+        UUID expenseId = t.getExpenseId();
         t.setInvoiceId(null);
         t.setPaymentId(null);
         t.setExpenseId(null);
@@ -229,7 +245,13 @@ public class ReconciliationService {
             t.setCategorySource(null);
             categorizer.categorize(orgId, List.of(t), false);
         }
-        return transactionRepository.save(t);
+        BankTransaction saved = transactionRepository.saveAndFlush(t);
+        // Unmatched, the line posts its category entry again; a freed expense goes back to its own account.
+        ledger.bankLine(saved);
+        if (expenseId != null) {
+            expenseRepository.findForOrganization(orgId, expenseId).ifPresent(ledger::expense);
+        }
+        return saved;
     }
 
     @Transactional
@@ -239,7 +261,9 @@ public class ReconciliationService {
             throw new IllegalStateException("Unmatch the line first");
         }
         t.setStatus(ignore ? BankTransaction.Status.IGNORED : BankTransaction.Status.UNMATCHED);
-        return transactionRepository.save(t);
+        BankTransaction saved = transactionRepository.save(t);
+        ledger.bankLine(saved);
+        return saved;
     }
 
     /** Lines that pay one open invoice whose number is in the label, for exactly what is owed. */

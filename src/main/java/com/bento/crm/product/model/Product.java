@@ -10,6 +10,7 @@ import lombok.Data;
 import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
+import java.util.UUID;
 
 @Entity
 @Table(name = "product")
@@ -49,6 +50,10 @@ public class Product extends BaseTenantEntity {
     @Column(nullable = false)
     @Builder.Default
     private Boolean trackStock = false;
+
+    /** Ledger product posting group; null means GOODS for stocked products, SERVICES otherwise. */
+    @Column(columnDefinition = "uuid")
+    private UUID productGroupId;
 
     /** At or below this quantity in a warehouse, managers get a low-stock alert. */
     @Column(precision = 15, scale = 3)

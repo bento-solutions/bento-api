@@ -22,16 +22,24 @@ public final class ExpenseDtos {
                                  @Size(max = 255) String description, @NotNull @Positive BigDecimal amount,
                                  @PositiveOrZero BigDecimal vatAmount, @NotNull Payment.Method paymentMethod,
                                  UUID vendorPartnerId, @Size(max = 255) String vendorName,
-                                 @Size(max = 100) String reference) {}
+                                 @Size(max = 100) String reference, UUID costCenterId) {
+
+        public ExpenseRequest(LocalDate expenseDate, String category, String description, BigDecimal amount,
+                              BigDecimal vatAmount, Payment.Method paymentMethod, UUID vendorPartnerId,
+                              String vendorName, String reference) {
+            this(expenseDate, category, description, amount, vatAmount, paymentMethod, vendorPartnerId, vendorName,
+                    reference, null);
+        }
+    }
 
     public record ExpenseResponse(UUID id, LocalDate expenseDate, String category, String description,
                                   BigDecimal amount, BigDecimal vatAmount, Payment.Method paymentMethod,
-                                  UUID vendorPartnerId, String vendorName, String reference, UUID createdBy,
-                                  Instant createdAt) {
+                                  UUID vendorPartnerId, String vendorName, String reference, UUID costCenterId,
+                                  UUID createdBy, Instant createdAt) {
         public static ExpenseResponse of(Expense e) {
             return new ExpenseResponse(e.getId(), e.getExpenseDate(), e.getCategory(), e.getDescription(), e.getAmount(),
                     e.getVatAmount(), e.getPaymentMethod(), e.getVendorPartnerId(), e.getVendorName(), e.getReference(),
-                    e.getCreatedBy(), e.getCreatedAt());
+                    e.getCostCenterId(), e.getCreatedBy(), e.getCreatedAt());
         }
     }
 

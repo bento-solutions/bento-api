@@ -51,7 +51,7 @@ public class OrganizationService {
         Organization organization = Organization.builder()
                 .name(request.getName())
                 .industry(request.getIndustry())
-                .defaultCurrency(request.getDefaultCurrency() != null ? request.getDefaultCurrency() : "USD")
+                .defaultCurrency(request.getDefaultCurrency() != null ? request.getDefaultCurrency() : "MAD")
                 .timezone(request.getTimezone() != null ? request.getTimezone() : "UTC")
                 .fiscalYearStartMonth(1)
                 .plan("FREE")
