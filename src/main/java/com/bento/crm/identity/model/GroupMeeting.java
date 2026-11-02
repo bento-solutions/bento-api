@@ -32,6 +32,8 @@ public class GroupMeeting extends BaseTenantEntity {
     @Column(nullable = false)
     private Instant scheduledAt;
 
+    private Integer durationMinutes;
+
     @Column(nullable = false, columnDefinition = "uuid")
     private UUID createdByUserId;
 

@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -50,4 +51,7 @@ public interface AppUserRepository extends JpaRepository<AppUser, UUID> {
 
     @Query("SELECT u FROM AppUser u WHERE u.organizationId = :organizationId AND u.id = :id")
     Optional<AppUser> findByOrganizationIdAndId(@Param("organizationId") UUID organizationId, @Param("id") UUID id);
+
+    @Query("SELECT COUNT(u) FROM AppUser u WHERE u.organizationId = :organizationId AND u.id IN :ids")
+    long countByOrganizationIdAndIdIn(@Param("organizationId") UUID organizationId, @Param("ids") Collection<UUID> ids);
 }

@@ -3,7 +3,7 @@ package com.bento.crm.identity.controller;
 import com.bento.crm.common.dto.PageResponse;
 import com.bento.crm.identity.dto.CreateGroupMeetingRequest;
 import com.bento.crm.identity.dto.CreateGroupMessageRequest;
-import com.bento.crm.identity.dto.CreateTeamRequest;
+import com.bento.crm.identity.dto.CreateGroupRequest;
 import com.bento.crm.identity.model.CrmGroup;
 import com.bento.crm.identity.model.GroupMessage;
 import com.bento.crm.identity.model.GroupMeeting;
@@ -39,7 +39,7 @@ public class GroupController {
     @PostMapping
     @PreAuthorize("hasAuthority('GROUPS_CREATE')")
     @Operation(summary = "Create group", description = "Create new group in the organization")
-    public ResponseEntity<CrmGroup> createGroup(@Valid @RequestBody CreateTeamRequest request) {
+    public ResponseEntity<CrmGroup> createGroup(@Valid @RequestBody CreateGroupRequest request) {
         CrmGroup group = crmGroupService.createTeam(request);
         return ResponseEntity.status(HttpStatus.CREATED).body(group);
     }
@@ -63,7 +63,7 @@ public class GroupController {
     @PatchMapping("/{id}")
     @PreAuthorize("hasAuthority('GROUPS_WRITE')")
     @Operation(summary = "Update group", description = "Update group information")
-    public ResponseEntity<CrmGroup> updateGroup(@PathVariable UUID id, @Valid @RequestBody CreateTeamRequest request) {
+    public ResponseEntity<CrmGroup> updateGroup(@PathVariable UUID id, @Valid @RequestBody CreateGroupRequest request) {
         CrmGroup group = crmGroupService.updateTeam(id, request);
         return ResponseEntity.ok(group);
     }
