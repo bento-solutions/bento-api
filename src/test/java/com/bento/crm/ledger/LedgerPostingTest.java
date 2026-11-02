@@ -545,6 +545,9 @@ class LedgerPostingTest extends IntegrationTestBase {
         assertThat(balance(orgId, "3421", a)).isEqualByComparingTo("600");
         assertThat(balance(orgId, "3421", b)).isEqualByComparingTo("300");
 
+        // A payment recorded before payments carried a bank account still posts on the main bank account.
+        jdbc.update("UPDATE payment SET bank_account_id = NULL WHERE id = ?", UUID.fromString(p1.get("id").asText()));
+
         // Edit: reversal + new entry; delete: reversal only.
         json(patch("/payments/" + p1.get("id").asText()), token, "{\"partnerId\": \"" + a + "\", \"invoiceId\": \"" + invA
                 + "\", \"paymentDate\": \"" + today() + "\", \"amount\": 700, \"method\": \"BANK_TRANSFER\"}", 200);
@@ -565,6 +568,32 @@ class LedgerPostingTest extends IntegrationTestBase {
             }
         }
         assertThat(receivable).isEqualByComparingTo("900");
+    }
+
+    // Bank opening balances
+
+    @Test
+    void aBankAccountsOpeningBalancePostsInTheOpeningJournal() throws Exception {
+        String token = signUpAndLogin();
+        UUID orgId = orgIdOf(token);
+        String bank = json(post("/bank/accounts"), token, "{\"name\": \"CIH\", \"accountNumber\": \"" + RIB
+                + "\", \"openingBalance\": 1000, \"openingDate\": \"" + today() + "\"}", 201).get("id").asText();
+        JsonNode e = live(token, "BANK_OPENING", bank);
+        assertThat(e.get("journalCode").asText()).isEqualTo("AN");
+        assertBalanced(e);
+        assertThat(byAccount(e).get("514101")).isEqualByComparingTo("1000");
+        assertThat(byAccount(e).get("4497")).isEqualByComparingTo("-1000");
+
+        // A changed opening balance reverses and re-posts.
+        json(put("/bank/accounts/" + bank), token, "{\"name\": \"CIH\", \"accountNumber\": \"" + RIB
+                + "\", \"openingBalance\": 1500, \"openingDate\": \"" + today() + "\"}", 200);
+        assertThat(entriesOf(token, "BANK_OPENING", bank)).hasSize(2);
+        assertThat(balance(orgId, "514101", null)).isEqualByComparingTo("1500");
+
+        // Repost finds nothing more to do.
+        JsonNode r = json(post("/ledger/repost"), token, "{}", 200);
+        assertThat(r.get("posted").asInt()).isZero();
+        assertTrialBalanceBalances(token);
     }
 
     // Expenses

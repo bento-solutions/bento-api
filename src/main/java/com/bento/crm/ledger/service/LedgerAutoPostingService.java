@@ -66,7 +66,9 @@ public class LedgerAutoPostingService {
     public static final String PAYMENT = "PAYMENT";
     public static final String EXPENSE = "EXPENSE";
     public static final String BANK_LINE = "BANK_LINE";
-    public static final Set<String> SOURCES = Set.of(INVOICE, BILL, PAYMENT, EXPENSE, BANK_LINE);
+    /** A bank account's opening balance, in the opening (AN) journal. */
+    public static final String BANK_OPENING = "BANK_OPENING";
+    public static final Set<String> SOURCES = Set.of(INVOICE, BILL, PAYMENT, EXPENSE, BANK_LINE, BANK_OPENING);
 
     private static final BigDecimal DEFAULT_VAT = new BigDecimal("0.20");
     private static final BigDecimal HUNDRED = new BigDecimal("100");
@@ -151,6 +153,14 @@ public class LedgerAutoPostingService {
             Snapshot s = snapshots.computeIfAbsent(t.getOrganizationId(), postingSetup::snapshot);
             sync(t.getOrganizationId(), BANK_LINE, t.getId(), bankLineDraft(t, s), s);
         }
+    }
+
+    /** A bank account's opening balance: posted when the account is saved, reversed when it is deleted. */
+    @Transactional
+    public void bankOpening(UUID orgId, UUID bankAccountId) {
+        if (orgId == null || bankAccountId == null) return;
+        Snapshot s = postingSetup.snapshot(orgId);
+        sync(orgId, BANK_OPENING, bankAccountId, bankOpeningDraft(orgId, bankAccountId, s), s);
     }
 
     /** The document's live entry, for "View journal entry" on the document screens. */
@@ -421,7 +431,9 @@ public class LedgerAutoPostingService {
                 ? s.partnerAccount(LedgerPostingSetupService.SUPPLIER, p == null ? null : p.supplierGroupId())
                 : s.partnerAccount(LedgerPostingSetupService.CUSTOMER, p == null ? null : p.customerGroupId());
         boolean cash = pay.isCashRegister();
-        UUID money = cash ? s.cashAccountId() : postingSetup.bankLedgerAccount(orgId, pay.getBankAccountId());
+        // Payments recorded before bank accounts were tracked carry none: they went through the main bank account.
+        UUID bankAccountId = pay.getBankAccountId() != null ? pay.getBankAccountId() : postingSetup.defaultBankAccountId(orgId);
+        UUID money = cash ? s.cashAccountId() : postingSetup.bankLedgerAccount(orgId, bankAccountId);
         String who = p == null ? "" : p.name();
         String description = (supplier ? "Payment to " : "Payment received from ") + who
                 + (invoiceNumber == null ? "" : " - " + invoiceNumber);
@@ -494,6 +506,32 @@ public class LedgerAutoPostingService {
                 : t.getDescription(), 160), lines);
     }
 
+    /**
+     * The balance the bank account held when the ledger starts: its opening balance, plus the statement
+     * lines booked between its opening date and the ledger's start date (those lines do not post). It goes
+     * against the suspense account 4497 until the opening trial balance is imported, which reclassifies it.
+     */
+    Draft bankOpeningDraft(UUID orgId, UUID bankAccountId, Snapshot s) {
+        List<Map<String, Object>> rows = jdbc.queryForList("SELECT name, opening_balance, opening_date, deleted_at"
+                + " FROM bank_account WHERE organization_id = ? AND id = ?", orgId, bankAccountId);
+        if (rows.isEmpty() || rows.get(0).get("deleted_at") != null) return null;
+        Map<String, Object> a = rows.get(0);
+        BigDecimal opening = money((BigDecimal) a.get("opening_balance"));
+        LocalDate openingDate = a.get("opening_date") == null ? null : ((java.sql.Date) a.get("opening_date")).toLocalDate();
+        LocalDate date = openingDate == null || openingDate.isBefore(s.startDate()) ? s.startDate() : openingDate;
+        BigDecimal before = jdbc.queryForObject("SELECT COALESCE(SUM(amount), 0) FROM bank_transaction WHERE organization_id = ?"
+                + " AND bank_account_id = ? AND deleted_at IS NULL AND booking_date < ?"
+                + " AND (?::date IS NULL OR booking_date >= ?::date)", BigDecimal.class,
+                orgId, bankAccountId, s.startDate(), openingDate, openingDate);
+        BigDecimal amount = money(opening.add(before == null ? BigDecimal.ZERO : before));
+        String name = (String) a.get("name");
+        String description = "Opening balance " + (name == null ? "" : name);
+        Lines lines = new Lines();
+        lines.add(postingSetup.bankLedgerAccount(orgId, bankAccountId), null, null, amount, null);
+        lines.add(postingSetup.accountByCode(orgId, "4497"), null, null, amount.negate(), "Opening balance to reclassify");
+        return draft("AN", date, description.trim(), "Opening balance", lines);
+    }
+
     // History
 
     private record Doc(String sourceType, UUID id, String label) {}
@@ -525,6 +563,10 @@ public class LedgerAutoPostingService {
             docs.add(new Doc(BANK_LINE, rs.getObject(1, UUID.class), rs.getString(2)));
         }, orgId, start);
 
+        jdbc.query("SELECT id, name FROM bank_account WHERE organization_id = ? AND deleted_at IS NULL ORDER BY created_at", rs -> {
+            docs.add(new Doc(BANK_OPENING, rs.getObject(1, UUID.class), rs.getString(2)));
+        }, orgId);
+
         int posted = 0, skipped = 0;
         List<LedgerDtos.RepostError> errors = new ArrayList<>();
         for (Doc d : docs) {
@@ -554,6 +596,7 @@ public class LedgerAutoPostingService {
                     .map(p -> sync(orgId, PAYMENT, p.getId(), paymentDraft(p, s), s)).orElse(false);
             case EXPENSE -> expenseRepository.findForOrganization(orgId, d.id())
                     .map(e -> sync(orgId, EXPENSE, e.getId(), expenseDraft(e, s), s)).orElse(false);
+            case BANK_OPENING -> sync(orgId, BANK_OPENING, d.id(), bankOpeningDraft(orgId, d.id(), s), s);
             case BANK_LINE -> bankTransactionRepository.find(orgId, d.id())
                     .map(t -> sync(orgId, BANK_LINE, t.getId(), bankLineDraft(t, s), s)).orElse(false);
             default -> false;
