@@ -213,7 +213,8 @@ public final class LedgerDtos {
 
     public record StartDateUpdate(@NotNull LocalDate startDate) {}
 
-    public record RepostResult(int posted, int skipped, List<RepostError> errors) {}
+    /** posted: documents that had no entry; updated: stale entries reversed and re-posted; skipped: already right. */
+    public record RepostResult(int posted, int updated, int skipped, List<RepostError> errors) {}
 
     public record RepostError(String sourceType, UUID sourceId, String label, String message) {}
 }

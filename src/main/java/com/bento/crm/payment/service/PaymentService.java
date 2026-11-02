@@ -285,6 +285,7 @@ public class PaymentService {
         if (invoiceId == null) return;
         invoiceRepository.findByOrganizationIdAndId(orgId, invoiceId).ifPresent(invoice -> {
             if (invoice.getKind() == Invoice.Kind.CREDIT_NOTE) return;
+            Invoice.Status before = invoice.getStatus();
             BigDecimal paid = paidAmount(orgId, invoiceId);
             BigDecimal credited = creditedAmount(orgId, invoiceId);
             BigDecimal total = invoice.getTotal() != null ? invoice.getTotal() : BigDecimal.ZERO;
@@ -308,7 +309,12 @@ public class PaymentService {
                         + " WHERE organization_id = ? AND invoice_id = ? AND status = 'OPEN' AND deleted_at IS NULL",
                         orgId, invoiceId);
             }
-            invoiceRepository.save(invoice);
+            Invoice saved = invoiceRepository.save(invoice);
+            // A status change can make the invoice post (a draft paid becomes PAID) or change
+            // what it posts: its entry follows, as after any save of the invoice.
+            if (saved.getStatus() != before) {
+                ledger.invoice(saved);
+            }
         });
     }
 
