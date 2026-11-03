@@ -53,6 +53,9 @@ public class DealResponse {
     /** Advance invoices issued on the deal: their total (incl. VAT), and whether they are all paid. */
     private boolean advancePaid;
     private java.math.BigDecimal advanceTotal;
+    /** Missions made for the deal (phase 3 part C). */
+    @Builder.Default
+    private List<UUID> missionIds = new java.util.ArrayList<>();
     private UUID createdBy;
     private UUID updatedBy;
     private LocalDateTime createdAt;

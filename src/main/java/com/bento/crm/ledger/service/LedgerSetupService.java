@@ -82,6 +82,7 @@ public class LedgerSetupService {
             new Seed("6111", "Achats de marchandises"),
             new Seed("6114", "Variation de stocks de marchandises"),
             new Seed("6125", "Achats non stockés de matières et fournitures"),
+            new Seed("6126", "Achats de travaux, études et prestations de services"),
             new Seed("6131", "Locations et charges locatives"),
             new Seed("6136", "Rémunérations d'intermédiaires et honoraires"),
             new Seed("6142", "Transports"),
@@ -199,6 +200,7 @@ public class LedgerSetupService {
         seedPostingSetup(orgId);
         seedPhase3(orgId);
         seedPhase3WaveB(orgId);
+        seedPhase3PartC(orgId);
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
@@ -257,7 +259,7 @@ public class LedgerSetupService {
     }
 
     /** The posting-setup version this code seeds; ledger_settings.setup_version says what an organization has. */
-    static final int SETUP_VERSION = 4;
+    static final int SETUP_VERSION = 5;
 
     static final String EXPORT_MENTION = "Exonéré de TVA, article 92-I-1° du CGI (exportation)";
     static final String EXEMPT_MENTION = "Exonéré de TVA (article 91 du CGI)";
@@ -327,6 +329,38 @@ public class LedgerSetupService {
                     + ACCOUNT + ", ?, ?) ON CONFLICT DO NOTHING", orgId, c.code(), c.name(), orgId, c.asset(), orgId,
                     c.depreciation(), orgId, c.expense(), c.lifeMonths(), order++);
         }
+    }
+
+    /**
+     * Phase 3 part C seeds (version 5), once per organization: the SUBCONTRACTING product group
+     * (TVA20, sales 7124 / 7127, purchases 6126) and TRANSPORT's purchase account moved to 6142,
+     * only where it is still the seeded 6125. The account 6126 is in {@link #ACCOUNTS}.
+     */
+    private void seedPhase3PartC(UUID orgId) {
+        int moved = jdbc.update("UPDATE ledger_settings SET setup_version = 5, updated_at = now()"
+                + " WHERE organization_id = ? AND setup_version < 5", orgId);
+        if (moved == 0) {
+            return;
+        }
+        int sub = jdbc.update("INSERT INTO ledger_product_group (organization_id, code, name, is_default, vat_code)"
+                + " VALUES (?, 'SUBCONTRACTING', 'Sous-traitance et prestations', FALSE, 'TVA20') ON CONFLICT DO NOTHING", orgId);
+        if (sub > 0) {
+            for (String[] r : List.of(new String[]{"MAROC", "7124"}, new String[]{"EXPORT", "7127"})) {
+                jdbc.update("""
+                        INSERT INTO ledger_general_setup (organization_id, business_group_id, product_group_id, sales_account_id, purchase_account_id)
+                        SELECT ?, b.id, p.id, %s, %s
+                        FROM ledger_business_group b, ledger_product_group p
+                        WHERE b.organization_id = ? AND b.code = ? AND p.organization_id = ? AND p.code = 'SUBCONTRACTING'
+                        ON CONFLICT DO NOTHING
+                        """.formatted(ACCOUNT, ACCOUNT), orgId, orgId, r[1], orgId, "6126", orgId, r[0], orgId);
+            }
+        }
+        jdbc.update("""
+                UPDATE ledger_general_setup g SET purchase_account_id = %s
+                FROM ledger_product_group p
+                WHERE g.organization_id = ? AND p.id = g.product_group_id AND p.code = 'TRANSPORT'
+                  AND g.purchase_account_id = %s
+                """.formatted(ACCOUNT, ACCOUNT), orgId, "6142", orgId, orgId, "6125");
     }
 
     private void seedCategories(UUID orgId, String kind, Map<String, String> categories) {

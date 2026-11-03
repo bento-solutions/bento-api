@@ -45,5 +45,9 @@ public class Mission extends BaseTenantEntity {
     @Column(name = "assigned_user_id", columnDefinition = "uuid")
     private UUID assignedUserId;
 
+    /** The deal the mission comes from (phase 3 part C), or null. */
+    @Column(name = "deal_id", columnDefinition = "uuid")
+    private UUID dealId;
+
     public enum Status { PLANNED, IN_PROGRESS, DONE, CANCELLED }
 }

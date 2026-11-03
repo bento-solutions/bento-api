@@ -118,13 +118,13 @@ class LedgerPhase3Test extends IntegrationTestBase {
         assertThat(vat.get("EXPORT").get("mention").asText()).contains("92-I-1°");
         assertThat(vat.get("EXONERE").get("mention").asText()).contains("article 91");
         assertThat(vat.get("TVA20").has("mention")).isFalse();
-        assertThat(product).containsOnlyKeys("GOODS", "SERVICES", "TRANSPORT");
+        assertThat(product).containsOnlyKeys("GOODS", "SERVICES", "TRANSPORT", "SUBCONTRACTING");
         assertThat(product.get("GOODS").get("vatCode").asText()).isEqualTo("TVA20");
         assertThat(product.get("TRANSPORT").get("vatCode").asText()).isEqualTo("TVA14");
         assertThat(business.get("MAROC").get("vatRule").asText()).isEqualTo("STANDARD");
         assertThat(business.get("EXPORT").get("vatRule").asText()).isEqualTo("EXEMPT");
         assertThat(business.get("EXPORT").get("exemptVatCode").asText()).isEqualTo("EXPORT");
-        assertThat(s.get("generalSetup")).hasSize(6);
+        assertThat(s.get("generalSetup")).hasSize(8);
         assertThat(json(get("/ledger/accounts"), token, null, 200).toString()).contains("\"4421\"", "\"3411\"");
 
         // Setup writes.

@@ -22,12 +22,29 @@ public class MissionController {
     private static final String WRITE = "hasAuthority('PARTNERS_WRITE')";
 
     private final MissionService service;
+    private final com.bento.crm.mission.service.MissionDealService missionDeals;
 
     @GetMapping("/missions")
     @PreAuthorize(READ)
     public List<MissionDtos.Summary> list(@RequestParam(required = false) UUID partnerId,
-                                          @RequestParam(required = false) Mission.Status status) {
-        return service.list(partnerId, status);
+                                          @RequestParam(required = false) Mission.Status status,
+                                          @RequestParam(required = false) UUID dealId) {
+        return service.list(partnerId, status, dealId);
+    }
+
+    /** Quoted, invoiced, costs on the mission's cost center, margin and the documents along the way. */
+    @GetMapping("/missions/{id}/summary")
+    @PreAuthorize(READ)
+    public MissionDtos.MissionSummary summary(@PathVariable UUID id) {
+        return missionDeals.summary(id);
+    }
+
+    /** A PLANNED mission for the deal, with a cost center linked to it. */
+    @PostMapping("/deals/{id}/mission")
+    @PreAuthorize(WRITE)
+    @ResponseStatus(HttpStatus.CREATED)
+    public MissionDtos.Summary createFromDeal(@PathVariable UUID id) {
+        return missionDeals.createFromDeal(id).mission();
     }
 
     @GetMapping("/missions/{id}")

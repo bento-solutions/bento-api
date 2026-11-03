@@ -72,9 +72,14 @@ public class MissionService {
             """;
 
     public List<MissionDtos.Summary> list(UUID partnerId, Mission.Status status) {
+        return list(partnerId, status, null);
+    }
+
+    public List<MissionDtos.Summary> list(UUID partnerId, Mission.Status status, UUID dealId) {
         StringBuilder sql = new StringBuilder(SUMMARY + " WHERE m.organization_id = ? AND m.deleted_at IS NULL");
         List<Object> args = new ArrayList<>(List.of(org()));
         if (partnerId != null) { sql.append(" AND m.partner_id = ?"); args.add(partnerId); }
+        if (dealId != null) { sql.append(" AND m.deal_id = ?"); args.add(dealId); }
         if (status != null) { sql.append(" AND m.status = ?"); args.add(status.name()); }
         sql.append(" ORDER BY m.due_date NULLS LAST, m.created_at DESC");
         return jdbc.query(sql.toString(), MissionService::summary, args.toArray());
@@ -156,6 +161,12 @@ public class MissionService {
                     r.assignedUserId(), org());
             if (n == null || n == 0) throw new IllegalArgumentException("Unknown team member");
             m.setAssignedUserId(r.assignedUserId());
+        }
+        if (r.dealId() != null) {
+            List<UUID> partners = jdbc.queryForList("SELECT partner_id FROM deal WHERE organization_id = ? AND id = ?"
+                    + " AND deleted_at IS NULL", UUID.class, org(), r.dealId());
+            if (partners.isEmpty()) throw new ResourceNotFoundException("Deal not found");
+            m.setDealId(r.dealId());
         }
     }
 
@@ -372,7 +383,8 @@ public class MissionService {
                 rs.getString("partner_name"), rs.getString("name"), status, rs.getObject("start_date", LocalDate.class), due,
                 rs.getBigDecimal("fee_amount"), rs.getObject("assigned_user_id", UUID.class), rs.getString("user_name"),
                 rs.getInt("n_deliverables"), rs.getInt("n_delivered"), rs.getBigDecimal("unbilled"),
-                due != null && due.isBefore(LocalDate.now()) && (status == Mission.Status.PLANNED || status == Mission.Status.IN_PROGRESS));
+                due != null && due.isBefore(LocalDate.now()) && (status == Mission.Status.PLANNED || status == Mission.Status.IN_PROGRESS),
+                rs.getObject("deal_id", UUID.class));
     }
 
     private static MissionDtos.Deliverable deliverable(ResultSet rs, int i) throws SQLException {

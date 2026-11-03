@@ -75,6 +75,23 @@ public class DealService {
     }
 
     /**
+     * A delivery note was delivered: unless the deal is already invoiced (or paid), its delivery
+     * date is set and it moves to AWAITING_INVOICING.
+     */
+    @Transactional
+    public void markDelivered(UUID dealId, java.time.LocalDate date) {
+        Deal deal = getDeal(dealId);
+        Deal.DealStage before = deal.getStage();
+        if (before == Deal.DealStage.INVOICED || before == Deal.DealStage.PAID) {
+            return;
+        }
+        deal.setDeliveryDate(date);
+        deal.setStage(Deal.DealStage.AWAITING_INVOICING);
+        Deal saved = dealRepository.save(deal);
+        stockOnStageChange(saved, before);
+    }
+
+    /**
      * Stock follows the deal only when its stage changes: into a won stage takes the goods out,
      * from a won stage to lost gives them back. Re-saving a deal in the same stage moves nothing.
      */
