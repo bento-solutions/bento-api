@@ -188,6 +188,56 @@ public class AgingService {
         return out;
     }
 
+    /** An issued invoice and what it still owes at a date. */
+    public record OpenItem(Invoice invoice, BigDecimal due, int daysOverdue, int bucket) {}
+
+    /**
+     * The issued invoices of one side (and partner, when given) that still owe something at
+     * {@code asOf}, by the same rules as the aging report: total less the payments and credit notes
+     * dated up to then. A PAID or CREDITED status settles the invoice even without a recorded
+     * payment, from its paid date (or, without one, for a date from today on).
+     */
+    @Transactional(readOnly = true)
+    public List<OpenItem> openAt(UUID orgId, Invoice.InvoiceType type, UUID partnerId, LocalDate asOf) {
+        LocalDate today = billingCalendar.today(orgId);
+        Map<UUID, BigDecimal> paid = new HashMap<>();
+        jdbc.query("SELECT invoice_id, SUM(amount) FROM payment WHERE organization_id = ? AND invoice_id IS NOT NULL"
+                + " AND deleted_at IS NULL AND payment_date <= ? GROUP BY invoice_id", rs -> {
+            paid.put(rs.getObject(1, UUID.class), rs.getBigDecimal(2));
+        }, orgId, asOf);
+        Map<UUID, BigDecimal> credited = new HashMap<>();
+        jdbc.query("SELECT credited_invoice_id, SUM(total) FROM invoice WHERE organization_id = ? AND kind = 'CREDIT_NOTE'"
+                + " AND credited_invoice_id IS NOT NULL AND deleted_at IS NULL AND status <> 'DRAFT'"
+                + " AND COALESCE(invoice_date, CAST(created_at AS date)) <= ? GROUP BY credited_invoice_id", rs -> {
+            credited.put(rs.getObject(1, UUID.class), rs.getBigDecimal(2));
+        }, orgId, asOf);
+        List<OpenItem> out = new ArrayList<>();
+        for (Invoice invoice : invoiceRepository.findIssuedByType(orgId, type)) {
+            if (partnerId != null && !partnerId.equals(invoice.getPartnerId())) continue;
+            LocalDate issued = invoice.getInvoiceDate() != null ? invoice.getInvoiceDate()
+                    : invoice.getCreatedAt() != null ? invoice.getCreatedAt().atZone(java.time.ZoneId.of("Africa/Casablanca")).toLocalDate()
+                    : null;
+            if (issued != null && issued.isAfter(asOf)) continue;
+            BigDecimal total = invoice.getTotal() != null ? invoice.getTotal() : BigDecimal.ZERO;
+            BigDecimal settled = paid.getOrDefault(invoice.getId(), BigDecimal.ZERO)
+                    .add(credited.getOrDefault(invoice.getId(), BigDecimal.ZERO));
+            if (invoice.getStatus() == Invoice.Status.PAID || invoice.getStatus() == Invoice.Status.CREDITED) {
+                LocalDate paidOn = invoice.getPaidAt() == null ? null
+                        : invoice.getPaidAt().atZone(java.time.ZoneId.of("Africa/Casablanca")).toLocalDate();
+                if (paidOn != null ? !paidOn.isAfter(asOf) : !asOf.isBefore(today)) {
+                    settled = total;
+                }
+            }
+            BigDecimal remaining = scale(total.subtract(settled.min(total)));
+            if (remaining.signum() <= 0) continue;
+            int daysLate = invoice.getDueDate() == null ? 0
+                    : (int) Math.max(0, ChronoUnit.DAYS.between(invoice.getDueDate(), asOf));
+            out.add(new OpenItem(invoice, remaining, daysLate, bucketOf(daysLate)));
+        }
+        out.sort(Comparator.comparing((OpenItem o) -> o.invoice().getDueDate() == null ? LocalDate.MAX : o.invoice().getDueDate()));
+        return out;
+    }
+
     static int bucketOf(int daysLate) {
         if (daysLate <= 0) return 0;
         if (daysLate <= 30) return 1;

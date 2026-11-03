@@ -78,7 +78,11 @@ public class InvoiceTemplateService {
 
     /** How this invoice is printed: its customer's brand first, then the organization's template. */
     public InvoiceBranding brandingFor(Invoice invoice, Partner partner) {
-        UUID orgId = invoice.getOrganizationId();
+        return brandingFor(invoice.getOrganizationId(), partner);
+    }
+
+    /** How a document for this partner is printed (a statement, say): its brand first, then the organization's template. */
+    public InvoiceBranding brandingFor(UUID orgId, Partner partner) {
         Optional<Brand> brand = Optional.ofNullable(partner).map(Partner::getBrandId)
                 .flatMap(id -> brandRepository.findByOrganizationIdAndId(orgId, id))
                 .or(() -> brandRepository.findDefaultByOrganizationId(orgId));
