@@ -527,6 +527,125 @@ public class PdfDocumentService {
         }
     }
 
+    /** What a delivery note PDF shows: no prices, the lines and quantities, and a signature box. */
+    public record DeliveryNotePdf(String number, java.time.LocalDate date, String status, String reference,
+                                  String deliveryAddress, List<Map<String, Object>> lines, String notes, String signedBy) {}
+
+    /** A delivery note (bon de livraison) in the style of the invoice: company and customer blocks, lines, signature. */
+    public byte[] generateDeliveryNotePdf(DeliveryNotePdf note, Partner customer, Organization org) {
+        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            Document document = new Document(PageSize.A4, 36, 36, 36, 36);
+            PdfWriter.getInstance(document, out);
+            document.open();
+
+            PdfPTable headerTable = new PdfPTable(2);
+            headerTable.setWidthPercentage(100);
+            headerTable.setWidths(new float[]{60, 40});
+            PdfPCell leftCell = new PdfPCell();
+            leftCell.setBorder(Rectangle.NO_BORDER);
+            leftCell.addElement(new Paragraph(org != null && org.getName() != null ? org.getName() : "Bento CRM", FONT_TITLE));
+            if (org != null && org.getIndustry() != null) {
+                leftCell.addElement(new Paragraph(org.getIndustry(), FONT_MUTED));
+            }
+            headerTable.addCell(leftCell);
+            PdfPCell rightCell = new PdfPCell();
+            rightCell.setBorder(Rectangle.NO_BORDER);
+            Paragraph docType = new Paragraph("BON DE LIVRAISON", FONT_TITLE);
+            docType.setAlignment(Element.ALIGN_RIGHT);
+            rightCell.addElement(docType);
+            Paragraph numP = new Paragraph("N° " + (note.number() != null ? note.number() : "BROUILLON"), FONT_SUBTITLE);
+            numP.setAlignment(Element.ALIGN_RIGHT);
+            rightCell.addElement(numP);
+            Paragraph dateP = new Paragraph("Date : " + formatDate(note.date()), FONT_BODY);
+            dateP.setAlignment(Element.ALIGN_RIGHT);
+            rightCell.addElement(dateP);
+            if (note.reference() != null && !note.reference().isBlank()) {
+                Paragraph refP = new Paragraph("Réf. commande : " + note.reference(), FONT_MUTED);
+                refP.setAlignment(Element.ALIGN_RIGHT);
+                rightCell.addElement(refP);
+            }
+            headerTable.addCell(rightCell);
+            document.add(headerTable);
+            document.add(new Paragraph(" "));
+
+            PdfPTable clientTable = new PdfPTable(1);
+            clientTable.setWidthPercentage(100);
+            PdfPCell clientCell = new PdfPCell();
+            clientCell.setBackgroundColor(HEADER_BG);
+            clientCell.setBorderColor(BORDER_COLOR);
+            clientCell.setPadding(10);
+            clientCell.addElement(new Paragraph("LIVRÉ À :", FONT_SECTION));
+            clientCell.addElement(new Paragraph(customer != null && customer.getName() != null ? customer.getName() : "Client",
+                    FONT_SUBTITLE));
+            if (customer != null) {
+                if (customer.getCompanyName() != null && !customer.getCompanyName().isBlank()) {
+                    clientCell.addElement(new Paragraph(customer.getCompanyName(), FONT_BODY));
+                }
+                if (note.deliveryAddress() != null && !note.deliveryAddress().isBlank()) {
+                    clientCell.addElement(new Paragraph(note.deliveryAddress(), FONT_BODY));
+                } else if (customer.getCity() != null) {
+                    clientCell.addElement(new Paragraph(customer.getCity()
+                            + (customer.getCountry() != null ? ", " + customer.getCountry() : ""), FONT_BODY));
+                }
+                Object ice = customer.getCompany() != null ? customer.getCompany().get("ice") : null;
+                if (ice != null) clientCell.addElement(new Paragraph("ICE : " + ice, FONT_BODY));
+                if (customer.getPhone() != null) clientCell.addElement(new Paragraph("Tél : " + customer.getPhone(), FONT_BODY));
+            } else if (note.deliveryAddress() != null && !note.deliveryAddress().isBlank()) {
+                clientCell.addElement(new Paragraph(note.deliveryAddress(), FONT_BODY));
+            }
+            clientTable.addCell(clientCell);
+            document.add(clientTable);
+            document.add(new Paragraph(" "));
+
+            PdfPTable itemsTable = new PdfPTable(3);
+            itemsTable.setWidthPercentage(100);
+            itemsTable.setWidths(new float[]{70, 15, 15});
+            addTableHeader(itemsTable, "Désignation", Element.ALIGN_LEFT);
+            addTableHeader(itemsTable, "Qté", Element.ALIGN_CENTER);
+            addTableHeader(itemsTable, "Unité", Element.ALIGN_CENTER);
+            if (note.lines() != null) {
+                for (Map<String, Object> line : note.lines()) {
+                    if (line == null) continue;
+                    Object desc = line.get("description");
+                    BigDecimal qty = toBigDecimal(line.get("qty"), BigDecimal.ONE);
+                    Object unit = line.get("unit");
+                    addTableCell(itemsTable, desc == null ? "" : desc.toString(), Element.ALIGN_LEFT, FONT_BODY);
+                    addTableCell(itemsTable, qty.stripTrailingZeros().toPlainString(), Element.ALIGN_CENTER, FONT_BODY);
+                    addTableCell(itemsTable, unit == null ? "" : unit.toString(), Element.ALIGN_CENTER, FONT_BODY);
+                }
+            }
+            document.add(itemsTable);
+
+            if (note.notes() != null && !note.notes().isBlank()) {
+                document.add(new Paragraph("\nNotes : " + note.notes(), FONT_BODY));
+            }
+            document.add(new Paragraph(" "));
+
+            // Signature boxes: the issuer and the customer, who signs on receipt.
+            PdfPTable sign = new PdfPTable(2);
+            sign.setWidthPercentage(100);
+            sign.setWidths(new float[]{50, 50});
+            for (String title : new String[]{"Cachet et signature du livreur", "Reçu par (nom, date, signature)"}) {
+                PdfPCell c = new PdfPCell();
+                c.setBorderColor(BORDER_COLOR);
+                c.setPadding(8);
+                c.setMinimumHeight(90);
+                c.addElement(new Paragraph(title, FONT_SECTION));
+                if (title.startsWith("Reçu") && note.signedBy() != null && !note.signedBy().isBlank()) {
+                    c.addElement(new Paragraph(note.signedBy(), FONT_BODY));
+                }
+                sign.addCell(c);
+            }
+            document.add(sign);
+
+            document.close();
+            return out.toByteArray();
+        } catch (Exception e) {
+            log.error("Failed to generate delivery note PDF", e);
+            throw new RuntimeException("Error generating delivery note PDF", e);
+        }
+    }
+
     public byte[] generateProposalPdf(Proposal proposal, Partner client, Organization org) {
         try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             Document document = new Document(PageSize.A4, 36, 36, 36, 36);

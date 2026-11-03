@@ -41,7 +41,13 @@ public class DealController {
                 + " AND status NOT IN ('DRAFT', 'CREDITED') GROUP BY deal_id", rs -> {
             byDeal.put(rs.getObject(1, UUID.class), new Object[]{rs.getBigDecimal(2), rs.getBoolean(3)});
         }, orgId, ids.toArray(new UUID[0]));
+        java.util.Map<UUID, java.util.List<UUID>> missions = new java.util.HashMap<>();
+        jdbc.query("SELECT deal_id, id FROM mission WHERE organization_id = ? AND deal_id = ANY(?) AND deleted_at IS NULL"
+                + " ORDER BY created_at", rs -> {
+            missions.computeIfAbsent(rs.getObject(1, UUID.class), k -> new java.util.ArrayList<>()).add(rs.getObject(2, UUID.class));
+        }, orgId, ids.toArray(new UUID[0]));
         for (DealResponse d : deals) {
+            d.setMissionIds(missions.getOrDefault(d.getId(), new java.util.ArrayList<>()));
             Object[] a = byDeal.get(d.getId());
             d.setAdvanceTotal(a == null ? java.math.BigDecimal.ZERO.setScale(2) : (java.math.BigDecimal) a[0]);
             d.setAdvancePaid(a != null && (Boolean) a[1]);
@@ -90,7 +96,7 @@ public class DealController {
     @Operation(summary = "Update deal", description = "Update deal information")
     public ResponseEntity<DealResponse> updateDeal(@PathVariable UUID id, @Valid @RequestBody CreateDealRequest request) {
         Deal deal = dealService.updateDeal(id, request);
-        return ResponseEntity.ok(DealResponse.fromEntity(deal));
+        return ResponseEntity.ok(withAdvances(DealResponse.fromEntity(deal)));
     }
 
     @DeleteMapping("/{id}")

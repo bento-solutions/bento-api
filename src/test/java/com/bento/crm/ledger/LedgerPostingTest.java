@@ -151,7 +151,7 @@ class LedgerPostingTest extends IntegrationTestBase {
         s.get("businessGroups").forEach(g -> business.put(g.get("code").asText(), g.get("id").asText()));
         s.get("productGroups").forEach(g -> product.put(g.get("code").asText(), g.get("id").asText()));
         assertThat(business).containsOnlyKeys("MAROC", "EXPORT");
-        assertThat(product).containsOnlyKeys("GOODS", "SERVICES", "TRANSPORT");
+        assertThat(product).containsOnlyKeys("GOODS", "SERVICES", "TRANSPORT", "SUBCONTRACTING");
         assertThat(s.get("businessGroups").get(0).get("code").asText()).isEqualTo("MAROC");
         assertThat(s.get("businessGroups").get(0).get("isDefault").asBoolean()).isTrue();
         assertThat(s.get("productGroups").get(0).get("code").asText()).isEqualTo("SERVICES");
@@ -162,12 +162,14 @@ class LedgerPostingTest extends IntegrationTestBase {
             general.put(key, r.get("salesAccountCode").asText() + "/" + r.get("purchaseAccountCode").asText());
             generalIds.put(key, r.get("id").asText());
         }
-        assertThat(general).hasSize(6)
+        assertThat(general).hasSize(8)
                 .containsEntry(business.get("MAROC") + "x" + product.get("GOODS"), "7111/6111")
                 .containsEntry(business.get("MAROC") + "x" + product.get("SERVICES"), "7124/6125")
                 .containsEntry(business.get("EXPORT") + "x" + product.get("GOODS"), "7121/6111")
                 .containsEntry(business.get("EXPORT") + "x" + product.get("SERVICES"), "7127/6125")
-                .containsEntry(business.get("MAROC") + "x" + product.get("TRANSPORT"), "7124/6125");
+                .containsEntry(business.get("MAROC") + "x" + product.get("TRANSPORT"), "7124/6142")
+                .containsEntry(business.get("MAROC") + "x" + product.get("SUBCONTRACTING"), "7124/6126")
+                .containsEntry(business.get("EXPORT") + "x" + product.get("SUBCONTRACTING"), "7127/6126");
         Map<String, JsonNode> vat = new HashMap<>();
         s.get("vatSetup").forEach(v -> vat.put(v.get("code").asText(), v));
         assertThat(vat).containsOnlyKeys("TVA20", "TVA14", "TVA10", "TVA7", "TVA0", "EXONERE", "EXPORT");
@@ -241,7 +243,7 @@ class LedgerPostingTest extends IntegrationTestBase {
         JsonNode withUe = json(post("/ledger/posting-setup/business-groups"), token, "{\"code\": \"UE\", \"name\": \"Union européenne\"}", 201);
         String ue = null;
         for (JsonNode g : withUe.get("businessGroups")) if (g.get("code").asText().equals("UE")) ue = g.get("id").asText();
-        assertThat(withUe.get("generalSetup")).hasSize(9);
+        assertThat(withUe.get("generalSetup")).hasSize(12);
         for (JsonNode r : withUe.get("generalSetup")) {
             if (r.get("businessGroupId").asText().equals(ue)) {
                 boolean goods = r.get("productGroupId").asText().equals(product.get("GOODS"));
@@ -251,7 +253,7 @@ class LedgerPostingTest extends IntegrationTestBase {
         detail(post("/ledger/posting-setup/business-groups"), token, "{\"code\": \"UE\", \"name\": \"Again\"}", 400);
         detail(post("/ledger/posting-setup/business-groups"), token, "{\"code\": \"bad code!\", \"name\": \"x\"}", 400);
         JsonNode withSoft = json(post("/ledger/posting-setup/product-groups"), token, "{\"code\": \"SOFT\", \"name\": \"Logiciels\"}", 201);
-        assertThat(withSoft.get("generalSetup")).hasSize(12);
+        assertThat(withSoft.get("generalSetup")).hasSize(15);
         String soft = null;
         for (JsonNode g : withSoft.get("productGroups")) if (g.get("code").asText().equals("SOFT")) soft = g.get("id").asText();
         String softExport = null;
@@ -271,7 +273,7 @@ class LedgerPostingTest extends IntegrationTestBase {
         detail(post("/products"), token, "{\"sku\": \"SW-2\", \"name\": \"Bad\", \"unitPrice\": 1, \"productGroupId\": \""
                 + UUID.randomUUID() + "\"}", 400);
         JsonNode noUe = json(delete("/ledger/posting-setup/business-groups/" + ue), token, null, 200);
-        assertThat(noUe.get("generalSetup")).hasSize(8);
+        assertThat(noUe.get("generalSetup")).hasSize(10);
 
         // Accounts on the setup rows: inactive accounts refused.
         json(post("/ledger/accounts"), token, "{\"code\": \"71271\", \"name\": \"Export logiciels\"}", 201);

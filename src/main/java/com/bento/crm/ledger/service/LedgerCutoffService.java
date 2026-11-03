@@ -126,7 +126,10 @@ public class LedgerCutoffService {
         return s.productGroup(null);
     }
 
-    /** Won deals not invoiced by then (net of advances), rebillable costs not invoiced, recurring invoices due. */
+    /**
+     * Won deals not invoiced by then (net of advances), delivered notes not invoiced by then (once
+     * per deal, in place of the deal), rebillable costs not invoiced, recurring invoices due.
+     */
     private List<LedgerClosingDtos.CutoffItem> fae(UUID orgId, Snapshot s, LocalDate date, Map<UUID, String> codes) {
         List<LedgerClosingDtos.CutoffItem> out = new ArrayList<>();
         Map<UUID, Map<String, Object>> products = new HashMap<>();
@@ -141,6 +144,8 @@ public class LedgerCutoffService {
                   AND NOT EXISTS (SELECT 1 FROM invoice i WHERE i.organization_id = d.organization_id AND i.deal_id = d.id
                                   AND i.kind = 'INVOICE' AND i.type = 'CUSTOMER' AND i.deleted_at IS NULL
                                   AND i.status <> 'DRAFT' AND i.invoice_date <= ?)
+                  AND NOT EXISTS (SELECT 1 FROM delivery_note n WHERE n.organization_id = d.organization_id AND n.deal_id = d.id
+                                  AND n.deleted_at IS NULL AND n.status <> 'CANCELLED')
                 ORDER BY d.title
                 """, rs -> {
             BigDecimal base = rs.getBigDecimal(4).subtract(rs.getBigDecimal(5));
@@ -148,6 +153,28 @@ public class LedgerCutoffService {
             UUID dealId = rs.getObject(1, UUID.class);
             UUID partnerId = rs.getObject(3, UUID.class);
             out.add(faeItem(orgId, s, codes, products, "DEAL", dealId, partnerId, "FAE " + rs.getString(2), base, null));
+        }, date, orgId, date, date);
+        // Delivered notes whose invoice is not out by the date: the deal amount net of advances, once per deal
+        // (a deal with a delivery note is proposed from the note, not from its stage).
+        jdbc.query("""
+                SELECT DISTINCT ON (d.id) n.id, n.number, d.partner_id, COALESCE(d.amount, d.order_total_amount, 0) - COALESCE(d.discount, 0),
+                       (SELECT COALESCE(SUM(i.subtotal), 0) FROM invoice i WHERE i.organization_id = d.organization_id
+                          AND i.deal_id = d.id AND i.kind = 'ADVANCE' AND i.type = 'CUSTOMER' AND i.deleted_at IS NULL
+                          AND i.status NOT IN ('DRAFT', 'CREDITED') AND i.invoice_date <= ?),
+                       d.title
+                FROM delivery_note n JOIN deal d ON d.id = n.deal_id AND d.deleted_at IS NULL
+                WHERE n.organization_id = ? AND n.deleted_at IS NULL AND n.status IN ('DELIVERED', 'INVOICED')
+                  AND n.note_date <= ?
+                  AND NOT EXISTS (SELECT 1 FROM invoice i WHERE i.organization_id = d.organization_id AND i.deal_id = d.id
+                                  AND i.kind = 'INVOICE' AND i.type = 'CUSTOMER' AND i.deleted_at IS NULL
+                                  AND i.status <> 'DRAFT' AND i.invoice_date <= ?)
+                ORDER BY d.id, n.note_date, n.created_at
+                """, rs -> {
+            BigDecimal base = rs.getBigDecimal(4).subtract(rs.getBigDecimal(5));
+            if (base.signum() <= 0) return;
+            String number = rs.getString(2);
+            out.add(faeItem(orgId, s, codes, products, "DELIVERY_NOTE", rs.getObject(1, UUID.class), rs.getObject(3, UUID.class),
+                    "FAE " + (number == null ? "" : number + " ") + rs.getString(6), base, null));
         }, date, orgId, date, date);
         jdbc.query("""
                 SELECT id, description, partner_id, amount, vat_rate FROM disbursement
