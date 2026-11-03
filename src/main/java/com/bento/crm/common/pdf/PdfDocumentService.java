@@ -646,6 +646,181 @@ public class PdfDocumentService {
         }
     }
 
+    /**
+     * A partner statement (relevé de compte) in the style of the invoice: the issuer and the partner,
+     * the period, the opening balance, the movements with the running balance, the closing balance,
+     * the open documents with their age and the advances. Meant for the partner: no account codes.
+     */
+    public byte[] generatePartnerStatementPdf(com.bento.crm.ledger.dto.LedgerStatementDtos.PartnerStatement st,
+                                              Organization org, InvoiceBranding branding) {
+        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            String issuer = branding != null && branding.legalName() != null ? branding.legalName()
+                    : (org != null && org.getName() != null ? org.getName() : "Bento CRM");
+            List<String> footerLines = footerLines(issuer, branding);
+            Document document = new Document(PageSize.A4, 36, 36, 36, 36 + 11 * footerLines.size() + 14);
+            PdfWriter writer = PdfWriter.getInstance(document, out);
+            writer.setPageEvent(new LegalFooter(footerLines));
+            document.open();
+
+            Color accent = branding != null && branding.accent() != null ? branding.accent() : PRIMARY_COLOR;
+            Font titleFont = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 18, accent);
+            Font sectionFont = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 10, accent);
+            Color headerBg = tint(accent);
+            boolean customer = "CUSTOMER".equals(st.type());
+
+            PdfPTable headerTable = new PdfPTable(2);
+            headerTable.setWidthPercentage(100);
+            headerTable.setWidths(new float[]{60, 40});
+            PdfPCell leftCell = new PdfPCell();
+            leftCell.setBorder(Rectangle.NO_BORDER);
+            Image logo = logo(branding);
+            if (logo != null) leftCell.addElement(logo);
+            leftCell.addElement(new Paragraph(issuer, logo != null ? FONT_SUBTITLE : titleFont));
+            if (branding != null) {
+                addLine(leftCell, branding.address(), FONT_BODY);
+                addLine(leftCell, join(" · ", prefixed("Tél : ", branding.phone()), branding.email()), FONT_BODY);
+                addLine(leftCell, prefixed("ICE : ", branding.ice()), FONT_BODY);
+            }
+            headerTable.addCell(leftCell);
+            PdfPCell rightCell = new PdfPCell();
+            rightCell.setBorder(Rectangle.NO_BORDER);
+            Paragraph docType = new Paragraph("RELEVÉ DE COMPTE", titleFont);
+            docType.setAlignment(Element.ALIGN_RIGHT);
+            rightCell.addElement(docType);
+            addRight(rightCell, "Du " + formatDate(st.from()) + " au " + formatDate(st.to()), FONT_SUBTITLE);
+            addRight(rightCell, "Édité le " + formatDate(java.time.LocalDate.now()), FONT_MUTED);
+            headerTable.addCell(rightCell);
+            document.add(headerTable);
+            document.add(new Paragraph(" "));
+
+            PdfPTable partnerTable = new PdfPTable(1);
+            partnerTable.setWidthPercentage(100);
+            PdfPCell partnerCell = new PdfPCell();
+            partnerCell.setBackgroundColor(headerBg);
+            partnerCell.setBorderColor(BORDER_COLOR);
+            partnerCell.setPadding(10);
+            partnerCell.addElement(new Paragraph(customer ? "CLIENT :" : "FOURNISSEUR :", sectionFont));
+            partnerCell.addElement(new Paragraph(st.partner().name() != null ? st.partner().name() : "-", FONT_SUBTITLE));
+            addLine(partnerCell, st.partner().address(), FONT_BODY);
+            addLine(partnerCell, prefixed("ICE : ", st.partner().ice()), FONT_BODY);
+            partnerTable.addCell(partnerCell);
+            document.add(partnerTable);
+            document.add(new Paragraph(" "));
+
+            PdfPTable lines = new PdfPTable(6);
+            lines.setWidthPercentage(100);
+            lines.setWidths(new float[]{13, 16, 35, 12, 12, 12});
+            addTableHeader(lines, "Date", Element.ALIGN_LEFT, headerBg);
+            addTableHeader(lines, "Pièce", Element.ALIGN_LEFT, headerBg);
+            addTableHeader(lines, "Libellé", Element.ALIGN_LEFT, headerBg);
+            addTableHeader(lines, "Débit", Element.ALIGN_RIGHT, headerBg);
+            addTableHeader(lines, "Crédit", Element.ALIGN_RIGHT, headerBg);
+            addTableHeader(lines, "Solde", Element.ALIGN_RIGHT, headerBg);
+            statementBalanceRow(lines, formatDate(st.from()), "Solde au début de la période", st.opening());
+            for (var l : st.lines()) {
+                addTableCell(lines, formatDate(l.date()), Element.ALIGN_LEFT, FONT_BODY);
+                addTableCell(lines, l.documentNumber() != null ? l.documentNumber() : (l.entryNumber() != null ? l.entryNumber() : ""),
+                        Element.ALIGN_LEFT, FONT_BODY);
+                addTableCell(lines, l.label() != null ? l.label() : "", Element.ALIGN_LEFT, FONT_BODY);
+                addTableCell(lines, l.debit().signum() == 0 ? "" : formatNumber(l.debit()), Element.ALIGN_RIGHT, FONT_BODY);
+                addTableCell(lines, l.credit().signum() == 0 ? "" : formatNumber(l.credit()), Element.ALIGN_RIGHT, FONT_BODY);
+                addTableCell(lines, formatNumber(l.balance()), Element.ALIGN_RIGHT, FONT_BODY);
+            }
+            statementBalanceRow(lines, formatDate(st.to()), "Solde à la fin de la période", st.closing());
+            document.add(lines);
+
+            PdfPTable total = new PdfPTable(2);
+            total.setWidthPercentage(50);
+            total.setHorizontalAlignment(Element.ALIGN_RIGHT);
+            total.setSpacingBefore(8);
+            String label = st.closing().signum() >= 0
+                    ? (customer ? "Solde en votre défaveur :" : "Solde en votre faveur :")
+                    : (customer ? "Solde en votre faveur :" : "Solde en votre défaveur :");
+            addTotalRow(total, label, formatNumber(st.closing().abs()) + " MAD", true);
+            document.add(total);
+
+            if (!st.openDocuments().isEmpty()) {
+                document.add(new Paragraph(" "));
+                document.add(new Paragraph(customer ? "FACTURES NON RÉGLÉES" : "FACTURES NON RÉGLÉES (FOURNISSEUR)", sectionFont));
+                PdfPTable docs = new PdfPTable(6);
+                docs.setWidthPercentage(100);
+                docs.setSpacingBefore(4);
+                docs.setWidths(new float[]{20, 14, 14, 18, 18, 16});
+                addTableHeader(docs, "N°", Element.ALIGN_LEFT, headerBg);
+                addTableHeader(docs, "Date", Element.ALIGN_LEFT, headerBg);
+                addTableHeader(docs, "Échéance", Element.ALIGN_LEFT, headerBg);
+                addTableHeader(docs, "Montant TTC", Element.ALIGN_RIGHT, headerBg);
+                addTableHeader(docs, "Reste dû", Element.ALIGN_RIGHT, headerBg);
+                addTableHeader(docs, "Retard", Element.ALIGN_RIGHT, headerBg);
+                for (var d : st.openDocuments()) {
+                    addTableCell(docs, d.number() != null ? d.number() : "-", Element.ALIGN_LEFT, FONT_BODY);
+                    addTableCell(docs, formatDate(d.date()), Element.ALIGN_LEFT, FONT_BODY);
+                    addTableCell(docs, formatDate(d.dueDate()), Element.ALIGN_LEFT, FONT_BODY);
+                    addTableCell(docs, formatNumber(d.total()), Element.ALIGN_RIGHT, FONT_BODY);
+                    addTableCell(docs, formatNumber(d.due()), Element.ALIGN_RIGHT, FONT_BODY_BOLD);
+                    addTableCell(docs, d.daysOverdue() > 0 ? d.daysOverdue() + " j" : "Non échue", Element.ALIGN_RIGHT, FONT_BODY);
+                }
+                document.add(docs);
+                var a = st.aging();
+                PdfPTable ages = new PdfPTable(5);
+                ages.setWidthPercentage(100);
+                ages.setSpacingBefore(4);
+                for (String h : new String[]{"Non échu", "1 - 30 j", "31 - 60 j", "61 - 90 j", "+ 90 j"}) {
+                    addTableHeader(ages, h, Element.ALIGN_CENTER, headerBg);
+                }
+                for (BigDecimal v : new BigDecimal[]{a.current(), a.d30(), a.d60(), a.d90(), a.over90()}) {
+                    addTableCell(ages, formatNumber(v), Element.ALIGN_CENTER, FONT_BODY);
+                }
+                document.add(ages);
+            }
+
+            var adv = st.advances();
+            if (adv.closing().signum() != 0 || adv.opening().signum() != 0 || !adv.lines().isEmpty()) {
+                document.add(new Paragraph(" "));
+                document.add(new Paragraph(customer ? "AVANCES ET ACOMPTES REÇUS" : "AVANCES ET ACOMPTES VERSÉS", sectionFont));
+                PdfPTable advTable = new PdfPTable(4);
+                advTable.setWidthPercentage(100);
+                advTable.setSpacingBefore(4);
+                advTable.setWidths(new float[]{15, 20, 45, 20});
+                addTableHeader(advTable, "Date", Element.ALIGN_LEFT, headerBg);
+                addTableHeader(advTable, "Pièce", Element.ALIGN_LEFT, headerBg);
+                addTableHeader(advTable, "Libellé", Element.ALIGN_LEFT, headerBg);
+                addTableHeader(advTable, "Solde", Element.ALIGN_RIGHT, headerBg);
+                addTableCell(advTable, formatDate(st.from()), Element.ALIGN_LEFT, FONT_BODY_BOLD);
+                addTableCell(advTable, "", Element.ALIGN_LEFT, FONT_BODY);
+                addTableCell(advTable, "Solde au début de la période", Element.ALIGN_LEFT, FONT_BODY_BOLD);
+                addTableCell(advTable, formatNumber(adv.opening()), Element.ALIGN_RIGHT, FONT_BODY_BOLD);
+                for (var l : adv.lines()) {
+                    addTableCell(advTable, formatDate(l.date()), Element.ALIGN_LEFT, FONT_BODY);
+                    addTableCell(advTable, l.documentNumber() != null ? l.documentNumber() : (l.entryNumber() != null ? l.entryNumber() : ""),
+                            Element.ALIGN_LEFT, FONT_BODY);
+                    addTableCell(advTable, l.label() != null ? l.label() : "", Element.ALIGN_LEFT, FONT_BODY);
+                    addTableCell(advTable, formatNumber(l.balance()), Element.ALIGN_RIGHT, FONT_BODY);
+                }
+                addTableCell(advTable, formatDate(st.to()), Element.ALIGN_LEFT, FONT_BODY_BOLD);
+                addTableCell(advTable, "", Element.ALIGN_LEFT, FONT_BODY);
+                addTableCell(advTable, "Solde à la fin de la période", Element.ALIGN_LEFT, FONT_BODY_BOLD);
+                addTableCell(advTable, formatNumber(adv.closing()), Element.ALIGN_RIGHT, FONT_BODY_BOLD);
+                document.add(advTable);
+            }
+
+            document.close();
+            return out.toByteArray();
+        } catch (Exception e) {
+            log.error("Failed to generate partner statement PDF", e);
+            throw new RuntimeException("Error generating partner statement PDF", e);
+        }
+    }
+
+    private void statementBalanceRow(PdfPTable table, String date, String label, BigDecimal balance) {
+        addTableCell(table, date, Element.ALIGN_LEFT, FONT_BODY_BOLD);
+        addTableCell(table, "", Element.ALIGN_LEFT, FONT_BODY);
+        addTableCell(table, label, Element.ALIGN_LEFT, FONT_BODY_BOLD);
+        addTableCell(table, "", Element.ALIGN_RIGHT, FONT_BODY);
+        addTableCell(table, "", Element.ALIGN_RIGHT, FONT_BODY);
+        addTableCell(table, formatNumber(balance), Element.ALIGN_RIGHT, FONT_BODY_BOLD);
+    }
+
     public byte[] generateProposalPdf(Proposal proposal, Partner client, Organization org) {
         try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             Document document = new Document(PageSize.A4, 36, 36, 36, 36);
