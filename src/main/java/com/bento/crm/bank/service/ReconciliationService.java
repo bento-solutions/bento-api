@@ -123,7 +123,7 @@ public class ReconciliationService {
             jdbc.queryForList("""
                     SELECT e.id, e.amount, e.expense_date, e.category, e.description, e.vendor_name
                     FROM expense e
-                    WHERE e.organization_id = ? AND e.deleted_at IS NULL AND e.amount = ?
+                    WHERE e.organization_id = ? AND e.deleted_at IS NULL AND e.amount = ? AND e.expense_report_id IS NULL
                       AND e.expense_date BETWEEN ? AND ?
                       AND NOT EXISTS (SELECT 1 FROM bank_transaction b WHERE b.expense_id = e.id AND b.deleted_at IS NULL)
                     ORDER BY e.expense_date DESC LIMIT 10
@@ -207,6 +207,10 @@ public class ReconciliationService {
                 }
                 Expense e = expenseRepository.findForOrganization(orgId, targetId)
                         .orElseThrow(() -> new ResourceNotFoundException("Expense not found"));
+                if (e.getExpenseReportId() != null) {
+                    throw new IllegalArgumentException("An employee paid this expense: categorise the bank line as"
+                            + " EXPENSE_REIMBURSEMENT, or reimburse the expense report");
+                }
                 if (transactionRepository.countByExpense(orgId, e.getId()) > 0) {
                     throw new IllegalStateException("This expense is already matched to another bank line");
                 }

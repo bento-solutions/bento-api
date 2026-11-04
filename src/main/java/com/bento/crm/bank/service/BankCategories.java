@@ -15,7 +15,7 @@ public final class BankCategories {
     public static final List<String> ALL = List.of(
             "SALES", "SUPPLIERS", "SALARIES", "SOCIAL_CHARGES", "TAXES", "RENT", "UTILITIES", "TELECOM", "FUEL",
             "TRAVEL", "MEALS", "OFFICE", "SOFTWARE", "MARKETING", "FEES", "BANK_FEES", "LOAN", "TRANSFER", "CASH",
-            "OTHER");
+            "EXPENSE_REIMBURSEMENT", "OTHER");
 
     /** Outflows that come back every month; the forecast repeats their recent average. */
     public static final Set<String> RECURRING_OUT = Set.of(

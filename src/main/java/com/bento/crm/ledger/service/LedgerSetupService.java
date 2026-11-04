@@ -66,6 +66,7 @@ public class LedgerSetupService {
             new Seed("4411", "Fournisseurs"),
             new Seed("4417", "Fournisseurs, factures non parvenues"),
             new Seed("4421", "Clients, avances et acomptes reçus"),
+            new Seed("4438", "Personnel – autres créditeurs"),
             new Seed("4455", "État, TVA facturée"),
             new Seed("44551", "État, TVA facturée 20 %"),
             new Seed("44552", "État, TVA facturée 14 %"),
@@ -151,7 +152,8 @@ public class LedgerSetupService {
             "SALES", "4497", "SUPPLIERS", "4497", "SALARIES", "6171", "SOCIAL_CHARGES", "6174", "TAXES", "6161",
             "RENT", "6131", "UTILITIES", "6125", "TELECOM", "6145", "FUEL", "6125", "TRAVEL", "6143",
             "MEALS", "6143", "OFFICE", "6125", "SOFTWARE", "6125", "MARKETING", "6144", "FEES", "6136",
-            "BANK_FEES", "6147", "LOAN", "1481", "TRANSFER", "5115", "CASH", "5161", "OTHER", "4497");
+            "BANK_FEES", "6147", "LOAN", "1481", "TRANSFER", "5115", "CASH", "5161", "EXPENSE_REIMBURSEMENT", "4438",
+            "OTHER", "4497");
 
     /** Expense category -> account. */
     static final Map<String, String> EXPENSE_CATEGORIES = orderedMap(
@@ -201,6 +203,7 @@ public class LedgerSetupService {
         seedPhase3(orgId);
         seedPhase3WaveB(orgId);
         seedPhase3PartC(orgId);
+        seedExpenseReports(orgId);
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
@@ -259,7 +262,7 @@ public class LedgerSetupService {
     }
 
     /** The posting-setup version this code seeds; ledger_settings.setup_version says what an organization has. */
-    static final int SETUP_VERSION = 5;
+    static final int SETUP_VERSION = 6;
 
     static final String EXPORT_MENTION = "Exonéré de TVA, article 92-I-1° du CGI (exportation)";
     static final String EXEMPT_MENTION = "Exonéré de TVA (article 91 du CGI)";
@@ -361,6 +364,20 @@ public class LedgerSetupService {
                 WHERE g.organization_id = ? AND p.id = g.product_group_id AND p.code = 'TRANSPORT'
                   AND g.purchase_account_id = %s
                 """.formatted(ACCOUNT, ACCOUNT), orgId, "6142", orgId, orgId, "6125");
+    }
+
+    /**
+     * Expense report seeds (version 6), once per organization seeded before them: the bank category
+     * EXPENSE_REIMBURSEMENT on 4438 (the account itself is in {@link #ACCOUNTS}). New organizations
+     * get it with the other bank categories.
+     */
+    private void seedExpenseReports(UUID orgId) {
+        int moved = jdbc.update("UPDATE ledger_settings SET setup_version = 6, updated_at = now()"
+                + " WHERE organization_id = ? AND setup_version < 6", orgId);
+        if (moved == 0) {
+            return;
+        }
+        seedCategories(orgId, "BANK", Map.of("EXPENSE_REIMBURSEMENT", "4438"));
     }
 
     private void seedCategories(UUID orgId, String kind, Map<String, String> categories) {

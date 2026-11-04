@@ -180,9 +180,9 @@ class LedgerPostingTest extends IntegrationTestBase {
         assertThat(vat.get("EXPORT").get("exempt").asBoolean()).isTrue();
         Map<String, String> bankCat = new HashMap<>();
         s.get("bankCategories").forEach(c -> bankCat.put(c.get("category").asText(), c.get("accountCode").asText()));
-        assertThat(bankCat).hasSize(20).containsEntry("SALARIES", "6171").containsEntry("RENT", "6131")
+        assertThat(bankCat).hasSize(21).containsEntry("SALARIES", "6171").containsEntry("RENT", "6131")
                 .containsEntry("BANK_FEES", "6147").containsEntry("TAXES", "6161").containsEntry("CASH", "5161")
-                .containsEntry("TRANSFER", "5115").containsEntry("OTHER", "4497");
+                .containsEntry("TRANSFER", "5115").containsEntry("EXPENSE_REIMBURSEMENT", "4438").containsEntry("OTHER", "4497");
         assertThat(s.get("expenseCategories").size()).isGreaterThanOrEqualTo(13);
         assertThat(s.get("cashAccountCode").asText()).isEqualTo("5161");
         assertThat(s.get("startDate").asText()).isEqualTo(LocalDate.of(today().getYear(), 1, 1).toString());

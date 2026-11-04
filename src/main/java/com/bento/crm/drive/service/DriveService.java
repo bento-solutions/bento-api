@@ -66,6 +66,7 @@ public class DriveService {
     private static final Map<String, String> OWNER_AUTHORITY = Map.of(
             "INVOICE", "INVOICES_READ",
             "EXPENSE", "PAYMENTS_READ",
+            "EXPENSE_REPORT", "PAYMENTS_READ",
             "DEAL", "DEALS_READ",
             "PROPOSAL", "PROPOSALS_READ",
             "PURCHASE_ORDER", "PURCHASE_ORDERS_READ",

@@ -812,6 +812,290 @@ public class PdfDocumentService {
         }
     }
 
+    /**
+     * An expense report to print. Rows are its lines; proofs are the receipts in line order (then the
+     * report's own documents), each with its caption and its bytes (null when it cannot be printed).
+     */
+    public record ExpenseReportPdf(String number, String employeeName, String title, java.time.LocalDate periodFrom,
+                                   java.time.LocalDate periodTo, String status, String notes,
+                                   java.time.LocalDate reimbursementDate, List<Row> rows, BigDecimal ht, BigDecimal vat,
+                                   BigDecimal ttc, List<Proof> proofs) {
+        public record Row(java.time.LocalDate date, String category, String description, String supplier, String reference,
+                          BigDecimal ht, BigDecimal vat, BigDecimal ttc) {}
+
+        public record Proof(String caption, String fileName, String contentType, byte[] content) {}
+    }
+
+    private static final Map<String, String> EXPENSE_CATEGORY_FR = Map.ofEntries(
+            Map.entry("TRAVEL", "Déplacements"), Map.entry("FUEL", "Carburant"), Map.entry("MEALS", "Repas"),
+            Map.entry("OFFICE", "Fournitures"), Map.entry("RENT", "Loyer"), Map.entry("UTILITIES", "Eau, électricité"),
+            Map.entry("TELECOM", "Télécom"), Map.entry("SOFTWARE", "Logiciels"), Map.entry("MARKETING", "Marketing"),
+            Map.entry("FEES", "Honoraires"), Map.entry("SALARIES", "Salaires"), Map.entry("TAXES", "Impôts et taxes"),
+            Map.entry("OTHER", "Autres"));
+
+    private static final Map<String, String> EXPENSE_REPORT_STATUS_FR = Map.of(
+            "DRAFT", "Brouillon", "POSTED", "Comptabilisée", "REIMBURSED", "Remboursée", "CANCELLED", "Annulée");
+
+    /** The legal footer, switched off for the receipt pages appended from other PDFs. */
+    private static final class SwitchableFooter extends com.lowagie.text.pdf.PdfPageEventHelper {
+        private final LegalFooter footer;
+        boolean on = true;
+
+        SwitchableFooter(List<String> lines) {
+            this.footer = new LegalFooter(lines);
+        }
+
+        @Override
+        public void onEndPage(PdfWriter writer, Document document) {
+            if (on) footer.onEndPage(writer, document);
+        }
+    }
+
+    /**
+     * An expense report (note de frais) in the style of the invoice and the statement: the company
+     * block, the number, the employee, the period, the title and the status; the table of expenses
+     * with its totals, the amount due to the employee and the signature boxes. Then the receipts:
+     * images embedded (one per page when upright, two when wide), then the pages of PDF receipts
+     * appended, each captioned "Justificatif n° k"; other files are listed by name.
+     */
+    public byte[] generateExpenseReportPdf(ExpenseReportPdf r, Organization org, InvoiceBranding branding) {
+        try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            String issuer = branding != null && branding.legalName() != null ? branding.legalName()
+                    : (org != null && org.getName() != null ? org.getName() : "Bento CRM");
+            List<String> footerLines = footerLines(issuer, branding);
+            Document document = new Document(PageSize.A4, 36, 36, 36, 36 + 11 * footerLines.size() + 14);
+            PdfWriter writer = PdfWriter.getInstance(document, out);
+            SwitchableFooter footer = new SwitchableFooter(footerLines);
+            writer.setPageEvent(footer);
+            document.open();
+
+            Color accent = branding != null && branding.accent() != null ? branding.accent() : PRIMARY_COLOR;
+            Font titleFont = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 18, accent);
+            Font sectionFont = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 10, accent);
+            Font small = FontFactory.getFont(FontFactory.HELVETICA, 8, Color.DARK_GRAY);
+            Font smallBold = FontFactory.getFont(FontFactory.HELVETICA_BOLD, 8, PRIMARY_COLOR);
+            Color headerBg = tint(accent);
+
+            // Header: the company, the document.
+            PdfPTable headerTable = new PdfPTable(2);
+            headerTable.setWidthPercentage(100);
+            headerTable.setWidths(new float[]{60, 40});
+            PdfPCell leftCell = new PdfPCell();
+            leftCell.setBorder(Rectangle.NO_BORDER);
+            Image logo = logo(branding);
+            if (logo != null) leftCell.addElement(logo);
+            leftCell.addElement(new Paragraph(issuer, logo != null ? FONT_SUBTITLE : titleFont));
+            if (branding != null) {
+                addLine(leftCell, branding.address(), FONT_BODY);
+                addLine(leftCell, join(" · ", prefixed("Tél : ", branding.phone()), branding.email()), FONT_BODY);
+                addLine(leftCell, prefixed("ICE : ", branding.ice()), FONT_BODY);
+            }
+            headerTable.addCell(leftCell);
+            PdfPCell rightCell = new PdfPCell();
+            rightCell.setBorder(Rectangle.NO_BORDER);
+            Paragraph docType = new Paragraph("NOTE DE FRAIS", titleFont);
+            docType.setAlignment(Element.ALIGN_RIGHT);
+            rightCell.addElement(docType);
+            addRight(rightCell, "N° " + (r.number() != null ? r.number() : "BROUILLON"), FONT_SUBTITLE);
+            addRight(rightCell, "Statut : " + EXPENSE_REPORT_STATUS_FR.getOrDefault(r.status(), r.status()), FONT_BODY);
+            addRight(rightCell, "Édité le " + formatDate(java.time.LocalDate.now()), FONT_MUTED);
+            headerTable.addCell(rightCell);
+            document.add(headerTable);
+            document.add(new Paragraph(" "));
+
+            // The employee, the period, the title.
+            PdfPTable who = new PdfPTable(1);
+            who.setWidthPercentage(100);
+            PdfPCell whoCell = new PdfPCell();
+            whoCell.setBackgroundColor(headerBg);
+            whoCell.setBorderColor(BORDER_COLOR);
+            whoCell.setPadding(10);
+            whoCell.addElement(new Paragraph("EMPLOYÉ :", sectionFont));
+            whoCell.addElement(new Paragraph(r.employeeName() != null ? r.employeeName() : "-", FONT_SUBTITLE));
+            if (r.periodFrom() != null || r.periodTo() != null) {
+                addLine(whoCell, "Période : du " + formatDate(r.periodFrom()) + " au " + formatDate(r.periodTo()), FONT_BODY);
+            }
+            addLine(whoCell, prefixed("Objet : ", r.title()), FONT_BODY);
+            who.addCell(whoCell);
+            document.add(who);
+            document.add(new Paragraph(" "));
+
+            // The expenses.
+            PdfPTable table = new PdfPTable(8);
+            table.setWidthPercentage(100);
+            table.setWidths(new float[]{10, 12, 22, 14, 10, 11, 9, 12});
+            table.setHeaderRows(1);
+            for (String[] h : new String[][]{{"Date", "L"}, {"Catégorie", "L"}, {"Description", "L"}, {"Fournisseur", "L"},
+                    {"Réf.", "L"}, {"HT", "R"}, {"TVA", "R"}, {"TTC", "R"}}) {
+                addTableHeader(table, h[0], h[1].equals("R") ? Element.ALIGN_RIGHT : Element.ALIGN_LEFT, headerBg);
+            }
+            for (ExpenseReportPdf.Row row : r.rows()) {
+                addTableCell(table, formatDate(row.date()), Element.ALIGN_LEFT, small);
+                addTableCell(table, row.category() == null ? "" : EXPENSE_CATEGORY_FR.getOrDefault(row.category(), row.category()),
+                        Element.ALIGN_LEFT, small);
+                addTableCell(table, row.description() == null ? "" : row.description(), Element.ALIGN_LEFT, small);
+                addTableCell(table, row.supplier() == null ? "" : row.supplier(), Element.ALIGN_LEFT, small);
+                addTableCell(table, row.reference() == null ? "" : row.reference(), Element.ALIGN_LEFT, small);
+                addTableCell(table, formatNumber(row.ht()), Element.ALIGN_RIGHT, small);
+                addTableCell(table, formatNumber(row.vat()), Element.ALIGN_RIGHT, small);
+                addTableCell(table, formatNumber(row.ttc()), Element.ALIGN_RIGHT, small);
+            }
+            PdfPCell totalLabel = new PdfPCell(new Phrase("Total", smallBold));
+            totalLabel.setColspan(5);
+            totalLabel.setBorderColor(BORDER_COLOR);
+            totalLabel.setBackgroundColor(headerBg);
+            totalLabel.setPadding(6);
+            table.addCell(totalLabel);
+            for (BigDecimal v : new BigDecimal[]{r.ht(), r.vat(), r.ttc()}) {
+                PdfPCell c = new PdfPCell(new Phrase(formatNumber(v), smallBold));
+                c.setBorderColor(BORDER_COLOR);
+                c.setBackgroundColor(headerBg);
+                c.setPadding(6);
+                c.setHorizontalAlignment(Element.ALIGN_RIGHT);
+                table.addCell(c);
+            }
+            document.add(table);
+
+            PdfPTable due = new PdfPTable(2);
+            due.setWidthPercentage(55);
+            due.setHorizontalAlignment(Element.ALIGN_RIGHT);
+            due.setSpacingBefore(8);
+            addTotalRow(due, "Montant dû à l'employé :", formatNumber(r.ttc()) + " MAD", true);
+            if (r.reimbursementDate() != null && "REIMBURSED".equals(r.status())) {
+                addTotalRow(due, "Remboursé le :", formatDate(r.reimbursementDate()), false);
+            }
+            document.add(due);
+
+            if (r.notes() != null && !r.notes().isBlank()) {
+                document.add(new Paragraph(" "));
+                document.add(new Paragraph("NOTES", sectionFont));
+                document.add(new Paragraph(r.notes(), FONT_BODY));
+            }
+
+            // Signatures.
+            PdfPTable signatures = new PdfPTable(2);
+            signatures.setWidthPercentage(100);
+            signatures.setSpacingBefore(18);
+            for (String label : new String[]{"Signature de l'employé", "Approuvé par"}) {
+                PdfPCell c = new PdfPCell();
+                c.setBorderColor(BORDER_COLOR);
+                c.setPadding(8);
+                c.setMinimumHeight(80);
+                c.addElement(new Paragraph(label, FONT_SECTION));
+                c.addElement(new Paragraph("Nom, date et signature", FONT_MUTED));
+                signatures.addCell(c);
+            }
+            document.add(signatures);
+
+            // Sort the receipts: images, PDFs (read up front so a broken one is listed instead), the rest.
+            record Pdf(ExpenseReportPdf.Proof proof, com.lowagie.text.pdf.PdfReader reader) {}
+            List<ExpenseReportPdf.Proof> images = new java.util.ArrayList<>();
+            List<Image> imageObjects = new java.util.ArrayList<>();
+            List<Pdf> pdfs = new java.util.ArrayList<>();
+            List<ExpenseReportPdf.Proof> others = new java.util.ArrayList<>();
+            for (ExpenseReportPdf.Proof p : r.proofs()) {
+                String type = p.contentType() == null ? "" : p.contentType();
+                if (p.content() != null && type.startsWith("image/")) {
+                    try {
+                        imageObjects.add(Image.getInstance(p.content()));
+                        images.add(p);
+                        continue;
+                    } catch (Exception e) {
+                        log.info("Receipt image {} cannot be embedded: {}", p.fileName(), e.getMessage());
+                    }
+                } else if (p.content() != null && type.equals("application/pdf")) {
+                    try {
+                        com.lowagie.text.pdf.PdfReader reader = new com.lowagie.text.pdf.PdfReader(p.content());
+                        if (reader.getNumberOfPages() > 0) {
+                            pdfs.add(new Pdf(p, reader));
+                            continue;
+                        }
+                    } catch (Exception e) {
+                        log.info("Receipt PDF {} cannot be appended: {}", p.fileName(), e.getMessage());
+                    }
+                }
+                others.add(p);
+            }
+            if (!r.proofs().isEmpty()) {
+                document.add(new Paragraph(" "));
+                document.add(new Paragraph("JUSTIFICATIFS (" + r.proofs().size() + ")", sectionFont));
+                if (!others.isEmpty()) {
+                    document.add(new Paragraph("Non reproduits dans ce document :", FONT_MUTED));
+                    for (ExpenseReportPdf.Proof p : others) {
+                        document.add(new Paragraph(p.caption() + " - fichier " + p.fileName(), FONT_BODY));
+                    }
+                }
+            }
+
+            // Images: an upright one alone on its page, wide ones two per page.
+            float width = document.right() - document.left();
+            float height = document.top() - document.bottom();
+            int used = 2;
+            for (int i = 0; i < images.size(); i++) {
+                Image image = imageObjects.get(i);
+                boolean upright = image.getHeight() > image.getWidth();
+                if (upright || used >= 2) {
+                    document.newPage();
+                    used = 0;
+                }
+                float slot = upright ? height : height / 2;
+                Paragraph caption = new Paragraph(images.get(i).caption(), sectionFont);
+                caption.setSpacingAfter(4);
+                document.add(caption);
+                image.scaleToFit(width, slot - 40);
+                image.setAlignment(Image.ALIGN_CENTER);
+                document.add(image);
+                used += upright ? 2 : 1;
+            }
+
+            // PDF receipts: each page scaled into a band under its caption.
+            for (Pdf p : pdfs) {
+                int pages = p.reader().getNumberOfPages();
+                for (int i = 1; i <= pages; i++) {
+                    Rectangle size = p.reader().getPageSizeWithRotation(i);
+                    document.setPageSize(size);
+                    document.newPage();
+                    footer.on = false;
+                    float w = size.getWidth();
+                    float h = size.getHeight();
+                    float s = 0.92f;
+                    float dx = w * (1 - s) / 2;
+                    float dy = h * 0.02f;
+                    com.lowagie.text.pdf.PdfContentByte cb = writer.getDirectContent();
+                    com.lowagie.text.pdf.PdfImportedPage page = writer.getImportedPage(p.reader(), i);
+                    switch (p.reader().getPageRotation(i)) {
+                        case 90 -> cb.addTemplate(page, 0, -s, s, 0, dx, dy + s * h);
+                        case 180 -> cb.addTemplate(page, -s, 0, 0, -s, dx + s * w, dy + s * h);
+                        case 270 -> cb.addTemplate(page, 0, s, -s, 0, dx + s * w, dy);
+                        default -> cb.addTemplate(page, s, 0, 0, s, dx, dy);
+                    }
+                    String caption = p.proof().caption() + (pages > 1 ? " (page " + i + "/" + pages + ")" : "");
+                    com.lowagie.text.pdf.ColumnText.showTextAligned(cb, Element.ALIGN_LEFT, new Phrase(caption, sectionFont),
+                            dx, h - h * 0.035f, 0);
+                }
+            }
+
+            document.close();
+            for (Pdf p : pdfs) p.reader().close();
+            return out.toByteArray();
+        } catch (Exception e) {
+            log.error("Failed to generate expense report PDF", e);
+            throw new RuntimeException("Error generating expense report PDF", e);
+        }
+    }
+
+    /** dd/MM/yyyy, for captions built outside this class. */
+    public static String formatDateFr(java.time.LocalDate date) {
+        return formatDate(date);
+    }
+
+    /** 1 234,50 (no-break space grouping), for captions built outside this class. */
+    public static String formatAmountFr(BigDecimal value) {
+        java.text.DecimalFormatSymbols symbols = java.text.DecimalFormatSymbols.getInstance(Locale.FRANCE);
+        symbols.setGroupingSeparator(' ');
+        return new java.text.DecimalFormat("#,##0.00", symbols).format(value == null ? BigDecimal.ZERO : value);
+    }
+
     private void statementBalanceRow(PdfPTable table, String date, String label, BigDecimal balance) {
         addTableCell(table, date, Element.ALIGN_LEFT, FONT_BODY_BOLD);
         addTableCell(table, "", Element.ALIGN_LEFT, FONT_BODY);

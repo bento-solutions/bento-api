@@ -71,6 +71,8 @@ public class Payment extends BaseTenantEntity {
     private LocalDate advanceAppliedOn;
 
     public enum Method {
-        BANK_TRANSFER, CHECK, CASH, CARD, DIRECT_DEBIT, OTHER
+        BANK_TRANSFER, CHECK, CASH, CARD, DIRECT_DEBIT, OTHER,
+        /** Paid by an employee out of pocket: only on the lines of an expense report, never on a payment. */
+        EMPLOYEE
     }
 }
