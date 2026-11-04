@@ -5,6 +5,8 @@ import com.bento.crm.bank.repository.BankTransactionRepository;
 import com.bento.crm.bank.statement.StatementText;
 import com.bento.crm.common.exception.ResourceNotFoundException;
 import com.bento.crm.expense.model.Expense;
+import com.bento.crm.expense.model.ExpenseReport;
+import com.bento.crm.expense.repository.ExpenseReportRepository;
 import com.bento.crm.expense.repository.ExpenseRepository;
 import com.bento.crm.invoice.model.Invoice;
 import com.bento.crm.invoice.repository.InvoiceRepository;
@@ -74,8 +76,14 @@ public class LedgerAutoPostingService {
     public static final String CREDIT_NOTE = "CREDIT_NOTE";
     /** An advance payment applied to its invoice: OD entry from 4421 to the receivable (or payable to 3411). */
     public static final String ADVANCE_APPLY = "ADVANCE_APPLY";
+    /** An expense report (note de frais): OD entry from the lines' accounts to 4438. */
+    public static final String EXPENSE_REPORT = "EXPENSE_REPORT";
+    /** An expense report's reimbursement: BQ or CA entry from 4438 to the bank or the cash account. */
+    public static final String EXPENSE_REPORT_REIMB = "EXPENSE_REPORT_REIMB";
+    /** Personnel, autres créditeurs: what the organization owes its employees for their expense reports. */
+    public static final String EMPLOYEE_PAYABLE = "4438";
     public static final Set<String> SOURCES = Set.of(INVOICE, BILL, PAYMENT, EXPENSE, BANK_LINE, BANK_OPENING, ADVANCE,
-            CREDIT_NOTE, ADVANCE_APPLY);
+            CREDIT_NOTE, ADVANCE_APPLY, EXPENSE_REPORT, EXPENSE_REPORT_REIMB);
     private static final List<String> INVOICE_SOURCES = List.of(INVOICE, BILL, ADVANCE, CREDIT_NOTE);
 
     private static final BigDecimal DEFAULT_VAT = new BigDecimal("0.20");
@@ -93,6 +101,7 @@ public class LedgerAutoPostingService {
     private final InvoiceRepository invoiceRepository;
     private final PaymentRepository paymentRepository;
     private final ExpenseRepository expenseRepository;
+    private final ExpenseReportRepository expenseReportRepository;
     private final BankTransactionRepository bankTransactionRepository;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate perDocument;
@@ -101,6 +110,7 @@ public class LedgerAutoPostingService {
                                     LedgerJournalRepository journalRepository, LedgerEntryRepository entryRepository,
                                     LedgerEntryLineRepository lineRepository, InvoiceRepository invoiceRepository,
                                     PaymentRepository paymentRepository, ExpenseRepository expenseRepository,
+                                    ExpenseReportRepository expenseReportRepository,
                                     BankTransactionRepository bankTransactionRepository, JdbcTemplate jdbc,
                                     PlatformTransactionManager transactionManager) {
         this.posting = posting;
@@ -111,6 +121,7 @@ public class LedgerAutoPostingService {
         this.invoiceRepository = invoiceRepository;
         this.paymentRepository = paymentRepository;
         this.expenseRepository = expenseRepository;
+        this.expenseReportRepository = expenseReportRepository;
         this.bankTransactionRepository = bankTransactionRepository;
         this.jdbc = jdbc;
         this.perDocument = new TransactionTemplate(transactionManager);
@@ -157,6 +168,16 @@ public class LedgerAutoPostingService {
         if (expense == null || expense.getId() == null) return;
         Snapshot s = postingSetup.snapshot(expense.getOrganizationId());
         sync(expense.getOrganizationId(), EXPENSE, expense.getId(), expenseDraft(expense, s), s);
+    }
+
+    /** An expense report: its entry while posted or reimbursed, and its reimbursement entry once reimbursed. */
+    @Transactional
+    public void expenseReport(ExpenseReport report) {
+        if (report == null || report.getId() == null) return;
+        UUID orgId = report.getOrganizationId();
+        Snapshot s = postingSetup.snapshot(orgId);
+        sync(orgId, EXPENSE_REPORT, report.getId(), expenseReportDraft(report, s), s);
+        sync(orgId, EXPENSE_REPORT_REIMB, report.getId(), expenseReportReimbursementDraft(report, s), s);
     }
 
     @Transactional
@@ -593,14 +614,14 @@ public class LedgerAutoPostingService {
 
     Draft expenseDraft(Expense e, Snapshot s) {
         if (e.getDeletedAt() != null || e.getAmount() == null || e.getExpenseDate() == null) return null;
+        // A line of an expense report never posts on its own: the report posts it.
+        if (e.getExpenseReportId() != null) return null;
         BigDecimal amount = money(e.getAmount());
         if (amount.signum() <= 0) return null;
         UUID orgId = e.getOrganizationId();
         BigDecimal vatAmount = e.getVatAmount() == null ? BigDecimal.ZERO : money(e.getVatAmount()).max(BigDecimal.ZERO).min(amount);
         String category = e.getCategory() == null ? "OTHER" : e.getCategory().trim().toUpperCase(Locale.ROOT);
-        UUID account = s.expenseCategories().get(category);
-        if (account == null) account = s.expenseCategories().get("OTHER");
-        if (account == null) account = postingSetup.accountByCode(orgId, "6125");
+        UUID account = expenseAccount(orgId, category, s);
 
         // Matched to a bank line: paid through that line's account. Otherwise by payment method.
         List<UUID> matched = jdbc.queryForList("SELECT bank_account_id FROM bank_transaction WHERE organization_id = ?"
@@ -621,12 +642,87 @@ public class LedgerAutoPostingService {
         String description = "Expense " + category + ": " + what;
         Lines lines = new Lines();
         lines.add(account, null, e.getCostCenterId(), amount.subtract(vatAmount), null);
-        LedgerPostingSetupService.VatRow vatRow = e.getVatCode() != null && s.vatByCode(e.getVatCode()) != null
-                ? s.vatByCode(e.getVatCode()) : s.vatByCode("TVA20");
-        lines.add(vatRow == null ? postingSetup.accountByCode(orgId, "34552") : vatRow.recoverableAccountId(), null, null,
-                vatAmount, "TVA");
+        lines.add(recoverableVatAccount(orgId, e.getVatCode(), s), null, null, vatAmount, "TVA");
         lines.add(money, null, null, amount.negate(), null);
         return draft(cash ? "CA" : "BQ", e.getExpenseDate(), description, cut(e.getReference() != null ? e.getReference() : what, 160), lines);
+    }
+
+    /** The account an expense category posts to: its mapping, else OTHER's, else 6125. */
+    private UUID expenseAccount(UUID orgId, String category, Snapshot s) {
+        UUID account = s.expenseCategories().get(category);
+        if (account == null) account = s.expenseCategories().get("OTHER");
+        if (account == null) account = postingSetup.accountByCode(orgId, "6125");
+        return account;
+    }
+
+    /** The recoverable VAT account of an expense's VAT code (TVA20's when it has none), else 34552. */
+    private UUID recoverableVatAccount(UUID orgId, String vatCode, Snapshot s) {
+        LedgerPostingSetupService.VatRow vatRow = vatCode != null && s.vatByCode(vatCode) != null
+                ? s.vatByCode(vatCode) : s.vatByCode("TVA20");
+        return vatRow == null ? postingSetup.accountByCode(orgId, "34552") : vatRow.recoverableAccountId();
+    }
+
+    /** The day a report posts on: the end of its period, else its last line's date. */
+    public static LocalDate expenseReportDate(ExpenseReport r, List<Expense> lines) {
+        if (r.getPeriodTo() != null) return r.getPeriodTo();
+        return lines.stream().map(Expense::getExpenseDate).filter(Objects::nonNull).max(Comparator.naturalOrder()).orElse(null);
+    }
+
+    /**
+     * A posted (or reimbursed) expense report, journal OD: each line's HT on its category account
+     * with its cost center (else the report's), its VAT on the recoverable account of its code, and
+     * the TTC total to 4438 for the employee.
+     */
+    Draft expenseReportDraft(ExpenseReport r, Snapshot s) {
+        if (r.getDeletedAt() != null || (r.getStatus() != ExpenseReport.Status.POSTED
+                && r.getStatus() != ExpenseReport.Status.REIMBURSED)) {
+            return null;
+        }
+        UUID orgId = r.getOrganizationId();
+        List<Expense> items = expenseRepository.findReportLines(orgId, r.getId());
+        LocalDate date = expenseReportDate(r, items);
+        if (items.isEmpty() || date == null) return null;
+        Lines lines = new Lines();
+        BigDecimal total = BigDecimal.ZERO;
+        for (Expense e : items) {
+            BigDecimal amount = money(e.getAmount());
+            if (amount.signum() <= 0) continue;
+            BigDecimal vatAmount = e.getVatAmount() == null ? BigDecimal.ZERO
+                    : money(e.getVatAmount()).max(BigDecimal.ZERO).min(amount);
+            String category = e.getCategory() == null ? "OTHER" : e.getCategory().trim().toUpperCase(Locale.ROOT);
+            UUID costCenter = e.getCostCenterId() != null ? e.getCostCenterId() : r.getCostCenterId();
+            lines.add(expenseAccount(orgId, category, s), null, costCenter, amount.subtract(vatAmount), null);
+            lines.add(recoverableVatAccount(orgId, e.getVatCode(), s), null, null, vatAmount, "TVA");
+            total = total.add(amount);
+        }
+        String number = r.getNumber();
+        String label = cut(r.getEmployeeName() + (number == null ? "" : " - " + number), 160);
+        lines.add(postingSetup.accountByCode(orgId, EMPLOYEE_PAYABLE), null, null, total.negate(), label);
+        String description = "Expense report " + (number == null ? "" : number + " ") + "- " + r.getEmployeeName()
+                + (r.getTitle() == null || r.getTitle().isBlank() ? "" : ": " + r.getTitle().trim());
+        return draft("OD", date, cut(description, 255), number != null ? number : cut(r.getEmployeeName(), 160), lines);
+    }
+
+    /** A reimbursed expense report, journal BQ (bank) or CA (cash), on its reimbursement date: 4438 to the money account. */
+    Draft expenseReportReimbursementDraft(ExpenseReport r, Snapshot s) {
+        if (r.getDeletedAt() != null || r.getStatus() != ExpenseReport.Status.REIMBURSED || r.getReimbursementDate() == null) {
+            return null;
+        }
+        UUID orgId = r.getOrganizationId();
+        BigDecimal total = expenseRepository.findReportLines(orgId, r.getId()).stream()
+                .map(e -> money(e.getAmount())).filter(a -> a.signum() > 0).reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (total.signum() <= 0) return null;
+        boolean cash = r.getReimbursementMethod() == ExpenseReport.ReimbursementMethod.CASH;
+        UUID money = cash ? s.cashAccountId() : postingSetup.bankLedgerAccount(orgId,
+                r.getReimbursementBankAccountId() != null ? r.getReimbursementBankAccountId() : postingSetup.defaultBankAccountId(orgId));
+        String number = r.getNumber();
+        String label = cut(r.getEmployeeName() + (number == null ? "" : " - " + number), 160);
+        String description = "Reimbursement of expense report " + (number == null ? "" : number + " ") + "- " + r.getEmployeeName();
+        Lines lines = new Lines();
+        lines.add(postingSetup.accountByCode(orgId, EMPLOYEE_PAYABLE), null, null, total, label);
+        lines.add(money, null, null, total.negate(), null);
+        return draft(cash ? "CA" : "BQ", r.getReimbursementDate(), cut(description, 255),
+                number != null ? number : cut(r.getEmployeeName(), 160), lines);
     }
 
     Draft bankLineDraft(BankTransaction t, Snapshot s) {
@@ -656,6 +752,8 @@ public class LedgerAutoPostingService {
             return postingSetup.accountByCode(orgId, "4456");
         }
         UUID account = s.bankCategories().get(category);
+        // An employee's expense report paid back by transfer clears what is owed to them.
+        if (account == null && category.equals("EXPENSE_REIMBURSEMENT")) account = postingSetup.accountByCode(orgId, EMPLOYEE_PAYABLE);
         if (account == null) account = s.bankCategories().get("OTHER");
         if (account == null) account = postingSetup.accountByCode(orgId, "4497");
         return account;
@@ -694,9 +792,7 @@ public class LedgerAutoPostingService {
             Expense e = expenseRepository.findForOrganization(orgId, t.getExpenseId()).orElse(null);
             if (e == null) return null;
             String category = e.getCategory() == null ? "OTHER" : e.getCategory().trim().toUpperCase(Locale.ROOT);
-            UUID account = s.expenseCategories().get(category);
-            if (account == null) account = s.expenseCategories().get("OTHER");
-            return account != null ? account : postingSetup.accountByCode(orgId, "6125");
+            return expenseAccount(orgId, category, s);
         }
         return null;
     }
@@ -762,6 +858,12 @@ public class LedgerAutoPostingService {
                 + " AND expense_date >= ? ORDER BY expense_date, created_at", rs -> {
             docs.add(new Doc(EXPENSE, rs.getObject(1, UUID.class), rs.getString(2)));
         }, orgId, start);
+        jdbc.query("SELECT id, status, COALESCE(number, employee_name) FROM expense_report WHERE organization_id = ?"
+                + " AND deleted_at IS NULL AND status IN ('POSTED', 'REIMBURSED') ORDER BY created_at", rs -> {
+            UUID id = rs.getObject(1, UUID.class);
+            docs.add(new Doc(EXPENSE_REPORT, id, rs.getString(3)));
+            if ("REIMBURSED".equals(rs.getString(2))) docs.add(new Doc(EXPENSE_REPORT_REIMB, id, rs.getString(3)));
+        }, orgId);
         jdbc.query("SELECT id, description FROM bank_transaction WHERE organization_id = ? AND deleted_at IS NULL"
                 + " AND status = 'UNMATCHED' AND booking_date >= ? ORDER BY booking_date, created_at", rs -> {
             docs.add(new Doc(BANK_LINE, rs.getObject(1, UUID.class), rs.getString(2)));
@@ -805,6 +907,10 @@ public class LedgerAutoPostingService {
             case EXPENSE -> expenseRepository.findForOrganization(orgId, d.id())
                     .map(e -> sync(orgId, EXPENSE, e.getId(), expenseDraft(e, s), s)).orElse(false);
             case BANK_OPENING -> sync(orgId, BANK_OPENING, d.id(), bankOpeningDraft(orgId, d.id(), s), s);
+            case EXPENSE_REPORT -> expenseReportRepository.findForOrganization(orgId, d.id())
+                    .map(r -> sync(orgId, EXPENSE_REPORT, r.getId(), expenseReportDraft(r, s), s)).orElse(false);
+            case EXPENSE_REPORT_REIMB -> expenseReportRepository.findForOrganization(orgId, d.id())
+                    .map(r -> sync(orgId, EXPENSE_REPORT_REIMB, r.getId(), expenseReportReimbursementDraft(r, s), s)).orElse(false);
             case BANK_LINE -> bankTransactionRepository.find(orgId, d.id())
                     .map(t -> sync(orgId, BANK_LINE, t.getId(), bankLineDraft(t, s), s)).orElse(false);
             default -> false;

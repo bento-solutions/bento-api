@@ -161,6 +161,9 @@ public class PaymentService {
     }
 
     private void applyFields(Payment payment, CreatePaymentRequest request) {
+        if (request.getMethod() == Payment.Method.EMPLOYEE) {
+            throw new IllegalArgumentException("Paid by an employee is only for the lines of an expense report");
+        }
         if (request.getAdvance() != null) {
             payment.setAdvance(request.getAdvance());
         }

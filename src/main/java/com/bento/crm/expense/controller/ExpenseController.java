@@ -30,7 +30,12 @@ public class ExpenseController {
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
             @RequestParam(required = false) String category, Pageable pageable) {
-        return PageResponse.fromPage(service.list(from, to, category, pageable).map(ExpenseResponse::of));
+        var page = service.list(from, to, category, pageable);
+        var refs = service.reportRefs(page.getContent());
+        return PageResponse.fromPage(page.map(e -> {
+            ReportRef ref = e.getExpenseReportId() == null ? null : refs.get(e.getExpenseReportId());
+            return ExpenseResponse.of(e, ref == null ? null : ref.number(), ref == null ? null : ref.status());
+        }));
     }
 
     @GetMapping("/summary")

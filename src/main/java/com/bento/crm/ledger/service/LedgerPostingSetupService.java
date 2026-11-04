@@ -672,7 +672,8 @@ public class LedgerPostingSetupService {
         }
         jdbc.queryForList("SELECT start_date FROM ledger_settings WHERE organization_id = ? FOR UPDATE", orgId);
         Boolean posted = jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM ledger_entry WHERE organization_id = ?"
-                + " AND source_type IN ('INVOICE', 'BILL', 'PAYMENT', 'EXPENSE', 'BANK_LINE', 'ADVANCE', 'CREDIT_NOTE', 'ADVANCE_APPLY') AND deleted_at IS NULL)",
+                + " AND source_type IN ('INVOICE', 'BILL', 'PAYMENT', 'EXPENSE', 'BANK_LINE', 'ADVANCE', 'CREDIT_NOTE', 'ADVANCE_APPLY',"
+                + " 'EXPENSE_REPORT', 'EXPENSE_REPORT_REIMB') AND deleted_at IS NULL)",
                 Boolean.class, orgId);
         LocalDate current = jdbc.queryForObject("SELECT start_date FROM ledger_settings WHERE organization_id = ?",
                 LocalDate.class, orgId);

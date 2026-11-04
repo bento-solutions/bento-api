@@ -37,8 +37,23 @@ public class ExpenseService {
                 to != null ? to : LATEST, category == null || category.isBlank() ? null : category.trim().toUpperCase(java.util.Locale.ROOT), pageable);
     }
 
+    /** The number and status of the reports these expenses belong to, by report id. */
+    @Transactional(readOnly = true)
+    public java.util.Map<UUID, ReportRef> reportRefs(java.util.Collection<Expense> expenses) {
+        List<UUID> ids = expenses.stream().map(Expense::getExpenseReportId).filter(java.util.Objects::nonNull).distinct().toList();
+        java.util.Map<UUID, ReportRef> out = new java.util.HashMap<>();
+        if (ids.isEmpty()) return out;
+        jdbc.query("SELECT id, number, status FROM expense_report WHERE organization_id = ? AND id = ANY(?)", rs -> {
+            out.put(rs.getObject(1, UUID.class), new ReportRef(rs.getString(2), rs.getString(3)));
+        }, TenantContext.getCurrentOrganizationId(), ids.toArray(new UUID[0]));
+        return out;
+    }
+
     @Transactional
     public Expense create(ExpenseRequest r) {
+        if (r.paymentMethod() == com.bento.crm.payment.model.Payment.Method.EMPLOYEE) {
+            throw new IllegalArgumentException("Add expenses paid by an employee to an expense report");
+        }
         Expense e = new Expense();
         e.setOrganizationId(TenantContext.getCurrentOrganizationId());
         apply(e, r);
@@ -50,6 +65,10 @@ public class ExpenseService {
     @Transactional
     public Expense update(UUID id, ExpenseRequest r) {
         Expense e = get(id);
+        notInReport(e);
+        if (r.paymentMethod() == com.bento.crm.payment.model.Payment.Method.EMPLOYEE) {
+            throw new IllegalArgumentException("Add expenses paid by an employee to an expense report");
+        }
         apply(e, r);
         Expense saved = repository.save(e);
         ledger.expense(saved);
@@ -59,6 +78,7 @@ public class ExpenseService {
     @Transactional
     public void delete(UUID id) {
         Expense e = get(id);
+        notInReport(e);
         e.setDeletedAt(Instant.now());
         repository.save(e);
         ledger.expense(e);
@@ -83,7 +103,15 @@ public class ExpenseService {
                 .orElseThrow(() -> new ResourceNotFoundException("Expense not found"));
     }
 
-    private void apply(Expense e, ExpenseRequest r) {
+    /** A line of an expense report is changed through its report. */
+    private static void notInReport(Expense e) {
+        if (e.getExpenseReportId() != null) {
+            throw new IllegalArgumentException("This expense is a line of an expense report: change it from the report");
+        }
+    }
+
+    /** Checks and copies a request onto an expense (a standalone one or a line of an expense report). */
+    public void apply(Expense e, ExpenseRequest r) {
         if (r.vatAmount() != null && r.vatAmount().compareTo(r.amount()) > 0) {
             throw new IllegalArgumentException("VAT cannot be more than the amount");
         }
