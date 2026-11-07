@@ -4,6 +4,7 @@ import com.bento.crm.support.IntegrationTestBase;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -222,23 +223,8 @@ class AuthControllerTest extends IntegrationTestBase {
                                 """.formatted(rawToken, sharedPassword)))
                 .andExpect(status().isOk());
 
-        // Accepting an invitation deactivates the old organization account (single-org rule)
-        // So logging in now logs directly into the newly joined organization (Org 2)
-        mockMvc.perform(post("/auth/login")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"email": "%s", "password": "%s"}
-                                """.formatted(userEmail, sharedPassword)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.access_token").isNotEmpty());
-
-        // 5. To verify legacy/multi-org choice flow: reactivate both accounts
-        appUserRepository.findAllByEmailAcrossOrganizations(userEmail).forEach(u -> {
-            u.setIsActive(true);
-            appUserRepository.save(u);
-        });
-
-        // Login with userEmail and sharedPassword without organization_id -> returns 409 Conflict with organizations and joined_at
+        // Joining Org 2 leaves the Org 1 membership active, so the shared password now matches two
+        // memberships and login asks which organization to open.
         String multiOrgResponse = mockMvc.perform(post("/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
@@ -252,7 +238,7 @@ class AuthControllerTest extends IntegrationTestBase {
 
         String org1Id = objectMapper.readTree(multiOrgResponse).get("organizations").get(0).get("organization_id").asText();
 
-        // 6. Login specifying organization_id succeeds and deactivates the other organization
+        // 5. Choosing an organization opens it without deactivating the other membership.
         mockMvc.perform(post("/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
@@ -265,13 +251,8 @@ class AuthControllerTest extends IntegrationTestBase {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.access_token").isNotEmpty());
 
-        // 7. Verify subsequent login without organization_id succeeds directly because other org was left
-        mockMvc.perform(post("/auth/login")
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"email": "%s", "password": "%s"}
-                                """.formatted(userEmail, sharedPassword)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.access_token").isNotEmpty());
+        assertThat(appUserRepository.findAllByEmailAcrossOrganizations(userEmail))
+                .hasSize(2)
+                .allMatch(u -> Boolean.TRUE.equals(u.getIsActive()));
     }
 }

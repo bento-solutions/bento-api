@@ -3,12 +3,12 @@ package com.bento.crm.invitation;
 import com.bento.crm.auth.dto.LoginResponse;
 import com.bento.crm.auth.service.AuthService;
 import com.bento.crm.common.context.TenantContext;
+import com.bento.crm.common.exception.ResourceNotFoundException;
 import com.bento.crm.common.mail.EmailService;
 import com.bento.crm.common.model.UserRole;
 import com.bento.crm.identity.model.AppUser;
 import com.bento.crm.identity.model.Team;
 import com.bento.crm.identity.repository.AppUserRepository;
-import com.bento.crm.identity.repository.RefreshTokenRepository;
 import com.bento.crm.identity.repository.TeamRepository;
 import com.bento.crm.invitation.dto.CreateInvitationRequest;
 import com.bento.crm.invitation.dto.InvitationResponse;
@@ -17,8 +17,6 @@ import com.bento.crm.invitation.model.UserInvitation;
 import com.bento.crm.invitation.repository.UserInvitationRepository;
 import com.bento.crm.invitation.service.InvitationProperties;
 import com.bento.crm.invitation.service.InvitationService;
-import com.bento.crm.notification.model.Notification;
-import com.bento.crm.notification.service.NotificationService;
 import com.bento.crm.organization.model.Organization;
 import com.bento.crm.organization.repository.OrganizationRepository;
 import jakarta.persistence.EntityManager;
@@ -40,9 +38,9 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
@@ -54,13 +52,9 @@ class InvitationServiceTest {
     @Mock
     private AppUserRepository userRepository;
     @Mock
-    private RefreshTokenRepository refreshTokenRepository;
-    @Mock
     private OrganizationRepository organizationRepository;
     @Mock
     private TeamRepository teamRepository;
-    @Mock
-    private NotificationService notificationService;
     @Mock
     private EmailService emailService;
     @Mock
@@ -95,7 +89,7 @@ class InvitationServiceTest {
     }
 
     @Test
-    void inviteCreatesInvitationWithRawTokenAndDispatchesInAppNotificationIfUserExists() {
+    void inviteCreatesAPendingInvitationWithItsAcceptLink() {
         String email = "adnanetouta@crmbento.com";
         UUID teamId = UUID.randomUUID();
         CreateInvitationRequest request = new CreateInvitationRequest();
@@ -115,18 +109,6 @@ class InvitationServiceTest {
             return inv;
         });
 
-        // Mock existing user in another organization
-        UUID otherOrgId = UUID.randomUUID();
-        AppUser existingUser = AppUser.builder()
-                .email(email)
-                .displayName("Adnan Existing")
-                .role(UserRole.VIEWER)
-                .build();
-        existingUser.setId(UUID.randomUUID());
-        existingUser.setOrganizationId(otherOrgId);
-
-        when(userRepository.findAllByEmailAcrossOrganizations(email)).thenReturn(List.of(existingUser));
-
         Organization org = Organization.builder().name("Bento Team Org").build();
         org.setId(currentOrgId);
         when(organizationRepository.findById(currentOrgId)).thenReturn(Optional.of(org));
@@ -145,16 +127,6 @@ class InvitationServiceTest {
         assertThat(response.getInvitationUrl()).contains("http://localhost:3000/invite/accept?token=");
         assertThat(response.getToken()).isNotBlank();
 
-        // Verify in-app notification sent to the existing user in their active organization
-        verify(notificationService).createCrossTenantNotification(
-                eq(otherOrgId),
-                eq(existingUser.getId()),
-                eq(Notification.NotificationType.INVITATION),
-                contains("Bento Team Org"),
-                contains("Marketing Team"),
-                eq("INVITATION"),
-                any(UUID.class)
-        );
     }
 
     @Test
@@ -176,7 +148,7 @@ class InvitationServiceTest {
         invitation.setId(invitationId);
         invitation.setOrganizationId(targetOrgId);
 
-        when(invitationRepository.findByIdAcrossOrganizations(invitationId)).thenReturn(Optional.of(invitation));
+        when(invitationRepository.findByTokenHash(anyString())).thenReturn(Optional.of(invitation));
 
         AppUser currentUser = AppUser.builder()
                 .email(email)
@@ -184,6 +156,7 @@ class InvitationServiceTest {
                 .passwordHash("$2a$12$existingHash...")
                 .role(UserRole.VIEWER)
                 .jobTitle("Marketer")
+                .isActive(true)
                 .build();
         currentUser.setId(currentUserId);
         currentUser.setOrganizationId(UUID.randomUUID());
@@ -206,26 +179,41 @@ class InvitationServiceTest {
                 .build();
         when(authService.issueSession(any(AppUser.class))).thenReturn(expectedLogin);
 
-        LoginResponse loginResponse = invitationService.acceptForLoggedInUser(invitationId, currentUserId);
+        LoginResponse loginResponse = invitationService.acceptForLoggedInUser(invitationId, "emailed-token", currentUserId);
 
         assertThat(loginResponse).isNotNull();
         assertThat(loginResponse.getAccessToken()).isEqualTo("new-jwt-access-token");
         assertThat(invitation.getStatus()).isEqualTo(InvitationStatus.ACCEPTED);
         assertThat(invitation.getAcceptedUserId()).isNotNull();
 
-        // Single-org rule: the previous membership is deactivated and its sessions revoked
-        // before the new-organization account is created.
-        assertThat(currentUser.getIsActive()).isFalse();
-        verify(refreshTokenRepository).revokeAllForUser(eq(currentUserId), any(Instant.class));
+        // The membership the user signed in with stays active; joining adds a second one.
+        assertThat(currentUser.getIsActive()).isTrue();
 
         ArgumentCaptor<AppUser> userCaptor = ArgumentCaptor.forClass(AppUser.class);
-        verify(userRepository, times(2)).save(userCaptor.capture());
-        AppUser savedUser = userCaptor.getAllValues().get(1);
+        verify(userRepository).save(userCaptor.capture());
+        AppUser savedUser = userCaptor.getValue();
         assertThat(savedUser.getOrganizationId()).isEqualTo(targetOrgId);
         assertThat(savedUser.getEmail()).isEqualTo(email);
         assertThat(savedUser.getRole()).isEqualTo(UserRole.MANAGER);
         assertThat(savedUser.getTeamId()).isEqualTo(teamId);
         assertThat(savedUser.getPasswordHash()).isEqualTo("$2a$12$existingHash...");
+    }
+
+    @Test
+    void acceptForLoggedInUserRejectsATokenIssuedForAnotherInvitation() {
+        UserInvitation otherInvitation = UserInvitation.builder()
+                .email("someone@crmbento.com")
+                .role(UserRole.ADMIN)
+                .status(InvitationStatus.PENDING)
+                .expiresAt(Instant.now().plusSeconds(3600))
+                .build();
+        otherInvitation.setId(UUID.randomUUID());
+        otherInvitation.setOrganizationId(UUID.randomUUID());
+        when(invitationRepository.findByTokenHash(anyString())).thenReturn(Optional.of(otherInvitation));
+
+        assertThatThrownBy(() -> invitationService.acceptForLoggedInUser(UUID.randomUUID(), "emailed-token", UUID.randomUUID()))
+                .isInstanceOf(ResourceNotFoundException.class);
+        verify(userRepository, never()).save(any(AppUser.class));
     }
 
     @Test

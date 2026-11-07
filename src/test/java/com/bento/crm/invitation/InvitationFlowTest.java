@@ -179,7 +179,57 @@ class InvitationFlowTest extends IntegrationTestBase {
                 .andExpect(status().isForbidden());
     }
 
+    @Test
+    void aSignedInMemberJoinsAnotherOrganizationOnlyWithTheEmailedToken() throws Exception {
+        String memberEmail = "member-" + System.nanoTime() + "@example.com";
+        String password = "MemberPassword123!";
+        mockMvc.perform(post("/organizations")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"name": "Member Org", "admin_email": "%s", "admin_name": "Member", "admin_password": "%s"}
+                                """.formatted(memberEmail, password)))
+                .andExpect(status().isCreated());
+        String memberToken = objectMapper.readTree(
+                        login(memberEmail, password).andReturn().getResponse().getContentAsString())
+                .get("access_token").asText();
+
+        String adminToken = signUpAndLogin();
+        String invitationId = objectMapper.readTree(invite(adminToken, memberEmail, "MANAGER")).get("id").asText();
+        String emailedToken = captureAcceptToken();
+
+        acceptLoggedIn(memberToken, invitationId, "{}").andExpect(status().isBadRequest());
+        acceptLoggedIn(memberToken, invitationId, """
+                {"token": "not-the-emailed-token"}
+                """).andExpect(status().isNotFound());
+        acceptLoggedIn(memberToken, invitationId, """
+                {"token": "%s"}
+                """.formatted(emailedToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.user.role").value("MANAGER"));
+
+        // Joining did not take the member out of their first organization.
+        login(memberEmail, password)
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.organizations.length()").value(2));
+    }
+
     // ------------------------------------------------------------------ helpers
+
+    private org.springframework.test.web.servlet.ResultActions login(String email, String password) throws Exception {
+        return mockMvc.perform(post("/auth/login")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"email": "%s", "password": "%s"}
+                        """.formatted(email, password)));
+    }
+
+    private org.springframework.test.web.servlet.ResultActions acceptLoggedIn(String bearer, String invitationId, String body)
+            throws Exception {
+        return mockMvc.perform(post("/invitations/" + invitationId + "/accept-logged-in")
+                .header("Authorization", "Bearer " + bearer)
+                .contentType(MediaType.APPLICATION_JSON)
+                .content(body));
+    }
 
     private String invite(String adminToken, String email, String role) throws Exception {
         return mockMvc.perform(post("/invitations")

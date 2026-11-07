@@ -3,7 +3,6 @@ package com.bento.crm.identity.service;
 import com.bento.crm.common.context.TenantContext;
 import com.bento.crm.common.exception.ResourceNotFoundException;
 import com.bento.crm.common.model.UserRole;
-import com.bento.crm.identity.dto.CreateUserRequest;
 import com.bento.crm.identity.dto.UpdateOwnProfileRequest;
 import com.bento.crm.identity.dto.UpdateUserRequest;
 import com.bento.crm.identity.dto.UserDirectoryEntryDto;
@@ -14,7 +13,6 @@ import com.bento.crm.identity.repository.AppUserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
-import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,29 +24,7 @@ import java.util.UUID;
 public class UserService {
 
     private final AppUserRepository userRepository;
-    private final PasswordEncoder passwordEncoder;
     private final UserMapper userMapper;
-
-    @Transactional
-    public UserResponseDto createUser(CreateUserRequest request) {
-        UUID orgId = TenantContext.getCurrentOrganizationId();
-
-        AppUser user = AppUser.builder()
-                .email(request.getEmail())
-                .displayName(request.getDisplayName())
-                .passwordHash(passwordEncoder.encode(request.getPassword()))
-                .role(UserRole.valueOf(request.getRole() != null ? request.getRole() : "SALESPERSON"))
-                .teamId(request.getTeamId() != null && !request.getTeamId().isBlank() ? UUID.fromString(request.getTeamId()) : null)
-                .isActive(true)
-                .phone(request.getPhone())
-                .jobTitle(request.getJobTitle())
-                .language(request.getLanguage() != null ? request.getLanguage() : "en")
-                .build();
-
-        user.setOrganizationId(orgId);
-        user = userRepository.save(user);
-        return userMapper.toResponseDto(user);
-    }
 
     public UserResponseDto getUserById(UUID userId) {
         UUID orgId = TenantContext.getCurrentOrganizationId();

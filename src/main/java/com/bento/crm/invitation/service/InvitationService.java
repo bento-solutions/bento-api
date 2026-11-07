@@ -16,10 +16,7 @@ import com.bento.crm.invitation.model.InvitationStatus;
 import com.bento.crm.invitation.model.UserInvitation;
 import com.bento.crm.invitation.repository.UserInvitationRepository;
 import com.bento.crm.identity.model.Team;
-import com.bento.crm.identity.repository.RefreshTokenRepository;
 import com.bento.crm.identity.repository.TeamRepository;
-import com.bento.crm.notification.model.Notification;
-import com.bento.crm.notification.service.NotificationService;
 import com.bento.crm.organization.model.Organization;
 import com.bento.crm.organization.repository.OrganizationRepository;
 import lombok.RequiredArgsConstructor;
@@ -56,10 +53,8 @@ public class InvitationService {
 
     private final UserInvitationRepository invitationRepository;
     private final AppUserRepository userRepository;
-    private final RefreshTokenRepository refreshTokenRepository;
     private final OrganizationRepository organizationRepository;
     private final TeamRepository teamRepository;
-    private final NotificationService notificationService;
     private final EmailService emailService;
     private final InvitationProperties properties;
     private final PasswordEncoder passwordEncoder;
@@ -108,7 +103,6 @@ public class InvitationService {
 
         invitation = invitationRepository.save(invitation);
         dispatchInvitationEmail(invitation, token);
-        notifyExistingUsersIfAny(invitation);
 
         log.info("Invitation {} created for {} in organization {}", invitation.getId(), email, orgId);
         return toResponse(invitation);
@@ -146,7 +140,6 @@ public class InvitationService {
 
         invitation = invitationRepository.save(invitation);
         dispatchInvitationEmail(invitation, token);
-        notifyExistingUsersIfAny(invitation);
 
         log.info("Invitation {} resent to {}", invitation.getId(), invitation.getEmail());
         return toResponse(invitation);
@@ -264,20 +257,6 @@ public class InvitationService {
         user.setOrganizationId(orgId);
         user = userRepository.save(user);
 
-        // A user can only belong to one organization. When accepting an invitation to join orgId,
-        // leave any other organizations the email was previously registered in.
-        List<AppUser> existingOtherAccounts = userRepository.findAllByEmailAcrossOrganizations(invitation.getEmail().trim().toLowerCase()).stream()
-                .filter(u -> !orgId.equals(u.getOrganizationId()))
-                .filter(u -> Boolean.TRUE.equals(u.getIsActive()))
-                .toList();
-        for (AppUser oldAccount : existingOtherAccounts) {
-            oldAccount.setIsActive(false);
-            userRepository.save(oldAccount);
-            refreshTokenRepository.revokeAllForUser(oldAccount.getId(), Instant.now());
-            log.info("User {} left previous organization {} to accept invitation to organization {}",
-                    oldAccount.getId(), oldAccount.getOrganizationId(), orgId);
-        }
-
         invitation.setStatus(InvitationStatus.ACCEPTED);
         invitation.setAcceptedAt(Instant.now());
         invitation.setAcceptedUserId(user.getId());
@@ -291,16 +270,15 @@ public class InvitationService {
     }
 
     /**
-     * Accepts an invitation on behalf of an already logged-in user.
-     * Reuses their existing password credentials and links them directly to the new organization.
+     * Accepts an invitation for a signed-in user, reusing their password for the new membership.
+     * The emailed token is required as well as a matching address: the address on a membership is
+     * not verified, so only the link shows that the caller reads that inbox.
      */
     @Transactional
-    public LoginResponse acceptForLoggedInUser(UUID invitationId, UUID currentUserId) {
-        UserInvitation invitation = invitationRepository.findByIdAcrossOrganizations(invitationId)
-                .orElseThrow(() -> new ResourceNotFoundException("This invitation is not valid or has expired"));
-
-        if (invitation.getStatus() != InvitationStatus.PENDING || invitation.isExpired()) {
-            throw new IllegalStateException("This invitation is not valid or has expired");
+    public LoginResponse acceptForLoggedInUser(UUID invitationId, String token, UUID currentUserId) {
+        UserInvitation invitation = requireAcceptable(token);
+        if (!invitation.getId().equals(invitationId)) {
+            throw new ResourceNotFoundException("This invitation link is not valid or has expired");
         }
 
         AppUser currentUser = userRepository.findById(currentUserId)
@@ -309,13 +287,6 @@ public class InvitationService {
         if (!invitation.getEmail().equalsIgnoreCase(currentUser.getEmail())) {
             throw new IllegalStateException("This invitation was sent to a different email address");
         }
-
-        // A user can only belong to one organization. Deactivate currentUser in previous organization.
-        currentUser.setIsActive(false);
-        userRepository.save(currentUser);
-        refreshTokenRepository.revokeAllForUser(currentUser.getId(), Instant.now());
-        log.info("User {} left previous organization {} to join organization {}",
-                currentUser.getId(), currentUser.getOrganizationId(), invitation.getOrganizationId());
 
         // Extract needed fields and detach currentUser from Hibernate session
         String email = currentUser.getEmail();
@@ -396,60 +367,7 @@ public class InvitationService {
         }
     }
 
-    public List<InvitationResponse> listPendingForUser(UUID currentUserId) {
-        AppUser user = userRepository.findById(currentUserId)
-                .orElseThrow(() -> new ResourceNotFoundException("User not found"));
-        return invitationRepository.findPendingByEmailAcrossOrganizations(user.getEmail()).stream()
-                .map(this::toResponse)
-                .toList();
-    }
-
     // ------------------------------------------------------------------ helpers
-
-    /**
-     * Checks if the invited email already belongs to one or more AppUsers across any tenant.
-     * If so, generates an in-app notification for each existing user account.
-     */
-    private void notifyExistingUsersIfAny(UserInvitation invitation) {
-        try {
-            List<AppUser> existingUsers = userRepository.findAllByEmailAcrossOrganizations(invitation.getEmail());
-            if (existingUsers.isEmpty()) {
-                return;
-            }
-
-            String organizationName = organizationRepository.findById(invitation.getOrganizationId())
-                    .map(Organization::getName)
-                    .orElse("an organization");
-
-            String teamName = invitation.getTeamId() != null
-                    ? teamRepository.findById(invitation.getTeamId()).map(Team::getName).orElse(null)
-                    : null;
-
-            String teamSuffix = teamName != null ? " in team " + teamName : "";
-            String message = String.format("You have been invited to join %s as %s%s. Click to view and accept the invitation.",
-                    organizationName, roleLabel(invitation.getRole()), teamSuffix);
-
-            for (AppUser existing : existingUsers) {
-                // Do not notify inside the same organization where the invitation is being created
-                if (invitation.getOrganizationId().equals(existing.getOrganizationId())) {
-                    continue;
-                }
-                notificationService.createCrossTenantNotification(
-                        existing.getOrganizationId(),
-                        existing.getId(),
-                        Notification.NotificationType.INVITATION,
-                        "Invitation to join " + organizationName,
-                        message,
-                        "INVITATION",
-                        invitation.getId()
-                );
-                log.info("Dispatched in-app invitation notification to user {} in org {} for invitation {}",
-                        existing.getId(), existing.getOrganizationId(), invitation.getId());
-            }
-        } catch (Exception e) {
-            log.warn("Failed to dispatch in-app notification for invitation {}: {}", invitation.getId(), e.getMessage());
-        }
-    }
 
     /**
      * Every rejection reports the same message. Distinguishing "no such token" from "revoked"

@@ -1,5 +1,6 @@
 package com.bento.crm.invitation.controller;
 
+import com.bento.crm.invitation.dto.AcceptLoggedInInvitationRequest;
 import com.bento.crm.invitation.dto.CreateInvitationRequest;
 import com.bento.crm.invitation.dto.InvitationResponse;
 import com.bento.crm.invitation.service.InvitationService;
@@ -16,8 +17,8 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Admin surface. Gated on USERS_WRITE, the same authority that guards creating a user directly,
- * since an invitation is just a deferred user creation.
+ * Admin surface, gated on USERS_WRITE: an invitation is the only way a person joins an
+ * organization.
  */
 @RestController
 @RequestMapping("/invitations")
@@ -63,17 +64,11 @@ public class InvitationController {
         return ResponseEntity.ok(invitationService.revoke(id));
     }
 
-    @GetMapping("/my-pending")
-    @Operation(summary = "List my pending invitations", description = "Pending invitations addressed to the current logged-in user")
-    public ResponseEntity<List<InvitationResponse>> myPending() {
-        UUID currentUserId = UUID.fromString((String) org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication().getPrincipal());
-        return ResponseEntity.ok(invitationService.listPendingForUser(currentUserId));
-    }
-
     @PostMapping("/{id}/accept-logged-in")
-    @Operation(summary = "Accept invitation as logged-in user", description = "Accept an invitation and switch to the target organization without re-entering password")
-    public ResponseEntity<com.bento.crm.auth.dto.LoginResponse> acceptLoggedIn(@PathVariable UUID id) {
+    @Operation(summary = "Accept invitation as logged-in user", description = "Accept an invitation with the emailed token and switch to the target organization without re-entering the password")
+    public ResponseEntity<com.bento.crm.auth.dto.LoginResponse> acceptLoggedIn(@PathVariable UUID id,
+                                                                              @Valid @RequestBody AcceptLoggedInInvitationRequest request) {
         UUID currentUserId = UUID.fromString((String) org.springframework.security.core.context.SecurityContextHolder.getContext().getAuthentication().getPrincipal());
-        return ResponseEntity.ok(invitationService.acceptForLoggedInUser(id, currentUserId));
+        return ResponseEntity.ok(invitationService.acceptForLoggedInUser(id, request.getToken(), currentUserId));
     }
 }

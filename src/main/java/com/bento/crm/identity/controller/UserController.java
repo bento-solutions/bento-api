@@ -1,7 +1,6 @@
 package com.bento.crm.identity.controller;
 
 import com.bento.crm.common.dto.PageResponse;
-import com.bento.crm.identity.dto.CreateUserRequest;
 import com.bento.crm.identity.dto.UpdateOwnProfileRequest;
 import com.bento.crm.identity.dto.UpdateUserRequest;
 import com.bento.crm.identity.dto.UserDirectoryEntryDto;
@@ -13,7 +12,6 @@ import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
@@ -29,14 +27,6 @@ import java.util.UUID;
 public class UserController {
 
     private final UserService userService;
-
-    @PostMapping
-    @PreAuthorize("hasAuthority('USERS_WRITE')")
-    @Operation(summary = "Create user", description = "Create new user in the organization")
-    public ResponseEntity<UserResponseDto> createUser(@Valid @RequestBody CreateUserRequest request) {
-        UserResponseDto user = userService.createUser(request);
-        return ResponseEntity.status(HttpStatus.CREATED).body(user);
-    }
 
     @GetMapping("/{id}")
     @PreAuthorize("hasAuthority('USERS_READ')")
