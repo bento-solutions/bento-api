@@ -277,6 +277,10 @@ app:
     fcm:
       # Firebase service-account JSON key, for push notifications to the mobile app. Empty: push is off.
       service-account-file: ${FCM_SERVICE_ACCOUNT_FILE:}
+  identity:
+    # Whether an Account must confirm its email address before it gets a session. Leave it off
+    # until production mail works: with it on and no mail, nobody could finish signing in.
+    require-verified-email: ${IDENTITY_REQUIRE_VERIFIED_EMAIL:false}
   invitation:
     # Where the invitee lands. The accept page reads the token from the query string, so this
     # must point at the deployed frontend, not the API.

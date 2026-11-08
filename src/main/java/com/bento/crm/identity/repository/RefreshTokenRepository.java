@@ -26,6 +26,15 @@ public interface RefreshTokenRepository extends JpaRepository<RefreshToken, UUID
     void revokeAllForUser(@Param("userId") UUID userId, @Param("now") Instant now);
 
     /**
+     * Ends every session of an Account, in every Organization: refresh tokens belong to
+     * Memberships, so this revokes the tokens of all the Account's Memberships.
+     */
+    @Modifying
+    @Query("UPDATE RefreshToken rt SET rt.revokedAt = :now WHERE rt.revokedAt IS NULL "
+            + "AND rt.userId IN (SELECT u.id FROM AppUser u WHERE u.accountId = :accountId)")
+    int revokeAllForAccount(@Param("accountId") UUID accountId, @Param("now") Instant now);
+
+    /**
      * Looks a token up regardless of whether it is still valid.
      *
      * <p>Needed for reuse detection: a token that is expired or already revoked must be

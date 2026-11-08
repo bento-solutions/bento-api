@@ -82,6 +82,22 @@ public class GlobalExceptionHandler {
         return new ResponseEntity<>(apiError, HttpStatus.UNAUTHORIZED);
     }
 
+    @ExceptionHandler(EmailNotVerifiedException.class)
+    public ResponseEntity<ApiError> handleEmailNotVerifiedException(
+            EmailNotVerifiedException ex,
+            WebRequest request) {
+        ApiError apiError = ApiError.builder()
+                .type("https://api.example.com/errors/email-not-verified")
+                .title("Email Not Verified")
+                .status(HttpStatus.FORBIDDEN.value())
+                .detail(ex.getMessage())
+                .instance(request.getDescription(false).replace("uri=", ""))
+                .timestamp(Instant.now())
+                .build();
+
+        return new ResponseEntity<>(apiError, HttpStatus.FORBIDDEN);
+    }
+
     @ExceptionHandler(MultipleOrganizationsException.class)
     public ResponseEntity<ApiError> handleMultipleOrganizationsException(
             MultipleOrganizationsException ex,

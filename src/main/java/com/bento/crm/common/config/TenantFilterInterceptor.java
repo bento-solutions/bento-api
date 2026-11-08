@@ -43,6 +43,16 @@ public class TenantFilterInterceptor extends OncePerRequestFilter {
             "/api/v1/auth/login",
             "/auth/refresh",
             "/api/v1/auth/refresh",
+            // Emailed Account links and the requests that send them: no session yet, and an
+            // Account spans Organizations, so there is no tenant to resolve.
+            "/auth/verify-email",
+            "/api/v1/auth/verify-email",
+            "/auth/verification",
+            "/api/v1/auth/verification",
+            "/auth/password-reset",
+            "/api/v1/auth/password-reset",
+            "/auth/password-reset/confirm",
+            "/api/v1/auth/password-reset/confirm",
             "/organizations",
             "/api/v1/organizations",
             // Invitation acceptance carries no JWT and therefore no org claim; the

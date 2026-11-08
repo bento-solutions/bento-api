@@ -10,6 +10,7 @@ import com.bento.crm.identity.model.Account;
 import com.bento.crm.identity.model.AppUser;
 import com.bento.crm.identity.repository.AccountRepository;
 import com.bento.crm.identity.repository.AppUserRepository;
+import com.bento.crm.identity.service.AccountService;
 import com.bento.crm.invitation.dto.AcceptInvitationRequest;
 import com.bento.crm.invitation.dto.CreateInvitationRequest;
 import com.bento.crm.invitation.dto.InvitationPreviewResponse;
@@ -62,6 +63,7 @@ public class InvitationService {
     private final InvitationProperties properties;
     private final PasswordEncoder passwordEncoder;
     private final AuthService authService;
+    private final AccountService accountService;
     private final EntityManager entityManager;
 
     // ---------------------------------------------------------------- admin side
@@ -71,9 +73,12 @@ public class InvitationService {
         UUID orgId = TenantContext.getCurrentOrganizationId();
         String email = normalizeEmail(request.getEmail());
 
-        userRepository.findByOrganizationIdAndEmail(orgId, email).ifPresent(existing -> {
-            throw new IllegalStateException("A user with this email already exists in the organization");
-        });
+        // Someone who left, or was deactivated, can be invited back: accepting reactivates them.
+        userRepository.findByOrganizationIdAndEmail(orgId, email)
+                .filter(existing -> Boolean.TRUE.equals(existing.getIsActive()))
+                .ifPresent(existing -> {
+                    throw new IllegalStateException("A user with this email already exists in the organization");
+                });
         // The unique index only covers PENDING rows, so this check and the index agree: an
         // accepted or revoked invitation never blocks a new one.
         invitationRepository.findByOrganizationIdAndEmailAndStatus(orgId, email, InvitationStatus.PENDING)
@@ -87,7 +92,8 @@ public class InvitationService {
                     .orElseThrow(() -> new ResourceNotFoundException("Selected team does not exist in this organization"));
         }
 
-        String token = generateToken();
+        String emailToken = generateToken();
+        String shareToken = generateToken();
         UserInvitation invitation = UserInvitation.builder()
                 .email(email)
                 .role(UserRole.valueOf(request.getRole()))
@@ -95,8 +101,9 @@ public class InvitationService {
                 .displayName(blankToNull(request.getDisplayName()))
                 .jobTitle(blankToNull(request.getJobTitle()))
                 .language(request.getLanguage() != null ? request.getLanguage() : "en")
-                .tokenHash(hashToken(token))
-                .rawToken(token)
+                .tokenHash(hashToken(emailToken))
+                .shareTokenHash(hashToken(shareToken))
+                .rawToken(shareToken)
                 .status(InvitationStatus.PENDING)
                 .expiresAt(Instant.now().plus(properties.getExpiryDays(), ChronoUnit.DAYS))
                 .sendCount(1)
@@ -105,7 +112,7 @@ public class InvitationService {
         invitation.setOrganizationId(orgId);
 
         invitation = invitationRepository.save(invitation);
-        dispatchInvitationEmail(invitation, token);
+        dispatchInvitationEmail(invitation, emailToken);
 
         log.info("Invitation {} created for {} in organization {}", invitation.getId(), email, orgId);
         return toResponse(invitation);
@@ -120,8 +127,9 @@ public class InvitationService {
     }
 
     /**
-     * Issues a fresh token rather than re-mailing the old one, so a link that leaked into a
-     * forwarded email or a shared inbox stops working the moment the invitation is resent.
+     * Issues fresh tokens rather than re-mailing the old one, so a link that leaked into a
+     * forwarded email or a shared inbox, or a copied link, stops working the moment the invitation
+     * is resent.
      * Also revives an expired invitation by extending its deadline.
      */
     @Transactional
@@ -134,15 +142,17 @@ public class InvitationService {
             throw new IllegalStateException("Only a pending invitation can be resent");
         }
 
-        String token = generateToken();
-        invitation.setTokenHash(hashToken(token));
-        invitation.setRawToken(token);
+        String emailToken = generateToken();
+        String shareToken = generateToken();
+        invitation.setTokenHash(hashToken(emailToken));
+        invitation.setShareTokenHash(hashToken(shareToken));
+        invitation.setRawToken(shareToken);
         invitation.setExpiresAt(Instant.now().plus(properties.getExpiryDays(), ChronoUnit.DAYS));
         invitation.setLastSentAt(Instant.now());
         invitation.setSendCount(invitation.getSendCount() + 1);
 
         invitation = invitationRepository.save(invitation);
-        dispatchInvitationEmail(invitation, token);
+        dispatchInvitationEmail(invitation, emailToken);
 
         log.info("Invitation {} resent to {}", invitation.getId(), invitation.getEmail());
         return toResponse(invitation);
@@ -164,6 +174,7 @@ public class InvitationService {
         // Clearing the hash makes the outstanding link unusable immediately; a random value
         // rather than null keeps the NOT NULL/UNIQUE constraints satisfiable for later rows.
         invitation.setTokenHash(hashToken(generateToken()));
+        invitation.setShareTokenHash(null);
 
         invitation = invitationRepository.save(invitation);
         log.info("Invitation {} revoked for {}", invitation.getId(), invitation.getEmail());
@@ -205,7 +216,7 @@ public class InvitationService {
      * {@link TenantContext} -- the token itself selects the organization.
      */
     public InvitationPreviewResponse preview(String token) {
-        UserInvitation invitation = requireAcceptable(token);
+        UserInvitation invitation = requireAcceptable(token).invitation();
 
         Organization organization = organizationRepository.findById(invitation.getOrganizationId())
                 .orElseThrow(() -> new ResourceNotFoundException("Organization not found"));
@@ -229,14 +240,23 @@ public class InvitationService {
                 .build();
     }
 
+    /** A session, or the address a confirmation link went to when the invitee must confirm it first. */
+    public record AcceptOutcome(LoginResponse session, String checkEmail) {
+    }
+
     /**
-     * Creates the AppUser and signs the invitee in. Unauthenticated, so every field that
-     * determines access -- organization, role, team, email -- comes from the stored invitation
-     * and never from the request body; the invitee only supplies their name, password and phone.
+     * Creates the Account and its Membership, and signs the invitee in. Unauthenticated, so every
+     * field that determines access -- organization, role, team, email -- comes from the stored
+     * invitation and never from the request body; the invitee only supplies their name, password
+     * and phone.
+     *
+     * <p>The emailed link confirms the address. A copied link doesn't, so when addresses must be
+     * verified the invitee is sent a confirmation link instead of a session.
      */
     @Transactional
-    public LoginResponse accept(AcceptInvitationRequest request) {
-        UserInvitation invitation = requireAcceptable(request.getToken());
+    public AcceptOutcome accept(AcceptInvitationRequest request) {
+        AcceptableInvitation acceptable = requireAcceptable(request.getToken());
+        UserInvitation invitation = acceptable.invitation();
         UUID orgId = invitation.getOrganizationId();
 
         // A person who already has an Account joins by signing in and accepting from there. Setting
@@ -248,6 +268,7 @@ public class InvitationService {
                 .email(invitation.getEmail())
                 .passwordHash(passwordEncoder.encode(request.getPassword()))
                 .passwordChangedAt(Instant.now())
+                .emailVerifiedAt(acceptable.emailed() ? Instant.now() : null)
                 .build());
 
         String displayName = request.getDisplayName().trim();
@@ -270,12 +291,17 @@ public class InvitationService {
         invitation.setAcceptedAt(Instant.now());
         invitation.setAcceptedUserId(user.getId());
         invitation.setRawToken(null);
+        invitation.setShareTokenHash(null);
         invitationRepository.save(invitation);
 
-        log.info("Invitation {} accepted -- user {} created in organization {}",
-                invitation.getId(), user.getId(), orgId);
+        log.info("Invitation {} accepted through the {} link -- user {} created in organization {}",
+                invitation.getId(), acceptable.emailed() ? "emailed" : "copied", user.getId(), orgId);
 
-        return authService.issueSession(user);
+        if (accountService.verificationRequired() && !account.isEmailVerified()) {
+            accountService.sendVerification(account);
+            return new AcceptOutcome(null, account.getEmail());
+        }
+        return new AcceptOutcome(authService.issueSession(user), null);
     }
 
     /**
@@ -285,7 +311,8 @@ public class InvitationService {
      */
     @Transactional
     public LoginResponse acceptForLoggedInUser(UUID invitationId, String token, UUID currentUserId) {
-        UserInvitation invitation = requireAcceptable(token);
+        AcceptableInvitation acceptable = requireAcceptable(token);
+        UserInvitation invitation = acceptable.invitation();
         if (!invitation.getId().equals(invitationId)) {
             throw new ResourceNotFoundException("This invitation link is not valid or has expired");
         }
@@ -356,7 +383,12 @@ public class InvitationService {
         invitation.setAcceptedAt(Instant.now());
         invitation.setAcceptedUserId(targetUser.getId());
         invitation.setRawToken(null);
+        invitation.setShareTokenHash(null);
         invitationRepository.save(invitation);
+
+        if (acceptable.emailed()) {
+            accountService.markVerified(accountId);
+        }
 
         log.info("Invitation {} accepted by logged-in user {} -- joined organization {}",
                 invitation.getId(), currentUserId, targetOrgId);
@@ -382,14 +414,26 @@ public class InvitationService {
      * Every rejection reports the same message. Distinguishing "no such token" from "revoked"
      * or "already accepted" would let anyone holding a guess probe which tokens exist.
      */
-    private UserInvitation requireAcceptable(String token) {
-        UserInvitation invitation = invitationRepository.findByTokenHash(hashToken(token))
+    private AcceptableInvitation requireAcceptable(String token) {
+        if (token == null || token.isBlank()) {
+            throw new ResourceNotFoundException("This invitation link is not valid or has expired");
+        }
+        String hash = hashToken(token.trim());
+        AcceptableInvitation acceptable = invitationRepository.findByTokenHash(hash)
+                .map(invitation -> new AcceptableInvitation(invitation, true))
+                .or(() -> invitationRepository.findByShareTokenHash(hash)
+                        .map(invitation -> new AcceptableInvitation(invitation, false)))
                 .orElseThrow(() -> new ResourceNotFoundException("This invitation link is not valid or has expired"));
 
+        UserInvitation invitation = acceptable.invitation();
         if (invitation.getStatus() != InvitationStatus.PENDING || invitation.isExpired()) {
             throw new ResourceNotFoundException("This invitation link is not valid or has expired");
         }
-        return invitation;
+        return acceptable;
+    }
+
+    /** An invitation that can still be accepted, and whether the link used was the emailed one. */
+    private record AcceptableInvitation(UserInvitation invitation, boolean emailed) {
     }
 
     private void dispatchInvitationEmail(UserInvitation invitation, String token) {

@@ -2,8 +2,12 @@ package com.bento.crm.auth.service;
 
 import com.bento.crm.auth.dto.LoginResponse;
 import com.bento.crm.auth.dto.OrganizationChoiceDto;
+import com.bento.crm.common.context.TenantContext;
 import com.bento.crm.common.exception.AuthenticationFailedException;
+import com.bento.crm.common.exception.EmailNotVerifiedException;
 import com.bento.crm.common.exception.MultipleOrganizationsException;
+import com.bento.crm.common.exception.ResourceNotFoundException;
+import com.bento.crm.identity.service.AccountService;
 import com.bento.crm.identity.dto.UserResponseDto;
 import com.bento.crm.identity.mapper.UserMapper;
 import com.bento.crm.identity.model.Account;
@@ -46,6 +50,7 @@ public class AuthService {
     private static final String DUMMY_HASH = "$2a$12$C6UzMDM.H6dfI/f/IKcEe.7DKlF3M9ZLtEIcuNCE1u5ZfvIzZJHFq";
 
     private final AccountRepository accountRepository;
+    private final AccountService accountService;
     private final AppUserRepository userRepository;
     private final RefreshTokenRepository refreshTokenRepository;
     private final OrganizationRepository organizationRepository;
@@ -68,8 +73,11 @@ public class AuthService {
      * Memberships. With several active Memberships and no {@code organizationId}, the person is
      * asked to choose (409 with the choices); {@code organizationId} only narrows the choice and is
      * never a credential.
+     *
+     * <p>When verification is required, an Account that hasn't confirmed its address gets no
+     * session: it is sent a link instead (403). The link's record must survive that exception.
      */
-    @Transactional
+    @Transactional(noRollbackFor = EmailNotVerifiedException.class)
     public LoginResponse login(String email, String password, UUID organizationId) {
         Account account = accountRepository.findByEmail(Account.normalizeEmail(email)).orElse(null);
         if (account == null) {
@@ -79,6 +87,11 @@ public class AuthService {
         }
         if (!passwordEncoder.matches(password, account.getPasswordHash())) {
             throw new AuthenticationFailedException("Invalid credentials");
+        }
+        if (accountService.verificationRequired() && !account.isEmailVerified()) {
+            accountService.sendVerification(account);
+            throw new EmailNotVerifiedException("Confirm your email address to sign in. We sent a link to "
+                    + account.getEmail() + ".");
         }
 
         List<AppUser> active = activeMemberships(account.getId()).stream()
@@ -95,6 +108,30 @@ public class AuthService {
                     organizationChoices(active));
         }
         return issueSession(active.get(0));
+    }
+
+    /**
+     * Opens a session in another of the signed-in person's Organizations without asking for the
+     * password again, and ends the session it was asked from when the client presents that
+     * session's refresh token.
+     */
+    @Transactional
+    public LoginResponse switchOrganization(AppUser current, UUID organizationId, String presentedRefreshToken) {
+        AppUser target = activeMemberships(current.getAccountId()).stream()
+                .filter(m -> m.getOrganizationId().equals(organizationId))
+                .findFirst()
+                .orElseThrow(() -> new ResourceNotFoundException("You are not a member of that organization"));
+        if (presentedRefreshToken != null && !presentedRefreshToken.isBlank()) {
+            refreshTokenRepository.findByTokenHash(hashToken(presentedRefreshToken))
+                    .filter(t -> t.getUserId().equals(current.getId()) && t.getRevokedAt() == null)
+                    .ifPresent(t -> refreshTokenRepository.revokeToken(t.getId(), Instant.now()));
+        }
+        log.info("Account {} switched from organization {} to {}", current.getAccountId(),
+                current.getOrganizationId(), organizationId);
+        // The session is written to the target Organization's Membership, so the rest of the
+        // request acts there (cleared when the request ends).
+        TenantContext.setCurrentOrganizationId(organizationId);
+        return issueSession(target);
     }
 
     /** The Account's Memberships a session can be opened in, most recently used first. */
@@ -163,10 +200,19 @@ public class AuthService {
         RefreshToken stored = refreshTokenRepository.findByTokenHash(tokenHash)
                 .orElseThrow(() -> new AuthenticationFailedException("Invalid or expired refresh token"));
 
-        if (stored.getRevokedAt() != null && !rotatedWithinGrace(stored, now)) {
-            log.warn("Refresh token reuse detected for user {} — revoking all sessions", stored.getUserId());
-            refreshTokenRepository.revokeAllForUser(stored.getUserId(), now);
-            throw new AuthenticationFailedException("Invalid or expired refresh token");
+        if (stored.getRevokedAt() != null) {
+            boolean rotated = refreshTokenRepository.existsByReplacedByTokenId(stored.getId());
+            if (!rotated) {
+                // Ended on purpose: a sign-out, a password change, a switch of organization. Other
+                // devices still holding it will present it, and that is no sign of theft, so it is
+                // refused without ending the sessions that replaced it.
+                throw new AuthenticationFailedException("Invalid or expired refresh token");
+            }
+            if (!stored.getRevokedAt().isAfter(now.minusMillis(refreshReuseGraceMs))) {
+                log.warn("Refresh token reuse detected for user {} — revoking all sessions", stored.getUserId());
+                refreshTokenRepository.revokeAllForUser(stored.getUserId(), now);
+                throw new AuthenticationFailedException("Invalid or expired refresh token");
+            }
         }
         if (stored.getExpiresAt().isBefore(now)) {
             throw new AuthenticationFailedException("Invalid or expired refresh token");
@@ -191,18 +237,18 @@ public class AuthService {
         return mintTokens(user, stored.getId());
     }
 
-    /**
-     * Whether a revoked token was revoked by rotation (it has a successor; a logout or a
-     * deactivation leaves none) recently enough to count as a client race rather than a replay.
-     */
-    private boolean rotatedWithinGrace(RefreshToken stored, Instant now) {
-        return stored.getRevokedAt().isAfter(now.minusMillis(refreshReuseGraceMs))
-                && refreshTokenRepository.existsByReplacedByTokenId(stored.getId());
-    }
-
+    /** Ends the presented session of this Membership, or all of them when none is presented. */
     @Transactional
-    public void logout(UUID userId) {
-        refreshTokenRepository.revokeAllForUser(userId, Instant.now());
+    public void logout(UUID userId, String presentedRefreshToken) {
+        Instant now = Instant.now();
+        if (presentedRefreshToken != null && !presentedRefreshToken.isBlank()) {
+            refreshTokenRepository.findByTokenHash(hashToken(presentedRefreshToken))
+                    .filter(t -> t.getUserId().equals(userId) && t.getRevokedAt() == null)
+                    .ifPresent(t -> refreshTokenRepository.revokeToken(t.getId(), now));
+            log.info("User {} signed out of one session", userId);
+            return;
+        }
+        refreshTokenRepository.revokeAllForUser(userId, now);
         log.info("User {} logged out", userId);
     }
 

@@ -10,6 +10,7 @@ import com.bento.crm.identity.model.AppUser;
 import com.bento.crm.identity.model.Team;
 import com.bento.crm.identity.repository.AccountRepository;
 import com.bento.crm.identity.repository.AppUserRepository;
+import com.bento.crm.identity.service.AccountService;
 import com.bento.crm.identity.repository.TeamRepository;
 import com.bento.crm.invitation.dto.CreateInvitationRequest;
 import com.bento.crm.invitation.dto.InvitationResponse;
@@ -66,6 +67,8 @@ class InvitationServiceTest {
     private PasswordEncoder passwordEncoder;
     @Mock
     private AuthService authService;
+    @Mock
+    private AccountService accountService;
     @Mock
     private EntityManager entityManager;
     @Mock

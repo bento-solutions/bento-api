@@ -7,7 +7,9 @@ import com.bento.crm.businesstype.repository.BusinessTypeRepository;
 import com.bento.crm.common.context.TenantContext;
 import com.bento.crm.common.exception.ResourceNotFoundException;
 import com.bento.crm.common.model.UserRole;
+import com.bento.crm.identity.dto.AccountDtos;
 import com.bento.crm.identity.model.Account;
+import com.bento.crm.identity.service.AccountService;
 import com.bento.crm.identity.model.AppUser;
 import com.bento.crm.identity.repository.AccountRepository;
 import com.bento.crm.identity.repository.AppUserRepository;
@@ -26,6 +28,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -35,6 +38,7 @@ public class OrganizationService {
 
     private final OrganizationRepository organizationRepository;
     private final AccountRepository accountRepository;
+    private final AccountService accountService;
     private final AppUserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final FileStorageService fileStorageService;
@@ -42,51 +46,91 @@ public class OrganizationService {
     private final BusinessTypeRepository businessTypeRepository;
     private final com.bento.crm.stock.service.StockService stockService;
 
+    /**
+     * What sign-up produced: the new Organization, or, when the rest happens from an emailed link,
+     * the address that link went to. The two outcomes look the same to the caller whether or not
+     * the address already had an Account.
+     */
+    public record SignUpResult(Organization organization, String checkEmail) {
+    }
+
+    /**
+     * Unauthenticated sign-up: a new Account with its first Organization. It never touches an
+     * existing Account, since that would let anyone who knows an address attach an Organization
+     * (and a password) to someone else's sign-in.
+     *
+     * <p>When addresses must be verified, the answer is "check your email" either way: a new
+     * address gets a confirmation link, a known one is told to sign in instead.
+     */
     @Transactional
-    public Organization createOrganization(CreateOrganizationRequest request) {
-        // Signup is unauthenticated, so it never touches an existing Account: that would let anyone
-        // who knows an address attach a new Organization (and a password) to someone else's sign-in.
+    public SignUpResult signUp(CreateOrganizationRequest request) {
         String adminEmail = Account.normalizeEmail(request.getAdminEmail());
-        if (accountRepository.findByEmail(adminEmail).isPresent()) {
-            throw new IllegalStateException("An account with this email already exists");
+        Optional<Account> existing = accountRepository.findByEmail(adminEmail);
+        if (existing.isPresent()) {
+            if (!accountService.verificationRequired()) {
+                throw new IllegalStateException("An account with this email already exists");
+            }
+            passwordEncoder.encode(request.getAdminPassword()); // same cost as a new address
+            accountService.sendAlreadyRegistered(existing.get());
+            return new SignUpResult(null, adminEmail);
         }
+
         Account account = accountRepository.save(Account.builder()
                 .email(adminEmail)
                 .passwordHash(passwordEncoder.encode(request.getAdminPassword()))
                 .passwordChangedAt(Instant.now())
                 .build());
+        AppUser admin = createOrganizationFor(account.getId(), adminEmail, request.getAdminName(), "en",
+                request.getName(), request.getIndustry(), request.getDefaultCurrency(), request.getTimezone(),
+                request.getStockIssueTrigger());
 
-        Organization organization = Organization.builder()
-                .name(request.getName())
-                .industry(request.getIndustry())
-                .defaultCurrency(request.getDefaultCurrency() != null ? request.getDefaultCurrency() : "USD")
-                .timezone(request.getTimezone() != null ? request.getTimezone() : "UTC")
+        if (accountService.verificationRequired()) {
+            accountService.sendVerification(account);
+            return new SignUpResult(null, adminEmail);
+        }
+        return new SignUpResult(organizationRepository.findById(admin.getOrganizationId()).orElseThrow(), null);
+    }
+
+    /** A signed-in person creates another Organization and becomes its admin. */
+    @Transactional
+    public AppUser createAnotherOrganization(AppUser current, AccountDtos.CreateOrganizationRequest request) {
+        return createOrganizationFor(current.getAccountId(), current.getEmail(), current.getDisplayName(),
+                current.getLanguage() != null ? current.getLanguage() : "en",
+                request.name(), request.industry(), request.defaultCurrency(), request.timezone(), null);
+    }
+
+    /** Creates an Organization with the Account's admin Membership and the referentials it starts with. */
+    private AppUser createOrganizationFor(UUID accountId, String email, String displayName, String language,
+                                          String name, String industry, String currency, String timezone,
+                                          com.bento.crm.stock.model.StockSettings.IssueTrigger stockIssueTrigger) {
+        Organization organization = organizationRepository.save(Organization.builder()
+                .name(name)
+                .industry(industry)
+                .defaultCurrency(currency != null ? currency.toUpperCase(java.util.Locale.ROOT) : "USD")
+                .timezone(timezone != null ? timezone : "UTC")
                 .fiscalYearStartMonth(1)
                 .plan("FREE")
-                .build();
+                .build());
 
-        organization = organizationRepository.save(organization);
-
+        // The rest of the request acts in the new Organization: its rows are written there, and a
+        // signed-in caller gets a session in it. TenantFilterInterceptor clears this when the
+        // request ends.
         TenantContext.setCurrentOrganizationId(organization.getId());
-
-        AppUser adminUser = AppUser.builder()
-                .accountId(account.getId())
-                .email(adminEmail)
-                .displayName(request.getAdminName())
+        AppUser admin = AppUser.builder()
+                .accountId(accountId)
+                .email(email)
+                .displayName(displayName)
                 .role(UserRole.ADMIN)
                 .isActive(true)
-                .language("en")
+                .language(language)
                 .avatarColor("blue")
                 .build();
-        adminUser.setOrganizationId(organization.getId());
-
-        userRepository.save(adminUser);
+        admin.setOrganizationId(organization.getId());
+        admin = userRepository.save(admin);
         seedDefaultBrandsAndBusinessTypes(organization.getId());
-        stockService.initialize(organization.getId(), request.getStockIssueTrigger(), request.getIndustry());
-        TenantContext.clear();
-
-        log.info("Organization created: {} with admin user: {}", organization.getId(), adminEmail);
-        return organization;
+        stockService.initialize(organization.getId(), stockIssueTrigger, industry);
+        log.info("Organization {} created with admin Membership {} of Account {}", organization.getId(), admin.getId(), accountId);
+        return admin;
     }
 
     /**

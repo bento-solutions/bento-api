@@ -4,7 +4,9 @@ import com.bento.crm.auth.dto.LoginRequest;
 import com.bento.crm.auth.dto.LoginResponse;
 import com.bento.crm.auth.dto.RefreshTokenRequest;
 import com.bento.crm.auth.service.AuthService;
+import com.bento.crm.identity.dto.AccountDtos;
 import com.bento.crm.identity.dto.UserResponseDto;
+import com.bento.crm.identity.service.AccountService;
 import com.bento.crm.identity.service.UserService;
 import com.bento.crm.common.config.JwtProperties;
 import io.swagger.v3.oas.annotations.Operation;
@@ -27,6 +29,7 @@ import java.util.UUID;
 public class AuthController {
 
     private final AuthService authService;
+    private final AccountService accountService;
     private final UserService userService;
     private final JwtProperties jwtProperties;
 
@@ -58,17 +61,58 @@ public class AuthController {
                 .body(response);
     }
 
+    /**
+     * Ends this device's session: the refresh token in the body (or cookie) is revoked, and the
+     * person's other devices stay signed in. Without one, every session of the Membership ends,
+     * as before. "Sign out everywhere" (/account/sign-out-everywhere) covers every Organization.
+     */
     @PostMapping("/logout")
-    @Operation(summary = "Logout", description = "Invalidate refresh tokens")
-    public ResponseEntity<Void> logout(Authentication authentication) {
+    @Operation(summary = "Logout", description = "Ends this device's session")
+    public ResponseEntity<Void> logout(Authentication authentication,
+                                       @RequestBody(required = false) RefreshTokenRequest request,
+                                       @CookieValue(name = "refreshToken", required = false) String cookieRefreshToken) {
         if (authentication != null) {
             UUID userId = UUID.fromString(authentication.getName());
-            authService.logout(userId);
+            String token = (request != null && request.getRefreshToken() != null && !request.getRefreshToken().isBlank())
+                    ? request.getRefreshToken()
+                    : cookieRefreshToken;
+            authService.logout(userId, token);
         }
         ResponseCookie cookie = deleteRefreshTokenCookie();
         return ResponseEntity.noContent()
                 .header(HttpHeaders.SET_COOKIE, cookie.toString())
                 .build();
+    }
+
+    @PostMapping("/verify-email")
+    @Operation(summary = "Confirm an email address", description = "Uses the token from the emailed confirmation link")
+    public ResponseEntity<Void> verifyEmail(@Valid @RequestBody AccountDtos.TokenRequest request) {
+        accountService.verifyEmail(request.token());
+        return ResponseEntity.noContent().build();
+    }
+
+    @PostMapping("/verification")
+    @Operation(summary = "Send the confirmation link again",
+            description = "Always 202, so the answer doesn't tell whether the address has an account")
+    public ResponseEntity<Void> resendVerification(@Valid @RequestBody AccountDtos.EmailRequest request) {
+        accountService.resendVerification(request.email());
+        return ResponseEntity.accepted().build();
+    }
+
+    @PostMapping("/password-reset")
+    @Operation(summary = "Email a link to choose a new password",
+            description = "Always 202, so the answer doesn't tell whether the address has an account")
+    public ResponseEntity<Void> requestPasswordReset(@Valid @RequestBody AccountDtos.EmailRequest request) {
+        accountService.requestPasswordReset(request.email());
+        return ResponseEntity.accepted().build();
+    }
+
+    @PostMapping("/password-reset/confirm")
+    @Operation(summary = "Choose a new password from the emailed link",
+            description = "Signs the account out everywhere; the person then signs in with the new password")
+    public ResponseEntity<Void> resetPassword(@Valid @RequestBody AccountDtos.ResetPasswordRequest request) {
+        accountService.resetPassword(request.token(), request.password());
+        return ResponseEntity.noContent().build();
     }
 
     private ResponseCookie createRefreshTokenCookie(String token) {

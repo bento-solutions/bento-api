@@ -22,6 +22,10 @@ public interface UserInvitationRepository extends JpaRepository<UserInvitation, 
     @Query("SELECT i FROM UserInvitation i WHERE i.tokenHash = :tokenHash")
     Optional<UserInvitation> findByTokenHash(@Param("tokenHash") String tokenHash);
 
+    /** Same reasoning as {@link #findByTokenHash}, for the link an admin copies. */
+    @Query("SELECT i FROM UserInvitation i WHERE i.shareTokenHash = :shareTokenHash")
+    Optional<UserInvitation> findByShareTokenHash(@Param("shareTokenHash") String shareTokenHash);
+
     @Query("SELECT i FROM UserInvitation i WHERE i.organizationId = :organizationId ORDER BY i.createdAt DESC")
     List<UserInvitation> findByOrganizationId(@Param("organizationId") UUID organizationId);
 

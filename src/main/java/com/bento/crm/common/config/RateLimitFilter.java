@@ -57,7 +57,10 @@ public class RateLimitFilter extends OncePerRequestFilter {
     }
 
     private Bucket selectBucket(HttpServletRequest request, String path, String method, String clientIp) {
-        if (path.contains("/auth/login")) {
+        if (path.contains("/auth/login") || path.contains("/auth/password-reset")
+                || path.endsWith("/auth/verification") || path.endsWith("/auth/verify-email")) {
+            // Unauthenticated, and each either checks a secret or sends an email, so they share
+            // the sign-in limit: guessing links and flooding an inbox cost the same as guessing passwords.
             return rateLimitConfig.resolveAuthBucket(clientIp);
         } else if (path.endsWith("/auth/refresh")) {
             return rateLimitConfig.resolveRefreshBucket(clientIp);

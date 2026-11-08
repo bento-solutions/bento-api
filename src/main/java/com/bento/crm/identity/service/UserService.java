@@ -24,6 +24,7 @@ import java.util.UUID;
 public class UserService {
 
     private final AppUserRepository userRepository;
+    private final com.bento.crm.identity.repository.RefreshTokenRepository refreshTokenRepository;
     private final UserMapper userMapper;
 
     public UserResponseDto getUserById(UUID userId) {
@@ -112,6 +113,19 @@ public class UserService {
 
         user.setIsActive(false);
         userRepository.save(user);
+    }
+
+    /**
+     * The person leaves the Organization this Membership belongs to: the Membership is deactivated
+     * and its sessions end. Their other Organizations are untouched, and an admin can invite them
+     * back later.
+     */
+    @Transactional
+    public void leave(AppUser membership) {
+        ensureAnotherActiveAdminRemains(membership);
+        membership.setIsActive(false);
+        userRepository.save(membership);
+        refreshTokenRepository.revokeAllForUser(membership.getId(), java.time.Instant.now());
     }
 
     /**

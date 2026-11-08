@@ -1,5 +1,6 @@
 package com.bento.crm.organization.controller;
 
+import com.bento.crm.identity.dto.AccountDtos;
 import com.bento.crm.organization.dto.CreateOrganizationRequest;
 import com.bento.crm.organization.dto.OrganizationResponse;
 import com.bento.crm.organization.dto.UpdateOrganizationRequest;
@@ -22,11 +23,18 @@ public class OrganizationController {
 
     private final OrganizationService organizationService;
 
+    /**
+     * 201 with the Organization, or 202 "check_email" when the person must first confirm their
+     * address. The 202 is the same whether or not the address already had an Account.
+     */
     @PostMapping
     @Operation(summary = "Create organization", description = "Create new organization (signup)")
-    public ResponseEntity<OrganizationResponse> createOrganization(@Valid @RequestBody CreateOrganizationRequest request) {
-        Organization organization = organizationService.createOrganization(request);
-        return ResponseEntity.status(HttpStatus.CREATED).body(OrganizationResponse.fromEntity(organization));
+    public ResponseEntity<?> createOrganization(@Valid @RequestBody CreateOrganizationRequest request) {
+        OrganizationService.SignUpResult result = organizationService.signUp(request);
+        if (result.organization() == null) {
+            return ResponseEntity.accepted().body(AccountDtos.CheckEmailResponse.sentTo(result.checkEmail()));
+        }
+        return ResponseEntity.status(HttpStatus.CREATED).body(OrganizationResponse.fromEntity(result.organization()));
     }
 
     @GetMapping("/me")

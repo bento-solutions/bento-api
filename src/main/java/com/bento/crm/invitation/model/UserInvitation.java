@@ -48,7 +48,17 @@ public class UserInvitation extends BaseTenantEntity {
     @Column(nullable = false, unique = true, length = 64)
     private String tokenHash;
 
-    /** The plaintext token kept while pending so an admin can copy and share the link manually. */
+    /**
+     * SHA-256 of the share token: the link an admin copies and passes on some other way. It lets
+     * the invitee join, but unlike the emailed token it doesn't show they read the invited inbox.
+     */
+    @Column(unique = true, length = 64)
+    private String shareTokenHash;
+
+    /**
+     * The plaintext share token, kept while pending so an admin can copy the link again. Never the
+     * emailed token, which only the email carries.
+     */
     @Column(length = 255)
     private String rawToken;
 
