@@ -6,8 +6,10 @@ import com.bento.crm.common.exception.AuthenticationFailedException;
 import com.bento.crm.common.exception.MultipleOrganizationsException;
 import com.bento.crm.identity.dto.UserResponseDto;
 import com.bento.crm.identity.mapper.UserMapper;
+import com.bento.crm.identity.model.Account;
 import com.bento.crm.identity.model.AppUser;
 import com.bento.crm.identity.model.RefreshToken;
+import com.bento.crm.identity.repository.AccountRepository;
 import com.bento.crm.identity.repository.AppUserRepository;
 import com.bento.crm.identity.repository.RefreshTokenRepository;
 import com.bento.crm.organization.model.Organization;
@@ -43,6 +45,7 @@ public class AuthService {
      */
     private static final String DUMMY_HASH = "$2a$12$C6UzMDM.H6dfI/f/IKcEe.7DKlF3M9ZLtEIcuNCE1u5ZfvIzZJHFq";
 
+    private final AccountRepository accountRepository;
     private final AppUserRepository userRepository;
     private final RefreshTokenRepository refreshTokenRepository;
     private final OrganizationRepository organizationRepository;
@@ -61,78 +64,64 @@ public class AuthService {
     private long refreshReuseGraceMs;
 
     /**
-     * Authenticates by email and password.
-     *
-     * <p>Email is unique per organization, not globally, so an address can belong to several
-     * tenants. The password decides which: every candidate account is checked and exactly one
-     * must match. Two accounts sharing an email <em>and</em> a password is disambiguated by
-     * providing organization_id, or prompted with the list of available workspaces.
+     * Authenticates an Account by email and password, then opens a session in one of its
+     * Memberships. With several active Memberships and no {@code organizationId}, the person is
+     * asked to choose (409 with the choices); {@code organizationId} only narrows the choice and is
+     * never a credential.
      */
     @Transactional
     public LoginResponse login(String email, String password, UUID organizationId) {
-        List<AppUser> candidates = userRepository.findAllByEmailAcrossOrganizations(normalizeEmail(email));
-        if (organizationId != null) {
-            candidates = candidates.stream()
-                    .filter(u -> organizationId.equals(u.getOrganizationId()))
-                    .toList();
-        }
-
-        if (candidates.isEmpty()) {
+        Account account = accountRepository.findByEmail(Account.normalizeEmail(email)).orElse(null);
+        if (account == null) {
             // Burn a BCrypt round anyway so the timing matches the "account exists" path.
             passwordEncoder.matches(password, DUMMY_HASH);
             throw new AuthenticationFailedException("Invalid credentials");
         }
-
-        List<AppUser> matched = candidates.stream()
-                .filter(u -> passwordEncoder.matches(password, u.getPasswordHash()))
-                .toList();
-
-        if (matched.isEmpty()) {
+        if (!passwordEncoder.matches(password, account.getPasswordHash())) {
             throw new AuthenticationFailedException("Invalid credentials");
         }
 
-        List<AppUser> activeMatched = matched.stream()
-                .filter(u -> Boolean.TRUE.equals(u.getIsActive()))
+        List<AppUser> active = activeMemberships(account.getId()).stream()
+                .filter(m -> organizationId == null || organizationId.equals(m.getOrganizationId()))
                 .toList();
-
-        if (activeMatched.isEmpty()) {
-            throw new AuthenticationFailedException("User account is inactive");
+        if (active.isEmpty()) {
+            throw new AuthenticationFailedException(organizationId == null
+                    ? "User account is inactive"
+                    : "Invalid credentials");
         }
-
-        if (activeMatched.size() > 1) {
-            log.warn("Login for {} matched {} active accounts across organizations", email, activeMatched.size());
-            List<UUID> orgIds = activeMatched.stream().map(AppUser::getOrganizationId).toList();
-            Map<UUID, Organization> orgMap = organizationRepository.findAllById(orgIds).stream()
-                    .collect(Collectors.toMap(Organization::getId, Function.identity()));
-
-            List<OrganizationChoiceDto> choices = activeMatched.stream()
-                    .map(u -> {
-                        Organization org = orgMap.get(u.getOrganizationId());
-                        String orgName = org != null ? org.getName() : "Workspace";
-                        String logoUrl = org != null ? org.getLogoUrl() : null;
-                        return OrganizationChoiceDto.builder()
-                                .organizationId(u.getOrganizationId())
-                                .organizationName(orgName)
-                                .logoUrl(logoUrl)
-                                .role(u.getRole() != null ? u.getRole().name() : null)
-                                .joinedAt(u.getCreatedAt())
-                                .lastActiveAt(u.getLastActiveAt())
-                                .build();
-                    })
-                    .sorted((a, b) -> {
-                        if (a.getLastActiveAt() == null && b.getLastActiveAt() == null) return 0;
-                        if (a.getLastActiveAt() == null) return 1;
-                        if (b.getLastActiveAt() == null) return -1;
-                        return b.getLastActiveAt().compareTo(a.getLastActiveAt());
-                    })
-                    .toList();
-
+        if (active.size() > 1) {
             throw new MultipleOrganizationsException(
                     "This account belongs to multiple organizations. Please select an organization to sign in to.",
-                    choices);
+                    organizationChoices(active));
         }
+        return issueSession(active.get(0));
+    }
 
-        return issueSession(activeMatched.get(0));
+    /** The Account's Memberships a session can be opened in, most recently used first. */
+    public List<AppUser> activeMemberships(UUID accountId) {
+        return userRepository.findAllByAccountIdAcrossOrganizations(accountId).stream()
+                .filter(m -> Boolean.TRUE.equals(m.getIsActive()) && m.getDeletedAt() == null)
+                .toList();
+    }
+
+    /** Describes Memberships as the Organizations a person can pick from, in the given order. */
+    public List<OrganizationChoiceDto> organizationChoices(List<AppUser> memberships) {
+        List<UUID> orgIds = memberships.stream().map(AppUser::getOrganizationId).toList();
+        Map<UUID, Organization> orgs = organizationRepository.findAllById(orgIds).stream()
+                .collect(Collectors.toMap(Organization::getId, Function.identity()));
+        return memberships.stream()
+                .map(m -> {
+                    Organization org = orgs.get(m.getOrganizationId());
+                    return OrganizationChoiceDto.builder()
+                            .organizationId(m.getOrganizationId())
+                            .organizationName(org != null ? org.getName() : "Workspace")
+                            .logoUrl(org != null ? org.getLogoUrl() : null)
+                            .role(m.getRole() != null ? m.getRole().name() : null)
+                            .joinedAt(m.getCreatedAt())
+                            .lastActiveAt(m.getLastActiveAt())
+                            .build();
+                })
+                .toList();
     }
 
     /**
@@ -238,10 +227,6 @@ public class AuthService {
                 .expiresIn(Duration.ofMillis(accessTokenExpiryMs).toSeconds())
                 .user(userDto)
                 .build();
-    }
-
-    private static String normalizeEmail(String email) {
-        return email == null ? "" : email.trim();
     }
 
     private String hashToken(String token) {

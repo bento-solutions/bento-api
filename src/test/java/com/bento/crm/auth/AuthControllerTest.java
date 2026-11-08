@@ -1,6 +1,8 @@
 package com.bento.crm.auth;
 
+import com.bento.crm.identity.model.AppUser;
 import com.bento.crm.support.IntegrationTestBase;
+import com.fasterxml.jackson.databind.JsonNode;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.MediaType;
 
@@ -209,22 +211,40 @@ class AuthControllerTest extends IntegrationTestBase {
                                 """.formatted(userEmail)))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString();
-        String rawToken = objectMapper.readTree(inviteResponse).get("token").asText();
+        JsonNode invitation = objectMapper.readTree(inviteResponse);
+        String rawToken = invitation.get("token").asText();
+        String invitationId = invitation.get("id").asText();
 
-        // 4. Accept invite with the same sharedPassword
+        // 4. The address already has an Account, so the signed-out acceptance refuses: setting a
+        //    password from the link would let whoever holds it take that Account over.
         mockMvc.perform(post("/public/invitations/accept")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {
                                   "token": "%s",
                                   "display_name": "Invited User",
-                                  "password": "%s"
+                                  "password": "SomeoneElse123!"
                                 }
-                                """.formatted(rawToken, sharedPassword)))
+                                """.formatted(rawToken)))
+                .andExpect(status().isConflict());
+
+        //    Signed in, the same person accepts and keeps their one password.
+        String userLogin = mockMvc.perform(post("/auth/login")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"email": "%s", "password": "%s"}
+                                """.formatted(userEmail, sharedPassword)))
+                .andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+        mockMvc.perform(post("/invitations/" + invitationId + "/accept-logged-in")
+                        .header("Authorization", "Bearer " + objectMapper.readTree(userLogin).get("access_token").asText())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"token": "%s"}
+                                """.formatted(rawToken)))
                 .andExpect(status().isOk());
 
-        // Joining Org 2 leaves the Org 1 membership active, so the shared password now matches two
-        // memberships and login asks which organization to open.
+        // The Account now holds two active Memberships, so login asks which organization to open.
         String multiOrgResponse = mockMvc.perform(post("/auth/login")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
@@ -253,6 +273,8 @@ class AuthControllerTest extends IntegrationTestBase {
 
         assertThat(appUserRepository.findAllByEmailAcrossOrganizations(userEmail))
                 .hasSize(2)
-                .allMatch(u -> Boolean.TRUE.equals(u.getIsActive()));
+                .allMatch(u -> Boolean.TRUE.equals(u.getIsActive()))
+                .extracting(AppUser::getAccountId)
+                .containsOnly(appUserRepository.findAllByEmailAcrossOrganizations(userEmail).get(0).getAccountId());
     }
 }

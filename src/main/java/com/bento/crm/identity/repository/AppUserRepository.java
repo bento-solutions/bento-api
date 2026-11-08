@@ -24,6 +24,20 @@ public interface AppUserRepository extends JpaRepository<AppUser, UUID> {
     @Query(value = "SELECT * FROM app_user u WHERE u.organization_id = :organizationId AND lower(u.email) = lower(:email)", nativeQuery = true)
     Optional<AppUser> findByOrganizationIdAndEmailAcrossOrganizations(@Param("organizationId") UUID organizationId, @Param("email") String email);
 
+    /**
+     * Every Membership of one Account, in any Organization. Like {@link #findAllByEmailAcrossOrganizations}
+     * it deliberately crosses tenants: it is how a person's Organizations are found at sign-in and
+     * in the switcher.
+     */
+    @Query(value = "SELECT * FROM app_user u WHERE u.account_id = :accountId ORDER BY u.last_active_at DESC NULLS LAST, u.created_at",
+            nativeQuery = true)
+    List<AppUser> findAllByAccountIdAcrossOrganizations(@Param("accountId") UUID accountId);
+
+    @Query(value = "SELECT * FROM app_user u WHERE u.account_id = :accountId AND u.organization_id = :organizationId",
+            nativeQuery = true)
+    Optional<AppUser> findByAccountIdAndOrganizationIdAcrossOrganizations(@Param("accountId") UUID accountId,
+                                                                           @Param("organizationId") UUID organizationId);
+
 
     /**
      * Cross-tenant lookup by email, used only by the login and signup paths.

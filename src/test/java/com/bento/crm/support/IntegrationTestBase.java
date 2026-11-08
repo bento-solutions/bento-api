@@ -135,10 +135,13 @@ public abstract class IntegrationTestBase {
      */
     protected String tokenForNewUser(UUID orgId, UserRole role) {
         UUID userId = UUID.randomUUID();
-        testJdbc.update("INSERT INTO app_user (id, organization_id, email, password_hash, display_name, role) "
-                        + "VALUES (?, ?, ?, 'not-a-real-hash', ?, ?)",
-                userId, orgId, role.name().toLowerCase() + "-" + userId + "@example.com",
-                "Test " + role.name(), role.name());
+        UUID accountId = UUID.randomUUID();
+        String email = role.name().toLowerCase() + "-" + userId + "@example.com";
+        testJdbc.update("INSERT INTO account (id, email, password_hash) VALUES (?, ?, 'not-a-real-hash')",
+                accountId, email);
+        testJdbc.update("INSERT INTO app_user (id, organization_id, account_id, email, display_name, role) "
+                        + "VALUES (?, ?, ?, ?, ?, ?)",
+                userId, orgId, accountId, email, "Test " + role.name(), role.name());
         return jwtService.generateAccessToken(userId, orgId, role);
     }
 

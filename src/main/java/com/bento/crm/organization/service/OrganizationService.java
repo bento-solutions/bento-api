@@ -7,7 +7,9 @@ import com.bento.crm.businesstype.repository.BusinessTypeRepository;
 import com.bento.crm.common.context.TenantContext;
 import com.bento.crm.common.exception.ResourceNotFoundException;
 import com.bento.crm.common.model.UserRole;
+import com.bento.crm.identity.model.Account;
 import com.bento.crm.identity.model.AppUser;
+import com.bento.crm.identity.repository.AccountRepository;
 import com.bento.crm.identity.repository.AppUserRepository;
 import com.bento.crm.organization.dto.CreateOrganizationRequest;
 import com.bento.crm.organization.dto.UpdateOrganizationRequest;
@@ -22,6 +24,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -31,6 +34,7 @@ import java.util.UUID;
 public class OrganizationService {
 
     private final OrganizationRepository organizationRepository;
+    private final AccountRepository accountRepository;
     private final AppUserRepository userRepository;
     private final PasswordEncoder passwordEncoder;
     private final FileStorageService fileStorageService;
@@ -40,13 +44,17 @@ public class OrganizationService {
 
     @Transactional
     public Organization createOrganization(CreateOrganizationRequest request) {
-        // Signup is unauthenticated, so reject an address that is already registered anywhere.
-        // Without this an attacker could create an organization under a customer's email and add
-        // a second account resolvable by the cross-tenant login lookup.
-        String adminEmail = request.getAdminEmail().trim().toLowerCase();
-        if (!userRepository.findAllByEmailAcrossOrganizations(adminEmail).isEmpty()) {
+        // Signup is unauthenticated, so it never touches an existing Account: that would let anyone
+        // who knows an address attach a new Organization (and a password) to someone else's sign-in.
+        String adminEmail = Account.normalizeEmail(request.getAdminEmail());
+        if (accountRepository.findByEmail(adminEmail).isPresent()) {
             throw new IllegalStateException("An account with this email already exists");
         }
+        Account account = accountRepository.save(Account.builder()
+                .email(adminEmail)
+                .passwordHash(passwordEncoder.encode(request.getAdminPassword()))
+                .passwordChangedAt(Instant.now())
+                .build());
 
         Organization organization = Organization.builder()
                 .name(request.getName())
@@ -62,8 +70,8 @@ public class OrganizationService {
         TenantContext.setCurrentOrganizationId(organization.getId());
 
         AppUser adminUser = AppUser.builder()
+                .accountId(account.getId())
                 .email(adminEmail)
-                .passwordHash(passwordEncoder.encode(request.getAdminPassword()))
                 .displayName(request.getAdminName())
                 .role(UserRole.ADMIN)
                 .isActive(true)

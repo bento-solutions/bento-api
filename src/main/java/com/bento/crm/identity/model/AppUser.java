@@ -24,11 +24,16 @@ import java.util.UUID;
 @Builder
 public class AppUser extends BaseTenantEntity {
 
+    /**
+     * The person behind this Membership. Their password and email verification live on the
+     * {@link Account}; this row only holds what is specific to one Organization.
+     */
+    @Column(nullable = false, columnDefinition = "uuid")
+    private UUID accountId;
+
+    /** A copy of the Account's address, kept because so much Organization-scoped code reads it. */
     @Column(nullable = false)
     private String email;
-
-    @Column(nullable = false)
-    private String passwordHash;
 
     @Column(nullable = false)
     private String displayName;

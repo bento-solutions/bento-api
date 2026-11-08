@@ -8,6 +8,7 @@ import com.bento.crm.common.mail.EmailService;
 import com.bento.crm.common.model.UserRole;
 import com.bento.crm.identity.model.AppUser;
 import com.bento.crm.identity.model.Team;
+import com.bento.crm.identity.repository.AccountRepository;
 import com.bento.crm.identity.repository.AppUserRepository;
 import com.bento.crm.identity.repository.TeamRepository;
 import com.bento.crm.invitation.dto.CreateInvitationRequest;
@@ -49,6 +50,8 @@ class InvitationServiceTest {
 
     @Mock
     private UserInvitationRepository invitationRepository;
+    @Mock
+    private AccountRepository accountRepository;
     @Mock
     private AppUserRepository userRepository;
     @Mock
@@ -135,6 +138,7 @@ class InvitationServiceTest {
         UUID targetOrgId = UUID.randomUUID();
         UUID teamId = UUID.randomUUID();
         UUID currentUserId = UUID.randomUUID();
+        UUID accountId = UUID.randomUUID();
         String email = "adnanetouta@crmbento.com";
 
         UserInvitation invitation = UserInvitation.builder()
@@ -152,8 +156,8 @@ class InvitationServiceTest {
 
         AppUser currentUser = AppUser.builder()
                 .email(email)
+                .accountId(accountId)
                 .displayName("Adnan Touta")
-                .passwordHash("$2a$12$existingHash...")
                 .role(UserRole.VIEWER)
                 .jobTitle("Marketer")
                 .isActive(true)
@@ -162,7 +166,7 @@ class InvitationServiceTest {
         currentUser.setOrganizationId(UUID.randomUUID());
 
         when(userRepository.findById(currentUserId)).thenReturn(Optional.of(currentUser));
-        when(userRepository.findByOrganizationIdAndEmailAcrossOrganizations(targetOrgId, email)).thenReturn(Optional.empty());
+        when(userRepository.findByAccountIdAndOrganizationIdAcrossOrganizations(accountId, targetOrgId)).thenReturn(Optional.empty());
         when(teamRepository.findByOrganizationIdAndId(targetOrgId, teamId)).thenReturn(Optional.of(Team.builder().build()));
 
         when(userRepository.save(any(AppUser.class))).thenAnswer(invocationOnMock -> {
@@ -196,7 +200,8 @@ class InvitationServiceTest {
         assertThat(savedUser.getEmail()).isEqualTo(email);
         assertThat(savedUser.getRole()).isEqualTo(UserRole.MANAGER);
         assertThat(savedUser.getTeamId()).isEqualTo(teamId);
-        assertThat(savedUser.getPasswordHash()).isEqualTo("$2a$12$existingHash...");
+        // The new Membership belongs to the same Account, so the person keeps one password.
+        assertThat(savedUser.getAccountId()).isEqualTo(accountId);
     }
 
     @Test

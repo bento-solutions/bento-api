@@ -46,4 +46,12 @@ public class InvitationPreviewResponse {
 
     @JsonProperty("expires_at")
     private Instant expiresAt;
+
+    /**
+     * Whether the invited address already signs in to Bento. If so, the page asks for that
+     * password instead of offering to create an Account. Only the token holder learns this, and
+     * only about the address the invitation was sent to.
+     */
+    @JsonProperty("has_account")
+    private boolean hasAccount;
 }

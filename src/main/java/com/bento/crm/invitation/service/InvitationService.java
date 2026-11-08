@@ -6,7 +6,9 @@ import com.bento.crm.common.context.TenantContext;
 import com.bento.crm.common.exception.ResourceNotFoundException;
 import com.bento.crm.common.mail.EmailService;
 import com.bento.crm.common.model.UserRole;
+import com.bento.crm.identity.model.Account;
 import com.bento.crm.identity.model.AppUser;
+import com.bento.crm.identity.repository.AccountRepository;
 import com.bento.crm.identity.repository.AppUserRepository;
 import com.bento.crm.invitation.dto.AcceptInvitationRequest;
 import com.bento.crm.invitation.dto.CreateInvitationRequest;
@@ -52,6 +54,7 @@ public class InvitationService {
             DateTimeFormatter.ofPattern("d MMMM yyyy", Locale.ENGLISH).withZone(ZoneId.of("UTC"));
 
     private final UserInvitationRepository invitationRepository;
+    private final AccountRepository accountRepository;
     private final AppUserRepository userRepository;
     private final OrganizationRepository organizationRepository;
     private final TeamRepository teamRepository;
@@ -222,6 +225,7 @@ public class InvitationService {
                 .jobTitle(invitation.getJobTitle())
                 .invitedByName(inviterName(invitation).orElse(null))
                 .expiresAt(invitation.getExpiresAt())
+                .hasAccount(accountRepository.findByEmail(Account.normalizeEmail(invitation.getEmail())).isPresent())
                 .build();
     }
 
@@ -235,16 +239,21 @@ public class InvitationService {
         UserInvitation invitation = requireAcceptable(request.getToken());
         UUID orgId = invitation.getOrganizationId();
 
-        // Between the invite going out and it being accepted, someone may have created the
-        // account by hand.
-        if (userRepository.findByOrganizationIdAndEmail(orgId, invitation.getEmail()).isPresent()) {
+        // A person who already has an Account joins by signing in and accepting from there. Setting
+        // a password here would let whoever holds the link take over that Account.
+        if (accountRepository.findByEmail(Account.normalizeEmail(invitation.getEmail())).isPresent()) {
             throw new IllegalStateException("An account already exists for this email. Sign in instead.");
         }
+        Account account = accountRepository.save(Account.builder()
+                .email(invitation.getEmail())
+                .passwordHash(passwordEncoder.encode(request.getPassword()))
+                .passwordChangedAt(Instant.now())
+                .build());
 
         String displayName = request.getDisplayName().trim();
         AppUser user = AppUser.builder()
+                .accountId(account.getId())
                 .email(invitation.getEmail())
-                .passwordHash(passwordEncoder.encode(request.getPassword()))
                 .displayName(displayName)
                 .initials(deriveInitials(displayName))
                 .role(invitation.getRole())
@@ -270,9 +279,9 @@ public class InvitationService {
     }
 
     /**
-     * Accepts an invitation for a signed-in user, reusing their password for the new membership.
-     * The emailed token is required as well as a matching address: the address on a membership is
-     * not verified, so only the link shows that the caller reads that inbox.
+     * Adds a Membership in the inviting Organization to the signed-in person's Account. The
+     * emailed token is required as well as a matching address: an address alone is not proof that
+     * the caller reads that inbox.
      */
     @Transactional
     public LoginResponse acceptForLoggedInUser(UUID invitationId, String token, UUID currentUserId) {
@@ -289,8 +298,8 @@ public class InvitationService {
         }
 
         // Extract needed fields and detach currentUser from Hibernate session
+        UUID accountId = currentUser.getAccountId();
         String email = currentUser.getEmail();
-        String passwordHash = currentUser.getPasswordHash();
         String displayName = currentUser.getDisplayName() != null ? currentUser.getDisplayName() : invitation.getDisplayName();
         if (displayName == null || displayName.isBlank()) {
             displayName = email.split("@")[0];
@@ -315,7 +324,7 @@ public class InvitationService {
             assignedTeamId = null;
         }
 
-        Optional<AppUser> existingInTarget = userRepository.findByOrganizationIdAndEmailAcrossOrganizations(targetOrgId, email);
+        Optional<AppUser> existingInTarget = userRepository.findByAccountIdAndOrganizationIdAcrossOrganizations(accountId, targetOrgId);
         AppUser targetUser;
         if (existingInTarget.isPresent()) {
             targetUser = existingInTarget.get();
@@ -328,8 +337,8 @@ public class InvitationService {
             targetUser = userRepository.save(targetUser);
         } else {
             targetUser = AppUser.builder()
+                    .accountId(accountId)
                     .email(email)
-                    .passwordHash(passwordHash)
                     .displayName(displayName)
                     .initials(deriveInitials(displayName))
                     .role(invitation.getRole())
