@@ -46,7 +46,11 @@ public class UserService {
             user.setLanguage(request.getLanguage());
         }
         if (request.getRole() != null) {
-            user.setRole(UserRole.valueOf(request.getRole()));
+            UserRole newRole = UserRole.valueOf(request.getRole());
+            if (newRole != UserRole.ADMIN) {
+                ensureAnotherActiveAdminRemains(user);
+            }
+            user.setRole(newRole);
         }
         user.setTeamId(request.getTeamId() != null && !request.getTeamId().isBlank() ? UUID.fromString(request.getTeamId()) : null);
 
@@ -104,12 +108,25 @@ public class UserService {
         AppUser user = userRepository.findByOrganizationIdAndId(orgId, userId)
                 .orElseThrow(() -> new ResourceNotFoundException("User not found"));
 
-        long activeAdmins = userRepository.countActiveAdminsByOrganizationId(user.getOrganizationId());
-        if (user.getRole() == UserRole.ADMIN && activeAdmins <= 1) {
-            throw new IllegalStateException("Cannot deactivate the last admin");
-        }
+        ensureAnotherActiveAdminRemains(user);
 
         user.setIsActive(false);
         userRepository.save(user);
+    }
+
+    /**
+     * An Organization always keeps at least one active admin. Call this before any change that
+     * would take {@code member} out of that set. It locks the Organization's active admins, so two
+     * admins demoting or deactivating each other at the same moment can't both succeed.
+     */
+    private void ensureAnotherActiveAdminRemains(AppUser member) {
+        if (member.getRole() != UserRole.ADMIN || !Boolean.TRUE.equals(member.getIsActive())) {
+            return;
+        }
+        boolean anotherRemains = userRepository.lockActiveAdmins(member.getOrganizationId()).stream()
+                .anyMatch(admin -> !admin.getId().equals(member.getId()));
+        if (!anotherRemains) {
+            throw new IllegalStateException("Can't remove the last admin. Assign another admin first.");
+        }
     }
 }
