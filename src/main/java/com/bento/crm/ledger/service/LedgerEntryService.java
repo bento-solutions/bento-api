@@ -73,6 +73,16 @@ public class LedgerEntryService {
     public PageResponse<LedgerDtos.Entry> list(UUID journalId, LocalDate from, LocalDate to, UUID accountId,
                                                UUID partnerId, UUID costCenterId, String q, String sourceType,
                                                UUID sourceId, Pageable pageable) {
+        return list(journalId, from, to, accountId, partnerId, new LedgerDtos.LineFilter(null, null, null, null, costCenterId),
+                q, sourceType, sourceId, pageable);
+    }
+
+    /** Entries with at least one line matching all the line filters (account, partner, dimensions) given. */
+    @Transactional
+    public PageResponse<LedgerDtos.Entry> list(UUID journalId, LocalDate from, LocalDate to, UUID accountId,
+                                               UUID partnerId, LedgerDtos.LineFilter dims, String q, String sourceType,
+                                               UUID sourceId, Pageable pageable) {
+        if (dims == null) dims = LedgerDtos.LineFilter.NONE;
         UUID orgId = org();
         StringBuilder where = new StringBuilder(" FROM ledger_entry e WHERE e.organization_id = ? AND e.deleted_at IS NULL");
         List<Object> params = new ArrayList<>();
@@ -97,7 +107,7 @@ public class LedgerEntryService {
             where.append(" AND e.entry_date <= ?");
             params.add(to);
         }
-        if (accountId != null || partnerId != null || costCenterId != null) {
+        if (accountId != null || partnerId != null || !dims.isEmpty()) {
             where.append(" AND EXISTS (SELECT 1 FROM ledger_entry_line l WHERE l.entry_id = e.id AND l.deleted_at IS NULL");
             if (accountId != null) {
                 where.append(" AND l.account_id = ?");
@@ -107,10 +117,7 @@ public class LedgerEntryService {
                 where.append(" AND l.partner_id = ?");
                 params.add(partnerId);
             }
-            if (costCenterId != null) {
-                where.append(" AND l.cost_center_id = ?");
-                params.add(costCenterId);
-            }
+            dims.appendTo(where, params, "l");
             where.append(")");
         }
         if (q != null && !q.isBlank()) {
@@ -178,8 +185,7 @@ public class LedgerEntryService {
                 .orElseThrow(() -> new ResourceNotFoundException("Journal not found"));
         List<LedgerPostingService.PostingLine> lines = lineRepository
                 .findByOrganizationIdAndEntryIdIn(orgId, List.of(original.getId())).stream()
-                .map(l -> new LedgerPostingService.PostingLine(l.getAccountId(), l.getPartnerId(), l.getCostCenterId(),
-                        l.getLabel(), l.getCredit(), l.getDebit()))
+                .map(LedgerPostingService.PostingLine::reversing)
                 .toList();
         LocalDate date = request != null && request.entryDate() != null ? request.entryDate() : LocalDate.now();
         String description = request != null && request.description() != null && !request.description().isBlank()
@@ -238,6 +244,16 @@ public class LedgerEntryService {
         Set<UUID> partnerIds = allLines.stream().map(LedgerEntryLine::getPartnerId).filter(Objects::nonNull)
                 .collect(Collectors.toSet());
         Map<UUID, String> partners = names(orgId, "partner", "name", partnerIds);
+        Set<UUID> dimPartnerIds = new HashSet<>();
+        allLines.forEach(l -> {
+            if (l.getCustomerId() != null) dimPartnerIds.add(l.getCustomerId());
+            if (l.getVendorId() != null) dimPartnerIds.add(l.getVendorId());
+        });
+        Map<UUID, String> dimPartners = names(orgId, "partner", "COALESCE(NULLIF(company_name, ''), name)", dimPartnerIds);
+        Map<UUID, String> missions = names(orgId, "mission", "name", allLines.stream().map(LedgerEntryLine::getMissionId)
+                .filter(Objects::nonNull).collect(Collectors.toSet()));
+        Map<UUID, String> deals = names(orgId, "deal", "title", allLines.stream().map(LedgerEntryLine::getDealId)
+                .filter(Objects::nonNull).collect(Collectors.toSet()));
         Set<UUID> userIds = entries.stream().map(LedgerEntry::getCreatedBy).filter(Objects::nonNull)
                 .collect(Collectors.toSet());
         Map<UUID, String> users = names(orgId, "app_user", "display_name", userIds);
@@ -253,7 +269,11 @@ public class LedgerEntryService {
                         return new LedgerDtos.Line(l.getId(), l.getLineNo(), l.getAccountId(),
                                 a == null ? null : a.getCode(), a == null ? null : a.getName(), l.getPartnerId(),
                                 l.getPartnerId() == null ? null : partners.get(l.getPartnerId()), l.getCostCenterId(),
-                                cc == null ? null : cc.getCode(), l.getLabel(), l.getDebit(), l.getCredit());
+                                cc == null ? null : cc.getCode(), l.getLabel(), l.getDebit(), l.getCredit(),
+                                l.getMissionId(), l.getMissionId() == null ? null : missions.get(l.getMissionId()),
+                                l.getDealId(), l.getDealId() == null ? null : deals.get(l.getDealId()),
+                                l.getCustomerId(), l.getCustomerId() == null ? null : dimPartners.get(l.getCustomerId()),
+                                l.getVendorId(), l.getVendorId() == null ? null : dimPartners.get(l.getVendorId()));
                     })
                     .toList();
             result.add(new LedgerDtos.Entry(e.getId(), e.getNumber(), e.getJournalId(), journals.get(e.getJournalId()),
@@ -264,7 +284,7 @@ public class LedgerEntryService {
         return result;
     }
 
-    /** id -> column for the given ids of a tenant table (table and column are constants, never input). */
+    /** id -> column (or expression) for the given ids of a tenant table (table and column are constants, never input). */
     private Map<UUID, String> names(UUID orgId, String table, String column, Set<UUID> ids) {
         Map<UUID, String> names = new HashMap<>();
         if (ids.isEmpty()) {

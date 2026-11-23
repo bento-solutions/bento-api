@@ -37,7 +37,7 @@ public class LedgerExportService {
     public static final String XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
     public static final String[] COLUMNS = {"JournalCode", "JournalLib", "EcritureNum", "EcritureDate", "CompteNum",
             "CompteLib", "CompAuxNum", "CompAuxLib", "PieceRef", "PieceDate", "EcritureLib", "Debit", "Credit",
-            "SectionAnalytique", "SourceType"};
+            "SectionAnalytique", "Mission", "Affaire", "Client", "Fournisseur", "SourceType"};
     private static final DateTimeFormatter FEC_DATE = DateTimeFormatter.ofPattern("yyyyMMdd");
 
     private final LedgerSetupService setup;
@@ -112,8 +112,11 @@ public class LedgerExportService {
     private interface LineSink {
         void line(String journalCode, String journalLib, String number, LocalDate date, String account,
                   String accountLib, String auxNum, String auxLib, String pieceRef, LocalDate pieceDate, String label,
-                  BigDecimal debit, BigDecimal credit, String costCenter, String sourceType) throws IOException;
+                  BigDecimal debit, BigDecimal credit, String costCenter, Dims dims, String sourceType) throws IOException;
     }
+
+    /** The analytic dimensions of a line, as the export writes them: mission name, deal number (else title), customer, vendor. */
+    private record Dims(String mission, String deal, String customer, String vendor) {}
 
     private void entries(UUID orgId, Period p, LineSink sink) {
         JdbcTemplate cursor = new JdbcTemplate(jdbc.getDataSource());
@@ -121,13 +124,19 @@ public class LedgerExportService {
         cursor.query("""
                 SELECT j.code, j.name, e.number, e.entry_date, a.code, a.name, l.partner_id, pt.name,
                        COALESCE(i.invoice_number, e.source_label, e.number), COALESCE(i.invoice_date, e.entry_date),
-                       COALESCE(l.label, e.description), l.debit, l.credit, cc.code, e.source_type
+                       COALESCE(l.label, e.description), l.debit, l.credit, cc.code, e.source_type,
+                       dm.name, COALESCE(NULLIF(dd.order_number, ''), dd.title),
+                       COALESCE(NULLIF(dc.company_name, ''), dc.name), COALESCE(NULLIF(dv.company_name, ''), dv.name)
                 FROM ledger_entry_line l
                 JOIN ledger_entry e ON e.id = l.entry_id AND e.organization_id = l.organization_id AND e.deleted_at IS NULL
                 JOIN ledger_account a ON a.id = l.account_id AND a.organization_id = l.organization_id
                 JOIN ledger_journal j ON j.id = e.journal_id
                 LEFT JOIN partner pt ON pt.id = l.partner_id
                 LEFT JOIN ledger_cost_center cc ON cc.id = l.cost_center_id
+                LEFT JOIN mission dm ON dm.id = l.mission_id
+                LEFT JOIN deal dd ON dd.id = l.deal_id
+                LEFT JOIN partner dc ON dc.id = l.customer_id
+                LEFT JOIN partner dv ON dv.id = l.vendor_id
                 LEFT JOIN invoice i ON i.id = e.source_id AND i.organization_id = e.organization_id
                      AND e.source_type IN ('INVOICE', 'BILL', 'ADVANCE', 'CREDIT_NOTE')
                 WHERE l.organization_id = ? AND l.deleted_at IS NULL AND e.entry_date >= ? AND e.entry_date <= ?
@@ -139,7 +148,8 @@ public class LedgerExportService {
                         rs.getString(5), rs.getString(6),
                         partnerId == null ? null : partnerId.toString().substring(0, 8).toUpperCase(Locale.ROOT),
                         rs.getString(8), rs.getString(9), rs.getObject(10, LocalDate.class), rs.getString(11),
-                        rs.getBigDecimal(12), rs.getBigDecimal(13), rs.getString(14), rs.getString(15));
+                        rs.getBigDecimal(12), rs.getBigDecimal(13), rs.getString(14),
+                        new Dims(rs.getString(16), rs.getString(17), rs.getString(18), rs.getString(19)), rs.getString(15));
             } catch (IOException e) {
                 throw new UncheckedIOException(e);
             }
@@ -153,9 +163,10 @@ public class LedgerExportService {
         w.write('﻿');
         w.write(String.join(";", COLUMNS));
         w.write("\r\n");
-        entries(orgId, p, (jc, jl, num, date, acc, accLib, auxNum, auxLib, piece, pieceDate, label, debit, credit, cc, st) -> {
+        entries(orgId, p, (jc, jl, num, date, acc, accLib, auxNum, auxLib, piece, pieceDate, label, debit, credit, cc, d, st) -> {
             String[] v = {jc, jl, num, date == null ? "" : date.format(FEC_DATE), acc, accLib, auxNum, auxLib, piece,
-                    pieceDate == null ? "" : pieceDate.format(FEC_DATE), label, plain(debit), plain(credit), cc, st};
+                    pieceDate == null ? "" : pieceDate.format(FEC_DATE), label, plain(debit), plain(credit), cc,
+                    d.mission(), d.deal(), d.customer(), d.vendor(), st};
             for (int i = 0; i < v.length; i++) {
                 if (i > 0) w.write(';');
                 w.write(csvField(v[i]));
@@ -184,10 +195,10 @@ public class LedgerExportService {
         try {
             LedgerXlsx x = new LedgerXlsx(wb);
             Sheet s = wb.createSheet("Écritures");
-            LedgerXlsx.widths(s, 8, 20, 14, 12, 12, 35, 12, 30, 18, 12, 40, 14, 14, 12, 14);
+            LedgerXlsx.widths(s, 8, 20, 14, 12, 12, 35, 12, 30, 18, 12, 40, 14, 14, 12, 25, 18, 25, 25, 14);
             x.headers(s, 0, COLUMNS);
             int[] r = {1};
-            entries(orgId, p, (jc, jl, num, date, acc, accLib, auxNum, auxLib, piece, pieceDate, label, debit, credit, cc, st) -> {
+            entries(orgId, p, (jc, jl, num, date, acc, accLib, auxNum, auxLib, piece, pieceDate, label, debit, credit, cc, d, st) -> {
                 Row row = s.createRow(r[0]++);
                 x.text(row, 0, jc, null);
                 x.text(row, 1, jl, null);
@@ -203,7 +214,11 @@ public class LedgerExportService {
                 x.amount(row, 11, debit, false);
                 x.amount(row, 12, credit, false);
                 x.text(row, 13, cc, null);
-                x.text(row, 14, st, null);
+                x.text(row, 14, d.mission(), null);
+                x.text(row, 15, d.deal(), null);
+                x.text(row, 16, d.customer(), null);
+                x.text(row, 17, d.vendor(), null);
+                x.text(row, 18, st, null);
             });
 
             x.trialBalance(reports.trialBalance(p.from(), p.to(), null), "Balance générale");

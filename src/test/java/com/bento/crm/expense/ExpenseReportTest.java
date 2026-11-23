@@ -77,8 +77,9 @@ class ExpenseReportTest extends IntegrationTestBase {
 
     private String report(String token, LocalDate from, LocalDate to) throws Exception {
         return json(post("/expense-reports"), token, """
-                {"employeeName": "Karim Alami", "title": "Mission Tanger", "periodFrom": "%s", "periodTo": "%s"}
-                """.formatted(from, to), 201).get("id").asText();
+                {"employeeName": "Karim Alami", "title": "Mission Tanger", "periodFrom": "%s", "periodTo": "%s",
+                 "costCenterId": "%s"}
+                """.formatted(from, to, costCenter(token, "COM")), 201).get("id").asText();
     }
 
     private JsonNode line(String token, String report, String body) throws Exception {

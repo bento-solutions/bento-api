@@ -32,9 +32,10 @@ public class ExpenseController {
             @RequestParam(required = false) String category, Pageable pageable) {
         var page = service.list(from, to, category, pageable);
         var refs = service.reportRefs(page.getContent());
+        Names names = service.names(page.getContent());
         return PageResponse.fromPage(page.map(e -> {
             ReportRef ref = e.getExpenseReportId() == null ? null : refs.get(e.getExpenseReportId());
-            return ExpenseResponse.of(e, ref == null ? null : ref.number(), ref == null ? null : ref.status());
+            return ExpenseResponse.of(e, ref == null ? null : ref.number(), ref == null ? null : ref.status(), names);
         }));
     }
 
@@ -48,13 +49,15 @@ public class ExpenseController {
     @PostMapping
     @PreAuthorize("hasAuthority('PAYMENTS_CREATE')")
     public ResponseEntity<ExpenseResponse> create(@Valid @RequestBody ExpenseRequest request) {
-        return ResponseEntity.status(HttpStatus.CREATED).body(ExpenseResponse.of(service.create(request)));
+        var e = service.create(request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(ExpenseResponse.of(e, null, null, service.names(java.util.List.of(e))));
     }
 
     @PutMapping("/{id}")
     @PreAuthorize("hasAuthority('PAYMENTS_WRITE')")
     public ExpenseResponse update(@PathVariable UUID id, @Valid @RequestBody ExpenseRequest request) {
-        return ExpenseResponse.of(service.update(id, request));
+        var e = service.update(id, request);
+        return ExpenseResponse.of(e, null, null, service.names(java.util.List.of(e)));
     }
 
     @DeleteMapping("/{id}")

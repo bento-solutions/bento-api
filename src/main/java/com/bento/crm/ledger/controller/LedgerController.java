@@ -127,8 +127,13 @@ public class LedgerController {
             @RequestParam(required = false) String q,
             @RequestParam(required = false) String sourceType,
             @RequestParam(required = false) UUID sourceId,
+            @RequestParam(required = false) UUID missionId,
+            @RequestParam(required = false) UUID dealId,
+            @RequestParam(required = false) UUID customerId,
+            @RequestParam(required = false) UUID vendorId,
             Pageable pageable) {
-        return entries.list(journalId, from, to, accountId, partnerId, costCenterId, q, sourceType, sourceId, pageable);
+        return entries.list(journalId, from, to, accountId, partnerId,
+                new LineFilter(missionId, dealId, customerId, vendorId, costCenterId), q, sourceType, sourceId, pageable);
     }
 
     /** The live entry a document (INVOICE, BILL, PAYMENT, EXPENSE, BANK_LINE) posted; 404 when none. */
@@ -168,8 +173,13 @@ public class LedgerController {
             @RequestParam(required = false) String accountFrom,
             @RequestParam(required = false) String accountTo,
             @RequestParam(required = false) UUID partnerId,
-            @RequestParam(required = false) UUID costCenterId) {
-        return reports.generalLedger(from, to, accountId, accountFrom, accountTo, partnerId, costCenterId);
+            @RequestParam(required = false) UUID costCenterId,
+            @RequestParam(required = false) UUID missionId,
+            @RequestParam(required = false) UUID dealId,
+            @RequestParam(required = false) UUID customerId,
+            @RequestParam(required = false) UUID vendorId) {
+        return reports.generalLedger(from, to, accountId, accountFrom, accountTo, partnerId,
+                new LineFilter(missionId, dealId, customerId, vendorId, costCenterId));
     }
 
     @GetMapping("/trial-balance")
@@ -177,8 +187,14 @@ public class LedgerController {
     public TrialBalance trialBalance(
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
-            @RequestParam(required = false) Integer accountClass) {
-        return reports.trialBalance(from, to, accountClass);
+            @RequestParam(required = false) Integer accountClass,
+            @RequestParam(required = false) UUID costCenterId,
+            @RequestParam(required = false) UUID missionId,
+            @RequestParam(required = false) UUID dealId,
+            @RequestParam(required = false) UUID customerId,
+            @RequestParam(required = false) UUID vendorId) {
+        return reports.trialBalance(from, to, accountClass,
+                new LineFilter(missionId, dealId, customerId, vendorId, costCenterId));
     }
 
     // Posting setup

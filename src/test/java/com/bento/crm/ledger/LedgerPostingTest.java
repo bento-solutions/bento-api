@@ -612,14 +612,14 @@ class LedgerPostingTest extends IntegrationTestBase {
         assertThat(m.get("514101")).isEqualByComparingTo("-1200");
 
         JsonNode cash = json(post("/expenses"), token, "{\"expenseDate\": \"" + today() + "\", \"category\": \"Parking\", \"amount\": 20,"
-                + " \"paymentMethod\": \"CASH\"}", 201);
+                + " \"paymentMethod\": \"CASH\", \"costCenterId\": \"" + cc + "\"}", 201);
         JsonNode ce = live(token, "EXPENSE", cash.get("id").asText());
         assertThat(ce.get("journalCode").asText()).isEqualTo("CA");
         assertThat(byAccount(ce).get("5161")).isEqualByComparingTo("-20");
         assertThat(byAccount(ce).get("6125")).isEqualByComparingTo("20");
 
         json(put("/expenses/" + ex.get("id").asText()), token, "{\"expenseDate\": \"" + today() + "\", \"category\": \"TRAVEL\", \"amount\": 600,"
-                + " \"vatAmount\": 100, \"paymentMethod\": \"CARD\"}", 200);
+                + " \"vatAmount\": 100, \"paymentMethod\": \"CARD\", \"costCenterId\": \"" + cc + "\"}", 200);
         assertThat(entriesOf(token, "EXPENSE", ex.get("id").asText())).hasSize(2);
         assertThat(balance(orgId, "6143", null)).isEqualByComparingTo("500");
         json(delete("/expenses/" + ex.get("id").asText()), token, null, 204);
@@ -662,7 +662,7 @@ class LedgerPostingTest extends IntegrationTestBase {
         String inv = json(post("/invoices"), token, invoiceBody("CUSTOMER", customer, "SENT", today(), "FA-2026-7781",
                 line(1, 1000, "0", null)), 201).get("id").asText();
         JsonNode expense = json(post("/expenses"), token, "{\"expenseDate\": \"" + today() + "\", \"category\": \"OFFICE\", \"amount\": 120,"
-                + " \"paymentMethod\": \"CASH\"}", 201);
+                + " \"paymentMethod\": \"CASH\", \"costCenterId\": \"" + costCenter(token) + "\"}", 201);
         String expenseId = expense.get("id").asText();
         assertThat(live(token, "EXPENSE", expenseId).get("journalCode").asText()).isEqualTo("CA");
 

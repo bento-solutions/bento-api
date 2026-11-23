@@ -71,9 +71,11 @@ public final class LedgerDtos {
 
     // Entries
 
+    /** An entry line, with its analytic dimensions (V49) and their display names. */
     public record Line(UUID id, int lineNo, UUID accountId, String accountCode, String accountName, UUID partnerId,
                        String partnerName, UUID costCenterId, String costCenterCode, String label, BigDecimal debit,
-                       BigDecimal credit) {}
+                       BigDecimal credit, UUID missionId, String missionName, UUID dealId, String dealName,
+                       UUID customerId, String customerName, UUID vendorId, String vendorName) {}
 
     public record Entry(UUID id, String number, UUID journalId, String journalCode, LocalDate entryDate,
                         String description, String sourceType, UUID sourceId, String sourceLabel, UUID reversalOfId,
@@ -98,7 +100,36 @@ public final class LedgerDtos {
 
     public record GeneralLedgerLine(UUID entryId, String entryNumber, String journalCode, LocalDate entryDate,
                                     String label, String partnerName, String costCenterCode, BigDecimal debit,
-                                    BigDecimal credit, BigDecimal balance) {}
+                                    BigDecimal credit, BigDecimal balance, UUID costCenterId, UUID missionId,
+                                    String missionName, UUID dealId, String dealName, UUID customerId,
+                                    String customerName, UUID vendorId, String vendorName) {}
+
+    /**
+     * Filters on an entry line's analytic dimensions and cost center, for the general ledger, the
+     * entries list and the trial balance. Null fields do not filter.
+     */
+    public record LineFilter(UUID missionId, UUID dealId, UUID customerId, UUID vendorId, UUID costCenterId) {
+        public static final LineFilter NONE = new LineFilter(null, null, null, null, null);
+
+        public boolean isEmpty() {
+            return missionId == null && dealId == null && customerId == null && vendorId == null && costCenterId == null;
+        }
+
+        /** Appends " AND alias.column = ?" for each set field. */
+        public void appendTo(StringBuilder sql, List<Object> params, String alias) {
+            add(sql, params, alias, "mission_id", missionId);
+            add(sql, params, alias, "deal_id", dealId);
+            add(sql, params, alias, "customer_id", customerId);
+            add(sql, params, alias, "vendor_id", vendorId);
+            add(sql, params, alias, "cost_center_id", costCenterId);
+        }
+
+        private static void add(StringBuilder sql, List<Object> params, String alias, String column, UUID value) {
+            if (value == null) return;
+            sql.append(" AND ").append(alias).append('.').append(column).append(" = ?");
+            params.add(value);
+        }
+    }
 
     public record TrialBalance(LocalDate from, LocalDate to, List<TrialBalanceRow> rows, TrialBalanceTotals totals) {}
 

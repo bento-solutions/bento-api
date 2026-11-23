@@ -47,9 +47,16 @@ public final class MissionDtos {
     /** type: PROPOSAL, DEAL, DELIVERY_NOTE, INVOICE, ADVANCE, BILL or EXPENSE. */
     public record DocumentRow(String type, UUID id, String number, LocalDate date, BigDecimal amount, String status) {}
 
+    /** Costs of the mission on one cost center; costCenterId, code and name are null for lines without one. */
+    public record CostCenterCost(UUID costCenterId, String code, String name, BigDecimal amount) {}
+
+    /**
+     * costCenterId is the mission's legacy PRJ cost center, if it has one. costs and costsByCostCenter
+     * come from the class 6 lines with the mission as dimension, plus the legacy lines on that cost center.
+     */
     public record MissionSummary(UUID missionId, UUID dealId, UUID proposalId, UUID costCenterId, BigDecimal quoted,
                                  BigDecimal invoiced, BigDecimal advances, List<CostRow> costs, BigDecimal costsTotal,
-                                 BigDecimal margin, List<DocumentRow> documents) {}
+                                 BigDecimal margin, List<DocumentRow> documents, List<CostCenterCost> costsByCostCenter) {}
 
     public record BillResult(UUID invoiceId, String invoiceNumber, int lines, BigDecimal total) {}
 }
