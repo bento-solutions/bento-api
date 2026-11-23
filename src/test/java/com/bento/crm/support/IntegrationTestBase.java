@@ -119,6 +119,25 @@ public abstract class IntegrationTestBase {
     }
 
     /** The organization id carried by an access token's {@code org} claim. */
+    /**
+     * The id of one of the organization's seeded cost centers (DIR, COM, PROD, ADM, IT, MKT): an
+     * expense needs one.
+     */
+    protected String costCenter(String accessToken, String code) throws Exception {
+        String body = mockMvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                        .get("/ledger/cost-centers").header("Authorization", "Bearer " + accessToken))
+                .andReturn().getResponse().getContentAsString();
+        for (com.fasterxml.jackson.databind.JsonNode c : objectMapper.readTree(body)) {
+            if (code.equals(c.get("code").asText())) return c.get("id").asText();
+        }
+        throw new AssertionError("No cost center " + code + " in " + body);
+    }
+
+    /** The ADM cost center's id, for expenses whose cost center does not matter to the test. */
+    protected String costCenter(String accessToken) throws Exception {
+        return costCenter(accessToken, "ADM");
+    }
+
     protected UUID orgIdOf(String accessToken) throws Exception {
         return UUID.fromString(claimsOf(accessToken).get("org").asText());
     }

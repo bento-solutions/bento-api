@@ -204,6 +204,7 @@ public class LedgerSetupService {
         seedPhase3WaveB(orgId);
         seedPhase3PartC(orgId);
         seedExpenseReports(orgId);
+        seedCostCenters(orgId);
         if (TransactionSynchronizationManager.isSynchronizationActive()) {
             TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                 @Override
@@ -262,7 +263,7 @@ public class LedgerSetupService {
     }
 
     /** The posting-setup version this code seeds; ledger_settings.setup_version says what an organization has. */
-    static final int SETUP_VERSION = 6;
+    static final int SETUP_VERSION = 7;
 
     static final String EXPORT_MENTION = "Exonéré de TVA, article 92-I-1° du CGI (exportation)";
     static final String EXEMPT_MENTION = "Exonéré de TVA (article 91 du CGI)";
@@ -378,6 +379,31 @@ public class LedgerSetupService {
             return;
         }
         seedCategories(orgId, "BANK", Map.of("EXPENSE_REIMBURSEMENT", "4438"));
+    }
+
+    /** The default cost centers: costs grouped by function. People can be added as cost centers by hand. */
+    static final List<Seed> COST_CENTERS = List.of(
+            new Seed("DIR", "Direction générale"),
+            new Seed("COM", "Commercial"),
+            new Seed("PROD", "Production / prestations (coût des ventes)"),
+            new Seed("ADM", "Administration et fournitures de bureau"),
+            new Seed("IT", "Informatique et logiciels"),
+            new Seed("MKT", "Marketing et communication"));
+
+    /**
+     * Analytic dimensions seeds (version 7), once per organization, new or existing: the default cost
+     * centers. A code the organization already has is left as it is, never duplicated or renamed.
+     */
+    private void seedCostCenters(UUID orgId) {
+        int moved = jdbc.update("UPDATE ledger_settings SET setup_version = 7, updated_at = now()"
+                + " WHERE organization_id = ? AND setup_version < 7", orgId);
+        if (moved == 0) {
+            return;
+        }
+        for (Seed c : COST_CENTERS) {
+            jdbc.update("INSERT INTO ledger_cost_center (organization_id, code, name) VALUES (?, ?, ?)"
+                    + " ON CONFLICT (organization_id, code) WHERE deleted_at IS NULL DO NOTHING", orgId, c.code(), c.name());
+        }
     }
 
     private void seedCategories(UUID orgId, String kind, Map<String, String> categories) {

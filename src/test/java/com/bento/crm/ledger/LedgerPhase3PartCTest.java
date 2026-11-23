@@ -120,20 +120,34 @@ class LedgerPhase3PartCTest extends IntegrationTestBase {
         assertThat(json(get("/missions?dealId=" + deal), token, null, 200)).hasSize(1);
         assertThat(json(get("/missions?dealId=" + UUID.randomUUID()), token, null, 200)).isEmpty();
 
-        String cc = null;
-        for (JsonNode c : json(get("/ledger/cost-centers"), token, null, 200)) {
-            if (mission.equals(c.path("missionId").asText())) {
-                assertThat(c.get("code").asText()).isEqualTo("PRJ-CMD-42");
-                cc = c.get("id").asText();
+        // Creating a mission creates no cost center: only the six seeded ones exist.
+        JsonNode centers = json(get("/ledger/cost-centers"), token, null, 200);
+        assertThat(centers).hasSize(6);
+        centers.forEach(c -> assertThat(c.get("code").asText()).doesNotStartWith("PRJ"));
+        String prod = null;
+        for (JsonNode c : centers) if ("PROD".equals(c.get("code").asText())) prod = c.get("id").asText();
+
+        // A bill line on the mission (its Mission dimension) and an invoice on the deal.
+        String bill = json(post("/invoices"), token, """
+                {"type": "VENDOR", "partnerId": "%s", "status": "SENT", "invoiceDate": "%s", "invoiceNumber": "F-77",
+                 "lines": [{"description": "Mission terrain", "qty": 1, "unitPrice": 3000, "costCenterId": "%s",
+                            "missionId": "%s"}]}
+                """.formatted(vendor, LocalDate.now(), prod, mission), 201).get("id").asText();
+        // Its 6125 line carries the mission, the deal and customer filled from it, and the bill's vendor;
+        // the payable and VAT lines carry none.
+        for (JsonNode l : live(token, "BILL", bill).get("lines")) {
+            if (l.get("accountCode").asText().equals("6125")) {
+                assertThat(l.get("missionId").asText()).isEqualTo(mission);
+                assertThat(l.get("missionName").asText()).isEqualTo("Audit 2026");
+                assertThat(l.get("dealId").asText()).isEqualTo(deal);
+                assertThat(l.get("customerId").asText()).isEqualTo(customer);
+                assertThat(l.get("vendorId").asText()).isEqualTo(vendor);
+                assertThat(l.get("vendorName").asText()).isEqualTo("Sous-traitant");
+            } else {
+                assertThat(l.has("missionId")).isFalse();
+                assertThat(l.has("vendorId")).isFalse();
             }
         }
-        assertThat(cc).isNotNull();
-
-        // A bill on the mission's cost center and an invoice on the deal.
-        json(post("/invoices"), token, """
-                {"type": "VENDOR", "partnerId": "%s", "status": "SENT", "invoiceDate": "%s", "invoiceNumber": "F-77",
-                 "lines": [{"description": "Mission terrain", "qty": 1, "unitPrice": 3000, "costCenterId": "%s"}]}
-                """.formatted(vendor, LocalDate.now(), cc), 201);
         json(post("/invoices"), token, """
                 {"type": "CUSTOMER", "partnerId": "%s", "dealId": "%s", "status": "SENT", "invoiceDate": "%s",
                  "lines": [{"description": "Audit", "qty": 1, "unitPrice": 8000}]}
@@ -142,7 +156,7 @@ class LedgerPhase3PartCTest extends IntegrationTestBase {
         JsonNode s = json(get("/missions/" + mission + "/summary"), token, null, 200);
         assertThat(s.get("missionId").asText()).isEqualTo(mission);
         assertThat(s.get("dealId").asText()).isEqualTo(deal);
-        assertThat(s.get("costCenterId").asText()).isEqualTo(cc);
+        assertThat(s.has("costCenterId")).isFalse();
         assertThat(s.get("quoted").decimalValue()).isEqualByComparingTo("10000");
         assertThat(s.get("invoiced").decimalValue()).isEqualByComparingTo("8000");
         assertThat(s.get("advances").decimalValue()).isEqualByComparingTo("0");
@@ -154,6 +168,45 @@ class LedgerPhase3PartCTest extends IntegrationTestBase {
         Map<String, Integer> types = new HashMap<>();
         s.get("documents").forEach(d -> types.merge(d.get("type").asText(), 1, Integer::sum));
         assertThat(types).containsEntry("DEAL", 1).containsEntry("INVOICE", 1).containsEntry("BILL", 1);
+        assertThat(s.get("costsByCostCenter")).hasSize(1);
+        assertThat(s.get("costsByCostCenter").get(0).get("code").asText()).isEqualTo("PROD");
+        assertThat(s.get("costsByCostCenter").get(0).get("costCenterId").asText()).isEqualTo(prod);
+        assertThat(s.get("costsByCostCenter").get(0).get("amount").decimalValue()).isEqualByComparingTo("3000");
+
+        // Legacy data: a cost center linked to the mission still counts, and a line that has both the
+        // mission and that cost center counts once.
+        String legacy = json(post("/ledger/cost-centers"), token, """
+                {"code": "PRJ-OLD", "name": "Audit 2026", "missionId": "%s"}""".formatted(mission), 201).get("id").asText();
+        json(post("/invoices"), token, """
+                {"type": "VENDOR", "partnerId": "%s", "status": "SENT", "invoiceDate": "%s", "invoiceNumber": "F-78",
+                 "lines": [{"description": "Frais", "qty": 1, "unitPrice": 500, "costCenterId": "%s"},
+                           {"description": "Frais 2", "qty": 1, "unitPrice": 200, "costCenterId": "%s", "missionId": "%s"}]}
+                """.formatted(vendor, LocalDate.now(), legacy, legacy, mission), 201);
+        s = json(get("/missions/" + mission + "/summary"), token, null, 200);
+        assertThat(s.get("costCenterId").asText()).isEqualTo(legacy);
+        assertThat(s.get("costsTotal").decimalValue()).isEqualByComparingTo("3700");
+        assertThat(s.get("margin").decimalValue()).isEqualByComparingTo("4300");
+        Map<String, BigDecimal> byCc = new HashMap<>();
+        s.get("costsByCostCenter").forEach(c -> byCc.put(c.get("code").asText(), c.get("amount").decimalValue()));
+        assertThat(byCc).hasSize(2);
+        assertThat(byCc.get("PROD")).isEqualByComparingTo("3000");
+        assertThat(byCc.get("PRJ-OLD")).isEqualByComparingTo("700");
+
+        // The general ledger and the entries filter on the dimensions.
+        JsonNode gl = json(get("/ledger/general-ledger?missionId=" + mission), token, null, 200).get("accounts");
+        assertThat(gl).hasSize(1);
+        assertThat(gl.get(0).get("code").asText()).isEqualTo("6125");
+        assertThat(gl.get(0).get("totalDebit").decimalValue()).isEqualByComparingTo("3200");
+        assertThat(gl.get(0).get("lines").get(0).get("dealId").asText()).isEqualTo(deal);
+        assertThat(json(get("/ledger/general-ledger?dealId=" + deal + "&costCenterId=" + prod), token, null, 200)
+                .get("accounts").get(0).get("totalDebit").decimalValue()).isEqualByComparingTo("3000");
+        assertThat(json(get("/ledger/general-ledger?customerId=" + vendor), token, null, 200).get("accounts")).isEmpty();
+        assertThat(json(get("/ledger/entries?vendorId=" + vendor), token, null, 200).get("total_elements").asInt()).isEqualTo(2);
+        assertThat(json(get("/ledger/entries?missionId=" + UUID.randomUUID()), token, null, 200).get("total_elements").asInt())
+                .isZero();
+        JsonNode tb = json(get("/ledger/trial-balance?customerId=" + customer), token, null, 200);
+        assertThat(tb.get("rows")).hasSize(1);
+        assertThat(tb.get("totals").get("periodDebit").decimalValue()).isEqualByComparingTo("3200");
 
         // A mission can be linked to a deal by hand too.
         JsonNode other = json(post("/missions"), token, "{\"partnerId\": \"" + customer + "\", \"name\": \"Suivi\", \"dealId\": \""
@@ -162,9 +215,20 @@ class LedgerPhase3PartCTest extends IntegrationTestBase {
         assertThat(json(get("/deals/" + deal), token, null, 200).get("missionIds")).hasSize(2);
         json(post("/missions"), token, "{\"partnerId\": \"" + customer + "\", \"name\": \"X\", \"dealId\": \"" + UUID.randomUUID()
                 + "\"}", 404);
-        // A second mission from the same deal gets the next free code.
+        // A second mission from the same deal creates no cost center either.
         json(post("/deals/" + deal + "/mission"), token, null, 201);
-        assertThat(json(get("/ledger/cost-centers"), token, null, 200).toString()).contains("\"PRJ-CMD-42-2\"");
+        assertThat(json(get("/ledger/cost-centers"), token, null, 200)).hasSize(7);
+        // A deal with several missions fills no mission from the deal alone.
+        String byDeal = json(post("/invoices"), token, """
+                {"type": "VENDOR", "partnerId": "%s", "status": "SENT", "invoiceDate": "%s", "invoiceNumber": "F-79",
+                 "lines": [{"description": "Frais", "qty": 1, "unitPrice": 100, "dealId": "%s"}]}
+                """.formatted(vendor, LocalDate.now(), deal), 201).get("id").asText();
+        for (JsonNode l : live(token, "BILL", byDeal).get("lines")) {
+            if (l.get("accountCode").asText().equals("6125")) {
+                assertThat(l.has("missionId")).isFalse();
+                assertThat(l.get("customerId").asText()).isEqualTo(customer);
+            }
+        }
         assertTrialBalanceBalances(token);
     }
 

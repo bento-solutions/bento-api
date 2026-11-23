@@ -184,8 +184,9 @@ class LedgerPhase3WaveBTest extends IntegrationTestBase {
         String customer = partner(token, "CUSTOMER", "Atlas");
         invoice(token, "CUSTOMER", customer, LocalDate.of(last, 3, 1), "FA-Y-1", 3000);
         json(post("/expenses"), token, """
-                {"expenseDate": "%d-06-15", "category": "OFFICE", "amount": 1200, "vatAmount": 200, "paymentMethod": "CASH"}
-                """.formatted(last), 201);
+                {"expenseDate": "%d-06-15", "category": "OFFICE", "amount": 1200, "vatAmount": 200, "paymentMethod": "CASH",
+                 "costCenterId": "%s"}
+                """.formatted(last, costCenter(token)), 201);
 
         assertThat(detail(post("/ledger/years/" + (last + 1) + "/close"), token, null, 400)).contains("not ended");
         JsonNode closed = json(post("/ledger/years/" + last + "/close"), token, null, 200);
@@ -273,8 +274,9 @@ class LedgerPhase3WaveBTest extends IntegrationTestBase {
 
         // Last month: only an expense, 300 of recoverable VAT, so a credit of 300.
         json(post("/expenses"), token, """
-                {"expenseDate": "%s", "category": "OFFICE", "amount": 1800, "vatAmount": 300, "paymentMethod": "CASH"}
-                """.formatted(prev.atDay(15)), 201);
+                {"expenseDate": "%s", "category": "OFFICE", "amount": 1800, "vatAmount": 300, "paymentMethod": "CASH",
+                 "costCenterId": "%s"}
+                """.formatted(prev.atDay(15), costCenter(token)), 201);
         String prevQuery = "?from=" + prev.atDay(1) + "&to=" + prev.atEndOfMonth();
         JsonNode p = json(get("/ledger/vat" + prevQuery), token, null, 200);
         assertThat(p.get("regime").asText()).isEqualTo("ENCAISSEMENT");

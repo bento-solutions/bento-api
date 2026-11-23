@@ -32,6 +32,19 @@ public class LedgerEntryLine extends BaseTenantEntity {
     @Column(name = "cost_center_id", columnDefinition = "uuid")
     private UUID costCenterId;
 
+    /** Analytic dimensions (V49): set on the expense (class 6) lines of expenses, expense reports and bills. */
+    @Column(name = "mission_id", columnDefinition = "uuid")
+    private UUID missionId;
+
+    @Column(name = "deal_id", columnDefinition = "uuid")
+    private UUID dealId;
+
+    @Column(name = "customer_id", columnDefinition = "uuid")
+    private UUID customerId;
+
+    @Column(name = "vendor_id", columnDefinition = "uuid")
+    private UUID vendorId;
+
     @Column(length = 255)
     private String label;
 

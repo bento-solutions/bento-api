@@ -67,6 +67,13 @@ public class LedgerReportService {
     @Transactional
     public LedgerDtos.GeneralLedger generalLedger(LocalDate from, LocalDate to, UUID accountId, String accountFrom,
                                                   String accountTo, UUID partnerId, UUID costCenterId) {
+        return generalLedger(from, to, accountId, accountFrom, accountTo, partnerId,
+                new LedgerDtos.LineFilter(null, null, null, null, costCenterId));
+    }
+
+    @Transactional
+    public LedgerDtos.GeneralLedger generalLedger(LocalDate from, LocalDate to, UUID accountId, String accountFrom,
+                                                  String accountTo, UUID partnerId, LedgerDtos.LineFilter dims) {
         UUID orgId = org();
         Period p = period(orgId, from, to);
 
@@ -77,6 +84,10 @@ public class LedgerReportService {
                         + " JOIN ledger_journal j ON j.id = e.journal_id"
                         + " LEFT JOIN partner pt ON pt.id = l.partner_id"
                         + " LEFT JOIN ledger_cost_center cc ON cc.id = l.cost_center_id"
+                        + " LEFT JOIN mission dm ON dm.id = l.mission_id"
+                        + " LEFT JOIN deal dd ON dd.id = l.deal_id"
+                        + " LEFT JOIN partner dc ON dc.id = l.customer_id"
+                        + " LEFT JOIN partner dv ON dv.id = l.vendor_id"
                         + " WHERE l.organization_id = ? AND l.deleted_at IS NULL");
         List<Object> params = new ArrayList<>();
         params.add(orgId);
@@ -97,10 +108,7 @@ public class LedgerReportService {
             filter.append(" AND l.partner_id = ?");
             params.add(partnerId);
         }
-        if (costCenterId != null) {
-            filter.append(" AND l.cost_center_id = ?");
-            params.add(costCenterId);
-        }
+        (dims == null ? LedgerDtos.LineFilter.NONE : dims).appendTo(filter, params, "l");
         filter.append(CARRY_FORWARD);
         params.add(posting.carryForwardFloor(orgId, p.from()));
         params.add(p.from());
@@ -122,7 +130,9 @@ public class LedgerReportService {
         lineParams.add(p.from());
         lineParams.add(p.to());
         jdbc.query("SELECT a.id, a.code, a.name, a.account_class, e.id, e.number, j.code, e.entry_date,"
-                + " COALESCE(l.label, e.description), pt.name, cc.code, l.debit, l.credit"
+                + " COALESCE(l.label, e.description), pt.name, cc.code, l.debit, l.credit, l.cost_center_id,"
+                + " l.mission_id, dm.name, l.deal_id, dd.title, l.customer_id, COALESCE(NULLIF(dc.company_name, ''), dc.name),"
+                + " l.vendor_id, COALESCE(NULLIF(dv.company_name, ''), dv.name)"
                 + filter
                 + " AND e.entry_date >= ? AND e.entry_date <= ?"
                 + " ORDER BY a.code, e.entry_date, e.number, l.line_no", rs -> {
@@ -130,7 +140,9 @@ public class LedgerReportService {
             accounts.putIfAbsent(id, new Acc(id, rs.getString(2), rs.getString(3), rs.getInt(4)));
             rows.add(new Row(id, new LedgerDtos.GeneralLedgerLine(rs.getObject(5, UUID.class), rs.getString(6),
                     rs.getString(7), rs.getObject(8, LocalDate.class), rs.getString(9), rs.getString(10),
-                    rs.getString(11), rs.getBigDecimal(12), rs.getBigDecimal(13), null)));
+                    rs.getString(11), rs.getBigDecimal(12), rs.getBigDecimal(13), null, rs.getObject(14, UUID.class),
+                    rs.getObject(15, UUID.class), rs.getString(16), rs.getObject(17, UUID.class), rs.getString(18),
+                    rs.getObject(19, UUID.class), rs.getString(20), rs.getObject(21, UUID.class), rs.getString(22))));
         }, lineParams.toArray());
 
         Map<UUID, List<LedgerDtos.GeneralLedgerLine>> linesByAccount = new LinkedHashMap<>();
@@ -154,7 +166,9 @@ public class LedgerReportService {
                 debit = debit.add(l.debit());
                 credit = credit.add(l.credit());
                 lines.add(new LedgerDtos.GeneralLedgerLine(l.entryId(), l.entryNumber(), l.journalCode(), l.entryDate(),
-                        l.label(), l.partnerName(), l.costCenterCode(), l.debit(), l.credit(), running));
+                        l.label(), l.partnerName(), l.costCenterCode(), l.debit(), l.credit(), running, l.costCenterId(),
+                        l.missionId(), l.missionName(), l.dealId(), l.dealName(), l.customerId(), l.customerName(),
+                        l.vendorId(), l.vendorName()));
             }
             result.add(new LedgerDtos.GeneralLedgerAccount(a.id(), a.code(), a.name(), open, lines, debit, credit,
                     running));
@@ -164,6 +178,13 @@ public class LedgerReportService {
 
     @Transactional
     public LedgerDtos.TrialBalance trialBalance(LocalDate from, LocalDate to, Integer accountClass) {
+        return trialBalance(from, to, accountClass, LedgerDtos.LineFilter.NONE);
+    }
+
+    /** The trial balance, optionally of the lines with these dimensions only. */
+    @Transactional
+    public LedgerDtos.TrialBalance trialBalance(LocalDate from, LocalDate to, Integer accountClass,
+                                                LedgerDtos.LineFilter dims) {
         UUID orgId = org();
         Period p = period(orgId, from, to);
         List<Object> params = new ArrayList<>(List.of(p.from(), p.from(), p.to(), p.from(), p.to(), orgId, p.to(),
@@ -176,6 +197,8 @@ public class LedgerReportService {
             classFilter = " AND a.account_class = ?";
             params.add(accountClass);
         }
+        StringBuilder dimFilter = new StringBuilder();
+        (dims == null ? LedgerDtos.LineFilter.NONE : dims).appendTo(dimFilter, params, "l");
         List<LedgerDtos.TrialBalanceRow> rows = new ArrayList<>();
         BigDecimal[] t = {ZERO, ZERO, ZERO, ZERO, ZERO, ZERO};
         jdbc.query("""
@@ -186,7 +209,7 @@ public class LedgerReportService {
                 FROM ledger_entry_line l
                 JOIN ledger_entry e ON e.id = l.entry_id AND e.organization_id = l.organization_id AND e.deleted_at IS NULL
                 JOIN ledger_account a ON a.id = l.account_id AND a.organization_id = l.organization_id
-                WHERE l.organization_id = ? AND l.deleted_at IS NULL AND e.entry_date <= ?""" + CARRY_FORWARD + classFilter + """
+                WHERE l.organization_id = ? AND l.deleted_at IS NULL AND e.entry_date <= ?""" + CARRY_FORWARD + classFilter + dimFilter + """
 
                 GROUP BY a.id, a.code, a.name, a.account_class
                 ORDER BY a.code

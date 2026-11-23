@@ -2,8 +2,6 @@ package com.bento.crm.mission.service;
 
 import com.bento.crm.common.context.TenantContext;
 import com.bento.crm.common.exception.ResourceNotFoundException;
-import com.bento.crm.ledger.model.LedgerCostCenter;
-import com.bento.crm.ledger.repository.LedgerCostCenterRepository;
 import com.bento.crm.mission.dto.MissionDtos;
 import com.bento.crm.mission.model.Mission;
 import com.bento.crm.mission.repository.MissionRepository;
@@ -23,7 +21,8 @@ import java.util.UUID;
 
 /**
  * Missions made from a deal (phase 3 part C) and the mission summary: what was quoted, invoiced
- * and spent on the mission's cost center, the margin, and the documents along the way.
+ * and spent on the mission (its Mission dimension, plus its legacy PRJ cost center), the margin,
+ * and the documents along the way.
  */
 @Service
 @RequiredArgsConstructor
@@ -37,7 +36,6 @@ public class MissionDealService {
 
     private final MissionService missionService;
     private final MissionRepository missionRepository;
-    private final LedgerCostCenterRepository costCenterRepository;
     private final JdbcTemplate jdbc;
 
     private static UUID org() {
@@ -45,13 +43,13 @@ public class MissionDealService {
     }
 
     /**
-     * A PLANNED mission for the deal (its title, partner and amount before VAT as the fee), and a
-     * cost center linked to it, coded PRJ-&lt;order number or short id&gt;.
+     * A PLANNED mission for the deal (its title, partner and amount before VAT as the fee). No cost
+     * center: costs reach the mission through the Mission dimension of expenses and bill lines.
      */
     @Transactional
     public MissionDtos.Detail createFromDeal(UUID dealId) {
         UUID orgId = org();
-        List<Map<String, Object>> rows = jdbc.queryForList("SELECT d.partner_id, d.title, d.order_number, " + DEAL_BASE
+        List<Map<String, Object>> rows = jdbc.queryForList("SELECT d.partner_id, d.title, " + DEAL_BASE
                 + " AS base FROM deal d WHERE d.organization_id = ? AND d.id = ? AND d.deleted_at IS NULL", orgId, dealId);
         if (rows.isEmpty()) throw new ResourceNotFoundException("Deal not found");
         Map<String, Object> d = rows.get(0);
@@ -61,22 +59,7 @@ public class MissionDealService {
         MissionDtos.Detail created = missionService.create(new MissionDtos.MissionRequest((UUID) d.get("partner_id"),
                 title == null || title.isBlank() ? "Mission" : title, null, Mission.Status.PLANNED, null, null,
                 base, null, dealId));
-        UUID missionId = created.mission().id();
-
-        String ref = (String) d.get("order_number");
-        ref = ref == null || ref.isBlank() ? dealId.toString().substring(0, 8) : ref.trim().replaceAll("\\s+", "-");
-        String code = cut("PRJ-" + ref, 20);
-        for (int n = 2; costCenterRepository.existsCode(orgId, code); n++) {
-            String suffix = "-" + n;
-            code = cut("PRJ-" + ref, 20 - suffix.length()) + suffix;
-        }
-        LedgerCostCenter cc = new LedgerCostCenter();
-        cc.setOrganizationId(orgId);
-        cc.setCode(code);
-        cc.setName(cut(created.mission().name(), 160));
-        cc.setMissionId(missionId);
-        costCenterRepository.saveAndFlush(cc);
-        return missionService.get(missionId);
+        return missionService.get(created.mission().id());
     }
 
     @Transactional(readOnly = true)
@@ -140,15 +123,26 @@ public class MissionDealService {
             }
         }
 
-        // Class 6 lines posted with the mission's cost centers.
-        List<MissionDtos.CostRow> costs = ccs.length == 0 ? List.of() : jdbc.query("""
-                SELECT a.code, a.name, SUM(l.debit - l.credit) AS amount FROM ledger_entry_line l
+        // Class 6 lines with the mission as dimension, or (legacy data) on the mission's cost centers. One
+        // condition per line, so a line that has both counts once.
+        String missionLines = """
+                FROM ledger_entry_line l
                 JOIN ledger_entry e ON e.id = l.entry_id AND e.deleted_at IS NULL
                 JOIN ledger_account a ON a.id = l.account_id
-                WHERE l.organization_id = ? AND l.deleted_at IS NULL AND l.cost_center_id = ANY(?) AND a.account_class = 6
-                GROUP BY a.code, a.name HAVING SUM(l.debit - l.credit) <> 0 ORDER BY a.code
-                """, (rs, n) -> new MissionDtos.CostRow(rs.getString(1), rs.getString(2), money(rs.getBigDecimal(3))), orgId, ccs);
+                WHERE l.organization_id = ? AND l.deleted_at IS NULL AND a.account_class = 6
+                  AND (l.mission_id = ? OR l.cost_center_id = ANY(?))
+                """;
+        List<MissionDtos.CostRow> costs = jdbc.query("SELECT a.code, a.name, SUM(l.debit - l.credit) AS amount " + missionLines
+                + " GROUP BY a.code, a.name HAVING SUM(l.debit - l.credit) <> 0 ORDER BY a.code",
+                (rs, n) -> new MissionDtos.CostRow(rs.getString(1), rs.getString(2), money(rs.getBigDecimal(3))),
+                orgId, missionId, ccs);
         BigDecimal costsTotal = costs.stream().map(MissionDtos.CostRow::amount).reduce(ZERO, BigDecimal::add);
+        List<MissionDtos.CostCenterCost> byCostCenter = jdbc.query("SELECT cc.id, cc.code, cc.name, SUM(l.debit - l.credit) "
+                + missionLines.replace("JOIN ledger_account a", "LEFT JOIN ledger_cost_center cc ON cc.id = l.cost_center_id\n"
+                + "JOIN ledger_account a")
+                + " GROUP BY cc.id, cc.code, cc.name HAVING SUM(l.debit - l.credit) <> 0 ORDER BY cc.code NULLS LAST",
+                (rs, n) -> new MissionDtos.CostCenterCost(rs.getObject(1, UUID.class), rs.getString(2), rs.getString(3),
+                        money(rs.getBigDecimal(4))), orgId, missionId, ccs);
 
         // Delivery notes of the deal or the mission.
         jdbc.query("""
@@ -159,28 +153,27 @@ public class MissionDealService {
                     rs.getObject(3, LocalDate.class), null, rs.getString(4)));
         }, orgId, missionId, dealId, dealId);
 
-        if (ccs.length > 0) {
-            // Supplier bills with a line on the mission's cost centers.
-            jdbc.query("""
-                    SELECT i.id, i.invoice_number, i.invoice_date, i.status, COALESCE(i.subtotal, 0) FROM invoice i
-                    WHERE i.organization_id = ? AND i.type = 'VENDOR' AND i.deleted_at IS NULL
-                      AND EXISTS (SELECT 1 FROM jsonb_array_elements(i.lines) l WHERE l->>'costCenterId' = ANY(?))
-                    """, rs -> {
-                documents.add(new MissionDtos.DocumentRow("BILL", rs.getObject(1, UUID.class), rs.getString(2),
-                        rs.getObject(3, LocalDate.class), money(rs.getBigDecimal(5)), rs.getString(4)));
-            }, orgId, costCenters.stream().map(UUID::toString).toArray(String[]::new));
-            jdbc.query("""
-                    SELECT id, reference, expense_date, amount - COALESCE(vat_amount, 0) FROM expense
-                    WHERE organization_id = ? AND deleted_at IS NULL AND cost_center_id = ANY(?)
-                    """, rs -> {
-                documents.add(new MissionDtos.DocumentRow("EXPENSE", rs.getObject(1, UUID.class), rs.getString(2),
-                        rs.getObject(3, LocalDate.class), money(rs.getBigDecimal(4)), null));
-            }, orgId, ccs);
-        }
+        // Supplier bills with a line on the mission (its dimension, or its legacy cost centers), and expenses likewise.
+        jdbc.query("""
+                SELECT i.id, i.invoice_number, i.invoice_date, i.status, COALESCE(i.subtotal, 0) FROM invoice i
+                WHERE i.organization_id = ? AND i.type = 'VENDOR' AND i.deleted_at IS NULL
+                  AND EXISTS (SELECT 1 FROM jsonb_array_elements(i.lines) l
+                              WHERE l->>'missionId' = ? OR l->>'costCenterId' = ANY(?))
+                """, rs -> {
+            documents.add(new MissionDtos.DocumentRow("BILL", rs.getObject(1, UUID.class), rs.getString(2),
+                    rs.getObject(3, LocalDate.class), money(rs.getBigDecimal(5)), rs.getString(4)));
+        }, orgId, missionId.toString(), costCenters.stream().map(UUID::toString).toArray(String[]::new));
+        jdbc.query("""
+                SELECT id, reference, expense_date, amount - COALESCE(vat_amount, 0) FROM expense
+                WHERE organization_id = ? AND deleted_at IS NULL AND (mission_id = ? OR cost_center_id = ANY(?))
+                """, rs -> {
+            documents.add(new MissionDtos.DocumentRow("EXPENSE", rs.getObject(1, UUID.class), rs.getString(2),
+                    rs.getObject(3, LocalDate.class), money(rs.getBigDecimal(4)), null));
+        }, orgId, missionId, ccs);
         documents.sort(Comparator.comparing(MissionDtos.DocumentRow::date, Comparator.nullsLast(Comparator.naturalOrder())));
 
         return new MissionDtos.MissionSummary(missionId, dealId, proposalId, costCenters.isEmpty() ? null : costCenters.get(0),
-                quoted, invoiced, advances, costs, costsTotal, invoiced.subtract(costsTotal), documents);
+                quoted, invoiced, advances, costs, costsTotal, invoiced.subtract(costsTotal), documents, byCostCenter);
     }
 
     private static LocalDate date(Object o) {
@@ -192,9 +185,5 @@ public class MissionDealService {
 
     private static BigDecimal money(BigDecimal v) {
         return v == null ? ZERO : v.setScale(2, RoundingMode.HALF_UP);
-    }
-
-    private static String cut(String s, int max) {
-        return s.length() > max ? s.substring(0, max) : s;
     }
 }

@@ -17,6 +17,7 @@ import com.bento.crm.ledger.model.LedgerJournal;
 import com.bento.crm.ledger.repository.LedgerEntryLineRepository;
 import com.bento.crm.ledger.repository.LedgerEntryRepository;
 import com.bento.crm.ledger.repository.LedgerJournalRepository;
+import com.bento.crm.ledger.service.LedgerPostingService.Dimensions;
 import com.bento.crm.ledger.service.LedgerPostingService.PostingLine;
 import com.bento.crm.ledger.service.LedgerPostingSetupService.Snapshot;
 import com.bento.crm.payment.model.Payment;
@@ -248,16 +249,19 @@ public class LedgerAutoPostingService {
             return false;
         }
         List<String> have = lineRepository.findByOrganizationIdAndEntryIdIn(orgId, List.of(live.getId())).stream()
-                .map(l -> key(l.getAccountId(), l.getPartnerId(), l.getCostCenterId(), l.getDebit(), l.getCredit()))
+                .map(l -> key(l.getAccountId(), l.getPartnerId(), l.getCostCenterId(), Dimensions.of(l), l.getDebit(),
+                        l.getCredit()))
                 .sorted().toList();
         List<String> want = draft.lines().stream()
-                .map(l -> key(l.accountId(), l.partnerId(), l.costCenterId(), l.debit(), l.credit()))
+                .map(l -> key(l.accountId(), l.partnerId(), l.costCenterId(), l.dimensions(), l.debit(), l.credit()))
                 .sorted().toList();
         return have.equals(want);
     }
 
-    private static String key(UUID account, UUID partner, UUID costCenter, BigDecimal debit, BigDecimal credit) {
-        return account + "|" + partner + "|" + costCenter + "|" + money(debit).toPlainString() + "|"
+    private static String key(UUID account, UUID partner, UUID costCenter, Dimensions dims, BigDecimal debit,
+                              BigDecimal credit) {
+        return account + "|" + partner + "|" + costCenter + "|" + dims.missionId() + "|" + dims.dealId() + "|"
+                + dims.customerId() + "|" + dims.vendorId() + "|" + money(debit).toPlainString() + "|"
                 + money(credit).toPlainString();
     }
 
@@ -266,8 +270,7 @@ public class LedgerAutoPostingService {
         LedgerJournal journal = journalRepository.findByOrganizationIdAndId(orgId, live.getJournalId())
                 .orElseThrow(() -> new ResourceNotFoundException("Journal not found"));
         List<PostingLine> lines = lineRepository.findByOrganizationIdAndEntryIdIn(orgId, List.of(live.getId())).stream()
-                .map((LedgerEntryLine l) -> new PostingLine(l.getAccountId(), l.getPartnerId(), l.getCostCenterId(),
-                        l.getLabel(), l.getCredit(), l.getDebit()))
+                .map(PostingLine::reversing)
                 .toList();
         LedgerEntry reversal = posting.write(orgId, journal, live.getEntryDate(),
                 "Reversal of " + live.getNumber() + ": " + live.getDescription(), LedgerEntryService.SOURCE_REVERSAL,
@@ -291,16 +294,20 @@ public class LedgerAutoPostingService {
         return rows.isEmpty() ? null : rows.get(0);
     }
 
-    /** Signed amounts per (account, partner, cost center): debit positive, credit negative. */
+    /** Signed amounts per (account, partner, cost center, dimensions): debit positive, credit negative. */
     private static final class Lines {
-        private record Key(UUID account, UUID partner, UUID costCenter) {}
+        private record Key(UUID account, UUID partner, UUID costCenter, Dimensions dims) {}
 
         private final Map<Key, BigDecimal> amounts = new LinkedHashMap<>();
         private final Map<Key, String> labels = new HashMap<>();
 
         void add(UUID account, UUID partner, UUID costCenter, BigDecimal signed, String label) {
+            add(account, partner, costCenter, Dimensions.NONE, signed, label);
+        }
+
+        void add(UUID account, UUID partner, UUID costCenter, Dimensions dims, BigDecimal signed, String label) {
             if (signed == null || signed.signum() == 0) return;
-            Key k = new Key(account, partner, costCenter);
+            Key k = new Key(account, partner, costCenter, dims == null ? Dimensions.NONE : dims);
             amounts.merge(k, signed, BigDecimal::add);
             if (label != null) labels.putIfAbsent(k, label);
         }
@@ -313,7 +320,7 @@ public class LedgerAutoPostingService {
                     BigDecimal a = money(v);
                     if (a.signum() == 0 || (a.signum() > 0) != debits) return;
                     out.add(new PostingLine(k.account(), k.partner(), k.costCenter(), labels.get(k),
-                            a.signum() > 0 ? a : null, a.signum() < 0 ? a.negate() : null));
+                            a.signum() > 0 ? a : null, a.signum() < 0 ? a.negate() : null, k.dims()));
                 });
             }
             return out;
@@ -346,8 +353,14 @@ public class LedgerAutoPostingService {
         // Advances received (4421) or paid (3411), on the partner.
         UUID advanceAccount = postingSetup.accountByCode(orgId, customer ? "4421" : "3411");
 
-        // Net amounts per (account, partner, cost center) from the lines; an advance invoice's lines go to 4421 / 3411.
-        record NetKey(UUID account, UUID partner, UUID costCenter) {}
+        // Net amounts per (account, partner, cost center, dimensions) from the lines; an advance invoice's lines go to
+        // 4421 / 3411. A supplier document's class 6 lines carry the line's dimensions, the vendor defaulting to its partner.
+        record NetKey(UUID account, UUID partner, UUID costCenter, Dimensions dims) {
+            NetKey(UUID account, UUID partner, UUID costCenter) {
+                this(account, partner, costCenter, Dimensions.NONE);
+            }
+        }
+        DimensionResolver dimensions = new DimensionResolver(orgId);
         Map<NetKey, BigDecimal> nets = new LinkedHashMap<>();
         Map<UUID, Map<String, Object>> products = new HashMap<>();
         if (inv.getLines() != null) {
@@ -368,7 +381,11 @@ public class LedgerAutoPostingService {
                 } else {
                     UUID productGroup = productGroup(orgId, line, s, products);
                     LedgerPostingSetupService.GeneralRow g = s.general(businessGroup, productGroup);
-                    key = new NetKey(customer ? g.salesAccountId() : g.purchaseAccountId(), null, costCenter);
+                    UUID account = customer ? g.salesAccountId() : g.purchaseAccountId();
+                    Dimensions dims = customer ? Dimensions.NONE : dimensions.forExpenseLine(account,
+                            uuid(line.get("missionId"), "mission"), uuid(line.get("dealId"), "deal"),
+                            uuid(line.get("customerId"), "customer"), uuid(line.get("vendorId"), "vendor"), partnerId);
+                    key = new NetKey(account, null, costCenter, dims);
                 }
                 nets.merge(key, net, BigDecimal::add);
             }
@@ -437,12 +454,65 @@ public class LedgerAutoPostingService {
         if (deductedBase.signum() != 0) {
             lines.add(advanceAccount, partnerId, null, deductedBase.multiply(sign), "Acomptes déduits");
         }
-        nets.forEach((k, v) -> lines.add(k.account(), k.partner(), k.costCenter(), v.multiply(sign.negate()),
+        nets.forEach((k, v) -> lines.add(k.account(), k.partner(), k.costCenter(), k.dims(), v.multiply(sign.negate()),
                 advance ? "Acompte" : null));
         vat.forEach((a, v) -> lines.add(a, null, null, v.multiply(sign.negate()), "TVA"));
         deductedVat.forEach((a, v) -> lines.add(a, null, null, v.multiply(sign), "TVA"));
         if (!customer) lines.add(counter, partnerId, null, total.multiply(sign), description);
         return draft(customer ? "VT" : "AC", inv.getInvoiceDate(), description.trim(), number, lines);
+    }
+
+    /**
+     * The dimensions an expense (class 6) line carries, for one draft: those given, the vendor
+     * defaulting to the document's, a mission filling the deal and customer it belongs to, a deal
+     * filling its customer (and its mission when it has exactly one). Any other account carries none.
+     */
+    private final class DimensionResolver {
+        private final UUID orgId;
+        private final Map<UUID, Boolean> class6 = new HashMap<>();
+        private final Map<UUID, UUID[]> missions = new HashMap<>();
+        private final Map<UUID, UUID[]> deals = new HashMap<>();
+
+        DimensionResolver(UUID orgId) {
+            this.orgId = orgId;
+        }
+
+        Dimensions forExpenseLine(UUID account, UUID missionId, UUID dealId, UUID customerId, UUID vendorId,
+                                  UUID defaultVendor) {
+            if (account == null || !class6.computeIfAbsent(account, a -> Boolean.TRUE.equals(jdbc.queryForObject(
+                    "SELECT EXISTS (SELECT 1 FROM ledger_account WHERE organization_id = ? AND id = ? AND account_class = 6)",
+                    Boolean.class, orgId, a)))) {
+                return Dimensions.NONE;
+            }
+            UUID mission = missionId;
+            UUID deal = dealId;
+            UUID customer = customerId;
+            UUID vendor = vendorId != null ? vendorId : defaultVendor;
+            if (mission != null) {
+                // {deal, customer} of the mission
+                UUID[] m = missions.computeIfAbsent(mission, id -> jdbc.query(
+                        "SELECT deal_id, partner_id FROM mission WHERE organization_id = ? AND id = ?",
+                        (rs, i) -> new UUID[]{rs.getObject(1, UUID.class), rs.getObject(2, UUID.class)}, orgId, id)
+                        .stream().findFirst().orElse(null));
+                if (m == null) throw new IllegalArgumentException("Unknown mission");
+                if (deal == null) deal = m[0];
+                if (customer == null) customer = m[1];
+            }
+            if (deal != null) {
+                // {customer, the deal's only mission}
+                UUID[] d = deals.computeIfAbsent(deal, id -> jdbc.query("""
+                        SELECT d.partner_id, (SELECT CASE WHEN COUNT(*) = 1 THEN (array_agg(m.id))[1] END FROM mission m
+                                              WHERE m.organization_id = d.organization_id AND m.deal_id = d.id
+                                                AND m.deleted_at IS NULL)
+                        FROM deal d WHERE d.organization_id = ? AND d.id = ?
+                        """, (rs, i) -> new UUID[]{rs.getObject(1, UUID.class), rs.getObject(2, UUID.class)}, orgId, id)
+                        .stream().findFirst().orElse(null));
+                if (d == null) throw new IllegalArgumentException("Unknown deal");
+                if (customer == null) customer = d[0];
+                if (mission == null && missionId == null) mission = d[1];
+            }
+            return new Dimensions(mission, deal, customer, vendor);
+        }
     }
 
     /** The asset account of the fixed asset a bill line was made into, or null. */
@@ -641,7 +711,9 @@ public class LedgerAutoPostingService {
                 : e.getVendorName() != null ? e.getVendorName() : category;
         String description = "Expense " + category + ": " + what;
         Lines lines = new Lines();
-        lines.add(account, null, e.getCostCenterId(), amount.subtract(vatAmount), null);
+        Dimensions dims = new DimensionResolver(orgId).forExpenseLine(account, e.getMissionId(), e.getDealId(),
+                e.getCustomerId(), null, e.getVendorPartnerId());
+        lines.add(account, null, e.getCostCenterId(), dims, amount.subtract(vatAmount), null);
         lines.add(recoverableVatAccount(orgId, e.getVatCode(), s), null, null, vatAmount, "TVA");
         lines.add(money, null, null, amount.negate(), null);
         return draft(cash ? "CA" : "BQ", e.getExpenseDate(), description, cut(e.getReference() != null ? e.getReference() : what, 160), lines);
@@ -684,6 +756,7 @@ public class LedgerAutoPostingService {
         if (items.isEmpty() || date == null) return null;
         Lines lines = new Lines();
         BigDecimal total = BigDecimal.ZERO;
+        DimensionResolver dimensions = new DimensionResolver(orgId);
         for (Expense e : items) {
             BigDecimal amount = money(e.getAmount());
             if (amount.signum() <= 0) continue;
@@ -691,7 +764,10 @@ public class LedgerAutoPostingService {
                     : money(e.getVatAmount()).max(BigDecimal.ZERO).min(amount);
             String category = e.getCategory() == null ? "OTHER" : e.getCategory().trim().toUpperCase(Locale.ROOT);
             UUID costCenter = e.getCostCenterId() != null ? e.getCostCenterId() : r.getCostCenterId();
-            lines.add(expenseAccount(orgId, category, s), null, costCenter, amount.subtract(vatAmount), null);
+            UUID account = expenseAccount(orgId, category, s);
+            Dimensions dims = dimensions.forExpenseLine(account, e.getMissionId(), e.getDealId(), e.getCustomerId(), null,
+                    e.getVendorPartnerId());
+            lines.add(account, null, costCenter, dims, amount.subtract(vatAmount), null);
             lines.add(recoverableVatAccount(orgId, e.getVatCode(), s), null, null, vatAmount, "TVA");
             total = total.add(amount);
         }

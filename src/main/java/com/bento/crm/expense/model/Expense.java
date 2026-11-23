@@ -60,6 +60,16 @@ public class Expense extends BaseTenantEntity {
     @Column(columnDefinition = "uuid")
     private UUID costCenterId;
 
+    /** Analytic dimensions (V49); the Vendor dimension is vendorPartnerId. */
+    @Column(columnDefinition = "uuid")
+    private UUID missionId;
+
+    @Column(columnDefinition = "uuid")
+    private UUID dealId;
+
+    @Column(columnDefinition = "uuid")
+    private UUID customerId;
+
     /** The expense report this expense is a line of; such an expense never posts on its own. */
     @Column(columnDefinition = "uuid")
     private UUID expenseReportId;

@@ -18,7 +18,8 @@ class ExpenseTest extends IntegrationTestBase {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"expenseDate": "%s", "category": "%s", "description": "Test", "amount": %d,
-                                 "vatAmount": 20, "paymentMethod": "CARD"}""".formatted(date, category, amount)))
+                                 "vatAmount": 20, "paymentMethod": "CARD", "costCenterId": "%s"}"""
+                                .formatted(date, category, amount, costCenter(token))))
                 .andExpect(status().isCreated())
                 .andReturn().getResponse().getContentAsString()).get("id").asText();
     }
@@ -42,7 +43,7 @@ class ExpenseTest extends IntegrationTestBase {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
                                 {"expenseDate": "2026-10-05", "category": "RENT", "amount": 10, "vatAmount": 20,
-                                 "paymentMethod": "BANK_TRANSFER"}"""))
+                                 "paymentMethod": "BANK_TRANSFER", "costCenterId": "%s"}""".formatted(costCenter(token))))
                 .andExpect(status().isBadRequest());
         mockMvc.perform(delete("/expenses/" + rent).header("Authorization", "Bearer " + token))
                 .andExpect(status().isNoContent());

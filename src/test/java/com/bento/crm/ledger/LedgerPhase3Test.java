@@ -199,11 +199,12 @@ class LedgerPhase3Test extends IntegrationTestBase {
         // Expenses: the VAT code's recoverable account (TVA20 when none).
         json(post("/bank/accounts"), token, "{\"name\": \"BP\", \"accountNumber\": \"" + RIB + "\"}", 201);
         JsonNode ex = json(post("/expenses"), token, "{\"expenseDate\": \"" + today() + "\", \"category\": \"TRAVEL\", \"amount\": 114,"
-                + " \"vatAmount\": 14, \"vatCode\": \"tva14\", \"paymentMethod\": \"CARD\"}", 201);
+                + " \"vatAmount\": 14, \"vatCode\": \"tva14\", \"paymentMethod\": \"CARD\", \"costCenterId\": \""
+                + costCenter(token) + "\"}", 201);
         assertThat(ex.get("vatCode").asText()).isEqualTo("TVA14");
         assertThat(byAccount(live(token, "EXPENSE", ex.get("id").asText())).get("34552")).isEqualByComparingTo("14");
         detail(post("/expenses"), token, "{\"expenseDate\": \"" + today() + "\", \"category\": \"TRAVEL\", \"amount\": 10,"
-                + " \"vatCode\": \"NOPE\", \"paymentMethod\": \"CARD\"}", 400);
+                + " \"vatCode\": \"NOPE\", \"paymentMethod\": \"CARD\", \"costCenterId\": \"" + costCenter(token) + "\"}", 400);
         assertThat(balance(orgId, "44552", null)).isEqualByComparingTo("-140");
         assertTrialBalanceBalances(token);
     }

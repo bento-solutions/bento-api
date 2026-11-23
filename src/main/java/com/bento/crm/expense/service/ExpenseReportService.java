@@ -177,7 +177,7 @@ public class ExpenseReportService {
         Expense e = new Expense();
         e.setOrganizationId(orgId);
         e.setExpenseReportId(report.getId());
-        applyLine(e, r);
+        applyLine(report, e, r);
         expenses.saveAndFlush(e);
         touch(report);
         return view(report);
@@ -188,7 +188,7 @@ public class ExpenseReportService {
         UUID orgId = org();
         ExpenseReport report = draft(orgId, id);
         Expense e = line(orgId, report, expenseId);
-        applyLine(e, r);
+        applyLine(report, e, r);
         expenses.saveAndFlush(e);
         touch(report);
         return view(report);
@@ -215,6 +215,10 @@ public class ExpenseReportService {
         List<Expense> lines = expenses.findReportLines(orgId, id);
         if (lines.isEmpty()) {
             throw new IllegalArgumentException("Add at least one expense to the report before posting it");
+        }
+        // Each line needs a cost center: its own, else the report's.
+        if (report.getCostCenterId() == null && lines.stream().anyMatch(l -> l.getCostCenterId() == null)) {
+            throw new IllegalArgumentException(ExpenseService.COST_CENTER_REQUIRED);
         }
         LocalDate date = LedgerAutoPostingService.expenseReportDate(report, lines);
         posting.checkNotLocked(orgId, date);
@@ -405,8 +409,11 @@ public class ExpenseReportService {
         report.setCostCenterId(r.costCenterId());
     }
 
-    private void applyLine(Expense e, LineRequest r) {
+    private void applyLine(ExpenseReport report, Expense e, LineRequest r) {
         if (r == null) throw new IllegalArgumentException("The expense is required");
+        if (r.costCenterId() == null && report.getCostCenterId() == null) {
+            throw new IllegalArgumentException(ExpenseService.COST_CENTER_REQUIRED);
+        }
         BigDecimal vat = r.vatAmount();
         String code = r.vatCode() == null || r.vatCode().isBlank() ? null : r.vatCode().trim().toUpperCase(Locale.ROOT);
         if (vat == null && code != null && r.amount() != null) {
@@ -418,7 +425,8 @@ public class ExpenseReportService {
             }
         }
         expenseService.apply(e, new ExpenseRequest(r.expenseDate(), r.category(), r.description(), r.amount(), vat,
-                Payment.Method.EMPLOYEE, r.vendorPartnerId(), r.vendorName(), r.reference(), r.costCenterId(), r.vatCode()));
+                Payment.Method.EMPLOYEE, r.vendorPartnerId(), r.vendorName(), r.reference(), r.costCenterId(), r.vatCode(),
+                r.missionId(), r.dealId(), r.customerId()));
     }
 
     private void checkCostCenter(UUID orgId, UUID costCenterId) {
@@ -438,7 +446,8 @@ public class ExpenseReportService {
                 counts.put(rs.getObject(1, UUID.class), rs.getLong(2));
             }, orgId, LINE_FILES, items.stream().map(Expense::getId).toArray(UUID[]::new));
         }
-        List<Line> lines = items.stream().map(e -> Line.of(e, counts.getOrDefault(e.getId(), 0L))).toList();
+        com.bento.crm.expense.dto.ExpenseDtos.Names names = expenseService.names(items);
+        List<Line> lines = items.stream().map(e -> Line.of(e, counts.getOrDefault(e.getId(), 0L), names)).toList();
         BigDecimal ht = BigDecimal.ZERO, vat = BigDecimal.ZERO, ttc = BigDecimal.ZERO;
         for (Line l : lines) {
             ht = ht.add(l.amountHt());

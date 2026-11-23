@@ -41,7 +41,35 @@ public class LedgerPostingService {
 
     /** One line to post. Exactly one of debit and credit is positive; null counts as zero. */
     public record PostingLine(UUID accountId, UUID partnerId, UUID costCenterId, String label,
-                              BigDecimal debit, BigDecimal credit) {}
+                              BigDecimal debit, BigDecimal credit, Dimensions dimensions) {
+        public PostingLine {
+            if (dimensions == null) dimensions = Dimensions.NONE;
+        }
+
+        public PostingLine(UUID accountId, UUID partnerId, UUID costCenterId, String label, BigDecimal debit,
+                           BigDecimal credit) {
+            this(accountId, partnerId, costCenterId, label, debit, credit, Dimensions.NONE);
+        }
+
+        /** The same line with debit and credit swapped, for a reversal. */
+        public static PostingLine reversing(LedgerEntryLine l) {
+            return new PostingLine(l.getAccountId(), l.getPartnerId(), l.getCostCenterId(), l.getLabel(), l.getCredit(),
+                    l.getDebit(), Dimensions.of(l));
+        }
+    }
+
+    /** The analytic dimensions of an entry line besides its cost center: Mission, Deal, Customer and Vendor. */
+    public record Dimensions(UUID missionId, UUID dealId, UUID customerId, UUID vendorId) {
+        public static final Dimensions NONE = new Dimensions(null, null, null, null);
+
+        public static Dimensions of(LedgerEntryLine l) {
+            return new Dimensions(l.getMissionId(), l.getDealId(), l.getCustomerId(), l.getVendorId());
+        }
+
+        public boolean isEmpty() {
+            return missionId == null && dealId == null && customerId == null && vendorId == null;
+        }
+    }
 
     private static final BigDecimal ZERO = BigDecimal.ZERO.setScale(2);
 
@@ -101,8 +129,7 @@ public class LedgerPostingService {
         LedgerJournal journal = journalRepository.findByOrganizationIdAndId(orgId, original.getJournalId())
                 .orElseThrow(() -> new ResourceNotFoundException("Journal not found"));
         List<PostingLine> lines = lineRepository.findByOrganizationIdAndEntryIdIn(orgId, List.of(original.getId())).stream()
-                .map(l -> new PostingLine(l.getAccountId(), l.getPartnerId(), l.getCostCenterId(), l.getLabel(),
-                        l.getCredit(), l.getDebit()))
+                .map(PostingLine::reversing)
                 .toList();
         LedgerEntry reversal = write(orgId, journal, date, "Reversal of " + original.getNumber() + ": " + original.getDescription(),
                 LedgerEntryService.SOURCE_REVERSAL, original.getId(), original.getNumber(), original.getId(), lines, true, true,
@@ -282,6 +309,7 @@ public class LedgerPostingService {
             if (line.partnerId() != null && !knownPartners.contains(line.partnerId())) {
                 throw new ResourceNotFoundException("Line " + n + ": partner not found");
             }
+            checkDimensions(orgId, line.dimensions(), n);
         }
 
         LedgerEntry entry = new LedgerEntry();
@@ -309,6 +337,10 @@ public class LedgerPostingService {
             row.setAccountId(line.accountId());
             row.setPartnerId(line.partnerId());
             row.setCostCenterId(line.costCenterId());
+            row.setMissionId(line.dimensions().missionId());
+            row.setDealId(line.dimensions().dealId());
+            row.setCustomerId(line.dimensions().customerId());
+            row.setVendorId(line.dimensions().vendorId());
             String label = line.label() == null || line.label().isBlank() ? entry.getDescription() : line.label().trim();
             row.setLabel(label.length() > 255 ? label.substring(0, 255) : label);
             row.setDebit(amounts.get(i)[0]);
@@ -328,6 +360,29 @@ public class LedgerPostingService {
         } catch (ArithmeticException e) {
             throw new IllegalArgumentException("Line " + lineNo + ": amounts have at most 2 decimals");
         }
+    }
+
+    /** 400 when a line's mission, deal, customer or vendor is not one of the organization's (deleted ones still count). */
+    private void checkDimensions(UUID orgId, Dimensions d, int n) {
+        if (d.isEmpty()) return;
+        if (d.missionId() != null && !exists(orgId, "mission", d.missionId())) {
+            throw new IllegalArgumentException("Line " + n + ": unknown mission");
+        }
+        if (d.dealId() != null && !exists(orgId, "deal", d.dealId())) {
+            throw new IllegalArgumentException("Line " + n + ": unknown deal");
+        }
+        if (d.customerId() != null && !exists(orgId, "partner", d.customerId())) {
+            throw new IllegalArgumentException("Line " + n + ": unknown customer");
+        }
+        if (d.vendorId() != null && !exists(orgId, "partner", d.vendorId())) {
+            throw new IllegalArgumentException("Line " + n + ": unknown vendor");
+        }
+    }
+
+    /** Whether the row exists in this tenant table (table is a constant, never input). */
+    private boolean exists(UUID orgId, String table, UUID id) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM " + table
+                + " WHERE organization_id = ? AND id = ?)", Boolean.class, orgId, id));
     }
 
     private Set<UUID> knownPartners(UUID orgId, Set<UUID> ids, boolean includeDeleted) {

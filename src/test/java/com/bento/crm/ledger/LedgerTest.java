@@ -229,9 +229,10 @@ class LedgerTest extends IntegrationTestBase {
 
         String spare = json(post("/ledger/cost-centers"), token, "{\"code\": \"TMP\", \"name\": \"Temporaire\"}", 201)
                 .get("id").asText();
-        assertThat(json(get("/ledger/cost-centers"), token, null, 200).size()).isEqualTo(2);
+        // Beside the six seeded cost centers (DIR, COM, PROD, ADM, IT, MKT).
+        assertThat(json(get("/ledger/cost-centers"), token, null, 200).size()).isEqualTo(8);
         json(delete("/ledger/cost-centers/" + spare), token, null, 204);
-        assertThat(json(get("/ledger/cost-centers"), token, null, 200).size()).isEqualTo(1);
+        assertThat(json(get("/ledger/cost-centers"), token, null, 200).size()).isEqualTo(7);
 
         Map<String, String> ids = accounts(token);
         JsonNode e = json(post("/ledger/entries"), token, entry("2026-04-01", "Déplacement Atlas",
@@ -245,8 +246,8 @@ class LedgerTest extends IntegrationTestBase {
 
         assertThat(detail(delete("/ledger/cost-centers/" + ccId), token, null, 400)).contains("deactivate it instead");
         json(put("/ledger/cost-centers/" + ccId), token, "{\"active\": false}", 200);
-        assertThat(json(get("/ledger/cost-centers"), token, null, 200).size()).isEqualTo(0);
-        assertThat(json(get("/ledger/cost-centers?includeInactive=true"), token, null, 200).size()).isEqualTo(1);
+        assertThat(json(get("/ledger/cost-centers"), token, null, 200).size()).isEqualTo(6);
+        assertThat(json(get("/ledger/cost-centers?includeInactive=true"), token, null, 200).size()).isEqualTo(7);
 
         JsonNode filtered = json(get("/ledger/entries?costCenterId=" + ccId), token, null, 200);
         assertThat(filtered.get("total_elements").asInt()).isEqualTo(1);

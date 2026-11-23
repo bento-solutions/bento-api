@@ -37,7 +37,16 @@ public final class ExpenseReportDtos {
                               @Size(max = 255) String description, @NotNull @Positive BigDecimal amount,
                               @PositiveOrZero BigDecimal vatAmount, @Size(max = 20) String vatCode,
                               UUID vendorPartnerId, @Size(max = 255) String vendorName,
-                              @Size(max = 100) String reference, UUID costCenterId) {}
+                              @Size(max = 100) String reference, UUID costCenterId, UUID missionId, UUID dealId,
+                              UUID customerId) {
+
+        public LineRequest(LocalDate expenseDate, String category, String description, BigDecimal amount,
+                           BigDecimal vatAmount, String vatCode, UUID vendorPartnerId, String vendorName, String reference,
+                           UUID costCenterId) {
+            this(expenseDate, category, description, amount, vatAmount, vatCode, vendorPartnerId, vendorName, reference,
+                    costCenterId, null, null, null);
+        }
+    }
 
     /** method: BANK_TRANSFER (bankAccountId, else the main bank account) or CASH (the cash register). */
     public record ReimburseRequest(@NotNull LocalDate date, @NotNull ExpenseReport.ReimbursementMethod method,
@@ -47,18 +56,30 @@ public final class ExpenseReportDtos {
         public static final Totals ZERO = new Totals(money(null), money(null), money(null));
     }
 
-    /** A line: the expense's fields, its HT amount and the number of receipts attached (files owner EXPENSE). */
+    /**
+     * A line: the expense's fields, its HT amount and the number of receipts attached (files owner EXPENSE).
+     * costCenterId is the line's own (null when it relies on the report's); the dimensions are the line's,
+     * vendorId being vendorPartnerId.
+     */
     public record Line(UUID id, LocalDate expenseDate, String category, String description, BigDecimal amount,
                        BigDecimal vatAmount, BigDecimal amountHt, String vatCode, Payment.Method paymentMethod,
                        UUID vendorPartnerId, String vendorName, String reference, UUID costCenterId,
-                       UUID expenseReportId, UUID createdBy, Instant createdAt, long attachments) {
+                       UUID expenseReportId, UUID createdBy, Instant createdAt, long attachments, String costCenterCode,
+                       UUID missionId, String missionName, UUID dealId, String dealName, UUID customerId,
+                       String customerName, UUID vendorId, String vendorPartnerName) {
         public static Line of(Expense e, long attachments) {
+            return of(e, attachments, ExpenseDtos.Names.NONE);
+        }
+
+        public static Line of(Expense e, long attachments, ExpenseDtos.Names n) {
             BigDecimal ttc = money(e.getAmount());
             BigDecimal vat = money(e.getVatAmount());
             return new Line(e.getId(), e.getExpenseDate(), e.getCategory(), e.getDescription(), ttc, vat,
                     ttc.subtract(vat), e.getVatCode(), e.getPaymentMethod(), e.getVendorPartnerId(), e.getVendorName(),
                     e.getReference(), e.getCostCenterId(), e.getExpenseReportId(), e.getCreatedBy(), e.getCreatedAt(),
-                    attachments);
+                    attachments, n.costCenterCode(e.getCostCenterId()), e.getMissionId(), n.mission(e.getMissionId()),
+                    e.getDealId(), n.deal(e.getDealId()), e.getCustomerId(), n.partner(e.getCustomerId()),
+                    e.getVendorPartnerId(), n.partner(e.getVendorPartnerId()));
         }
     }
 

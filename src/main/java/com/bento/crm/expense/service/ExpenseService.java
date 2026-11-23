@@ -49,11 +49,39 @@ public class ExpenseService {
         return out;
     }
 
+    /** The cost center code, mission, deal and partner names these expenses refer to. */
+    @Transactional(readOnly = true)
+    public Names names(java.util.Collection<Expense> expenses) {
+        UUID orgId = TenantContext.getCurrentOrganizationId();
+        java.util.Set<UUID> partners = new java.util.HashSet<>();
+        for (Expense e : expenses) {
+            if (e.getCustomerId() != null) partners.add(e.getCustomerId());
+            if (e.getVendorPartnerId() != null) partners.add(e.getVendorPartnerId());
+        }
+        return new Names(
+                lookup(orgId, "SELECT id, code FROM ledger_cost_center", expenses.stream().map(Expense::getCostCenterId)),
+                lookup(orgId, "SELECT id, name FROM mission", expenses.stream().map(Expense::getMissionId)),
+                lookup(orgId, "SELECT id, title FROM deal", expenses.stream().map(Expense::getDealId)),
+                lookup(orgId, "SELECT id, COALESCE(NULLIF(company_name, ''), name) FROM partner", partners.stream()));
+    }
+
+    private java.util.Map<UUID, String> lookup(UUID orgId, String select, java.util.stream.Stream<UUID> ids) {
+        UUID[] array = ids.filter(java.util.Objects::nonNull).distinct().toArray(UUID[]::new);
+        java.util.Map<UUID, String> out = new java.util.HashMap<>();
+        if (array.length == 0) return out;
+        jdbc.query(select + " WHERE organization_id = ? AND id = ANY(?)",
+                rs -> { out.put(rs.getObject(1, UUID.class), rs.getString(2)); }, orgId, array);
+        return out;
+    }
+
+    public static final String COST_CENTER_REQUIRED = "Cost center is required";
+
     @Transactional
     public Expense create(ExpenseRequest r) {
         if (r.paymentMethod() == com.bento.crm.payment.model.Payment.Method.EMPLOYEE) {
             throw new IllegalArgumentException("Add expenses paid by an employee to an expense report");
         }
+        if (r.costCenterId() == null) throw new IllegalArgumentException(COST_CENTER_REQUIRED);
         Expense e = new Expense();
         e.setOrganizationId(TenantContext.getCurrentOrganizationId());
         apply(e, r);
@@ -69,6 +97,7 @@ public class ExpenseService {
         if (r.paymentMethod() == com.bento.crm.payment.model.Payment.Method.EMPLOYEE) {
             throw new IllegalArgumentException("Add expenses paid by an employee to an expense report");
         }
+        if (r.costCenterId() == null) throw new IllegalArgumentException(COST_CENTER_REQUIRED);
         apply(e, r);
         Expense saved = repository.save(e);
         ledger.expense(saved);
@@ -136,8 +165,27 @@ public class ExpenseService {
             }
         }
         e.setCostCenterId(r.costCenterId());
+        // Dimensions: a value kept as it was is not checked again (its mission or deal may since have been deleted).
+        if (r.missionId() != null && !r.missionId().equals(e.getMissionId()) && !exists(e, "mission", r.missionId())) {
+            throw new IllegalArgumentException("Unknown mission");
+        }
+        if (r.dealId() != null && !r.dealId().equals(e.getDealId()) && !exists(e, "deal", r.dealId())) {
+            throw new IllegalArgumentException("Unknown deal");
+        }
+        if (r.customerId() != null && !r.customerId().equals(e.getCustomerId()) && !exists(e, "partner", r.customerId())) {
+            throw new IllegalArgumentException("Unknown customer");
+        }
+        e.setMissionId(r.missionId());
+        e.setDealId(r.dealId());
+        e.setCustomerId(r.customerId());
         // Null with a VAT amount posts as TVA20, as before phase 3.
         e.setVatCode(postingSetup.vatCode(e.getOrganizationId(), r.vatCode()));
+    }
+
+    /** Whether a live row of this tenant table exists (table is a constant, never input). */
+    private boolean exists(Expense e, String table, UUID id) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("SELECT EXISTS (SELECT 1 FROM " + table
+                + " WHERE organization_id = ? AND id = ? AND deleted_at IS NULL)", Boolean.class, e.getOrganizationId(), id));
     }
 
     private static String blankToNull(String s) {

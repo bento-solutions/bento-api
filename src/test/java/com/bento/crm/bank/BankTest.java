@@ -215,7 +215,8 @@ class BankTest extends IntegrationTestBase {
         // The card payment matches an expense of the same amount.
         String expense = json(post("/expenses"), token, """
                 {"expenseDate": "2026-10-07", "category": "OFFICE", "description": "Fournitures", "amount": 120,
-                 "vatAmount": 20, "paymentMethod": "CARD"}""", 201).get("id").asText();
+                 "vatAmount": 20, "paymentMethod": "CARD", "costCenterId": "%s"}""".formatted(costCenter(token)), 201)
+                .get("id").asText();
         String cardId = card.get("id").asText();
         JsonNode expCandidates = json(get("/bank/transactions/" + cardId + "/candidates"), token, null, 200);
         assertThat(expCandidates.findValuesAsText("id")).contains(expense);

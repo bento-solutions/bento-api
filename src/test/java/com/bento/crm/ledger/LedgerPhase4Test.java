@@ -191,8 +191,9 @@ class LedgerPhase4Test extends IntegrationTestBase {
         String customer = partner(token, "CUSTOMER", "Atlas");
         invoice(token, "CUSTOMER", customer, LocalDate.of(last, 3, 1), LocalDate.of(last, 3, 31), "FA-Y-1", 3000);
         json(post("/expenses"), token, """
-                {"expenseDate": "%d-06-15", "category": "OFFICE", "amount": 1200, "vatAmount": 200, "paymentMethod": "CASH"}
-                """.formatted(last), 201);
+                {"expenseDate": "%d-06-15", "category": "OFFICE", "amount": 1200, "vatAmount": 200, "paymentMethod": "CASH",
+                 "costCenterId": "%s"}
+                """.formatted(last, costCenter(token)), 201);
         json(post("/ledger/years/" + last + "/close"), token, null, 200);
 
         JsonNode cpc = json(get("/ledger/statements/cpc?year=" + last), token, null, 200);
@@ -368,6 +369,8 @@ class LedgerPhase4Test extends IntegrationTestBase {
             assertThat(e.getLastRowNum()).isEqualTo(lines);
             assertThat(e.getRow(0).getCell(0).getStringCellValue()).isEqualTo("JournalCode");
             assertThat(e.getRow(0).getCell(13).getStringCellValue()).isEqualTo("SectionAnalytique");
+            assertThat(e.getRow(0).getCell(14).getStringCellValue()).isEqualTo("Mission");
+            assertThat(e.getRow(0).getCell(17).getStringCellValue()).isEqualTo("Fournisseur");
             assertThat(wb.getSheet("Plan comptable").getLastRowNum()).isGreaterThan(2);
         }
 
@@ -380,7 +383,8 @@ class LedgerPhase4Test extends IntegrationTestBase {
         String text = new String(bytes, 3, bytes.length - 3, StandardCharsets.UTF_8);
         String[] rows = text.split("\r\n");
         assertThat(rows[0]).isEqualTo("JournalCode;JournalLib;EcritureNum;EcritureDate;CompteNum;CompteLib;CompAuxNum;"
-                + "CompAuxLib;PieceRef;PieceDate;EcritureLib;Debit;Credit;SectionAnalytique;SourceType");
+                + "CompAuxLib;PieceRef;PieceDate;EcritureLib;Debit;Credit;SectionAnalytique;Mission;Affaire;Client;Fournisseur;"
+                + "SourceType");
         assertThat(rows).hasSize(lines + 1);
         assertThat(text).contains("\"Atlas; & Co\"").contains(today.minusDays(1).toString().replace("-", "")).contains("1200.00");
 
